@@ -1,30 +1,24 @@
 import { GoogleGenAI } from "@google/genai";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-export type Content =
-  | { type: "text"; text: string }
-  | { type: "function_call"; id: string; name: string; args: Record<string, unknown> }
-  | { type: "function_result"; call_id: string; name?: string; result: unknown };
+export type FileAttachment = { uri: string; mimeType: string };
 
-export type HistoryTurn = {
-  role: "user" | "model" | "tool";
-  author_id?: string;
-  author_name?: string;
-  content: Content[];
-  timestamp?: string;
+export type Message = {
+  user: string;
+  text: string;
+  timestamp: string;
+  file?: FileAttachment;
 };
 
-export type Turn = HistoryTurn;
+export type GeminiRequest = {
+  messages: Message[];
+  temporary?: unknown[];
+};
 
 export type FunctionCall = {
   id: string;
   name: string;
   args: Record<string, unknown>;
-};
-
-export type FileAttachment = {
-  uri: string;
-  mimeType: string;
 };
 
 export interface GeminiRequestOptions {
@@ -35,7 +29,6 @@ export interface GeminiRequestOptions {
 }
 
 type KeyState = { gemini1: number; gemini2: number };
-
 const STATE_FILE = process.env.GEMINI_KEY_STATE_FILE ?? ".gemini-key-state.json";
 
 function envKeys(name: string): string[] {
@@ -61,74 +54,53 @@ function saveKeyState(): void {
   writeFileSync(STATE_FILE, `${JSON.stringify(keyState, null, 2)}\n`);
 }
 
-function rotateKey(mode: "gemini1" | "gemini2", keyCount: number): void {
-  keyState[mode] = (keyState[mode] + 1) % keyCount;
+function rotateKey(mode: "gemini1" | "gemini2", count: number): void {
+  keyState[mode] = (keyState[mode] + 1) % count;
   saveKeyState();
 }
 
 function is429(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const value = error as { status?: number; code?: number; response?: { status?: number } };
-  return value.status === 429 || value.code === 429 || value.response?.status === 429;
-}
-
-export function user(text: string, files: FileAttachment[] = [], author?: { id: string; name: string }): Turn {
-  const content: Content[] = [{ type: "text", text }];
-  for (const file of files) {
-    content.push({ type: "text", text: `[attachment: ${file.uri} (${file.mimeType})]` });
-  }
-  return {
-    role: "user",
-    ...(author && { author_id: author.id, author_name: author.name }),
-    content,
-  };
-}
-
-export function fakeTool(name: string, args: Record<string, unknown>, result: unknown): Turn[] {
-  const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  return [
-    { role: "model", content: [{ type: "function_call", id: callId, name, args }] },
-    { role: "tool", content: [{ type: "function_result", call_id: callId, name, result }] },
-  ];
+  const e = error as { status?: number; code?: number; response?: { status?: number } };
+  return e.status === 429 || e.code === 429 || e.response?.status === 429;
 }
 
 export function ctxWindowCreate(
-  history: HistoryTurn[],
+  messages: Message[],
   message: string,
-  temporaryTurns: Turn[] = [],
-  files: FileAttachment[] = [],
-  author?: { id: string; name: string }
-): Turn[] {
-  const turns = history.map((turn) => ({ ...turn }));
-  const current = user(message, files, author);
-  return [...turns, current, ...temporaryTurns];
+  user: string,
+  timestamp: string,
+  file?: FileAttachment,
+  temporary: unknown[] = []
+): GeminiRequest {
+  return {
+    messages: [...messages, { user, text: message, timestamp, ...(file && { file }) }],
+    temporary,
+  };
 }
 
 export async function sendRequestGemini(
-  request_body: Turn[],
+  requestBody: GeminiRequest,
   options: GeminiRequestOptions = {}
 ): Promise<string | FunctionCall[]> {
   const mode = options.responseMode ?? "text";
-  const keys = mode === "tool" ? envKeys("GEMINI2_API_KEYS") : envKeys("GEMINI1_API_KEYS");
+  const keys = envKeys(mode === "tool" ? "GEMINI2_API_KEYS" : "GEMINI1_API_KEYS");
   const fallbackKey = options.apiKey ?? process.env.GEMINI_API_KEY;
-  if (keys.length === 0 && !fallbackKey) {
-    throw new Error(`No API key configured for ${mode === "tool" ? "Gemini2" : "Gemini1"}`);
-  }
+  if (!keys.length && !fallbackKey) throw new Error(`No API key configured for ${mode}`);
 
   const model = options.model ?? (mode === "tool"
     ? process.env.GEMINI2_MODEL ?? "gemini-flash-lite-latest"
     : process.env.GEMINI1_MODEL ?? "gemini-flash-lite-latest");
-  const modeKey = mode === "tool" ? "gemini2" : "gemini1";
-  const attempts = keys.length || 1;
+  const stateKey = mode === "tool" ? "gemini2" : "gemini1";
   let lastError: unknown;
 
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const key = keys.length ? keys[keyState[modeKey] % keys.length] : fallbackKey!;
+  for (let attempt = 0; attempt < (keys.length || 1); attempt++) {
+    const key = keys.length ? keys[keyState[stateKey] % keys.length] : fallbackKey!;
     try {
       const ai = new GoogleGenAI({ apiKey: key });
       const response = await ai.interactions.create({
         model,
-        input: request_body as never,
+        input: JSON.stringify({ messages: requestBody.messages, ...(requestBody.temporary?.length && { temporary: requestBody.temporary }) }),
         tools: options.tools ?? [],
         ...(mode === "tool" ? { generation_config: { tool_choice: "any" } } : {}),
         store: false,
@@ -137,17 +109,13 @@ export async function sendRequestGemini(
       if (mode === "tool") {
         return (response.steps ?? [])
           .filter((step: any) => step.type === "function_call")
-          .map((step: any) => ({
-            id: step.id ?? "",
-            name: step.name ?? "",
-            args: step.arguments ?? {},
-          }));
+          .map((step: any) => ({ id: step.id ?? "", name: step.name ?? "", args: step.arguments ?? {} }));
       }
       return response.output_text ?? "";
     } catch (error) {
       lastError = error;
       if (!is429(error) || !keys.length) throw error;
-      rotateKey(modeKey, keys.length);
+      rotateKey(stateKey, keys.length);
     }
   }
   throw lastError;
