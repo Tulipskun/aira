@@ -50,29 +50,33 @@ function addModelResponse(request: GeminiRequest, response: string, timestamp: s
   return { ...request, messages: [...request.messages, { role: "model", text: response, timestamp }] };
 }
 
-async function executeCommands(commands: unknown, currentUserId: string, timestamp: string): Promise<void> {
+function resolveUserId(username: unknown, currentUserId: string, relationships: Relationship[]): string {
+  if (typeof username !== "string" || !username.trim()) return currentUserId;
+  const match = relationships.find((r) => r.userName === username);
+  return match?.userId ?? currentUserId;
+}
+
+async function executeCommands(commands: unknown, currentUserId: string, timestamp: string, relationships: Relationship[]): Promise<void> {
   if (!Array.isArray(commands)) return;
   await Promise.all(commands.map(async (command) => {
     if (!command || typeof command !== "object") return;
     const item = command as { name?: unknown; args?: unknown };
     if (typeof item.name !== "string" || !item.args || typeof item.args !== "object") return;
     const args = item.args as Record<string, unknown>;
+    const userId = resolveUserId(args.username, currentUserId, relationships);
 
     switch (item.name) {
       case "adjust_affinity": {
-        const userId = typeof args.user_id === "string" ? args.user_id : currentUserId;
         const delta = Number(args.delta ?? 0);
         if (Number.isFinite(delta)) adjustRelationshipStats(userId, { affinity: delta });
         return;
       }
       case "add_xp": {
-        const userId = typeof args.user_id === "string" ? args.user_id : currentUserId;
         const delta = Number(args.delta ?? 0);
         if (Number.isFinite(delta)) adjustRelationshipStats(userId, { xp: delta });
         return;
       }
       case "set_relationship": {
-        const userId = typeof args.user_id === "string" ? args.user_id : currentUserId;
         const state = typeof args.state === "string" ? args.state : undefined;
         if (state) adjustRelationshipStats(userId, { state });
         return;
@@ -80,7 +84,6 @@ async function executeCommands(commands: unknown, currentUserId: string, timesta
       case "ingest_memory": {
         const text = typeof args.text === "string" ? args.text.trim() : "";
         if (!text) return;
-        const userId = typeof args.user_id === "string" ? args.user_id : currentUserId;
         await saveMemory({ id: crypto.randomUUID(), text, userId, timestamp });
         return;
       }
@@ -90,15 +93,15 @@ async function executeCommands(commands: unknown, currentUserId: string, timesta
   }));
 }
 
-async function runBackground(request: GeminiRequest, userId: string, timestamp: string, systemInstruction: string): Promise<void> {
+async function runBackground(request: GeminiRequest, userId: string, timestamp: string, systemInstruction: string, relationships: Relationship[]): Promise<void> {
   const result = await sendRequestGemini(request, {
     responseMode: "tool",
     tools: [executeTool],
-    systemInstruction: `${systemInstruction}\nReturn one execute call containing every background operation required for this turn.`,
+    systemInstruction: `${systemInstruction}\nUse usernames, never Discord IDs, in execute command arguments. Return one execute call containing every background operation required for this turn.`,
   });
   if (!Array.isArray(result)) return;
   for (const call of result) {
-    if (call.name === "execute") await executeCommands(call.args.commands, userId, timestamp);
+    if (call.name === "execute") await executeCommands(call.args.commands, userId, timestamp, relationships);
   }
 }
 
@@ -121,7 +124,7 @@ export async function processMessage(input: ProcessMessageInput): Promise<string
 
   const completedRequest = addModelResponse(gemini1Request, response, input.timestamp);
   setTimeout(() => {
-    void runBackground(completedRequest, input.userId, input.timestamp, systemInstruction).catch((error) => {
+    void runBackground(completedRequest, input.userId, input.timestamp, systemInstruction, relationships).catch((error) => {
       console.error("[PIPELINE] background processing failed", error);
     });
   }, 0);
