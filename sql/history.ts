@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
 
 export type HistoryMessage = {
   id?: number;
@@ -10,7 +11,9 @@ export type HistoryMessage = {
   fileName?: string;
 };
 
-const db = new Database(process.env.SQLITE_PATH ?? "./data/aira.db", { create: true });
+const path = process.env.SQLITE_PATH ?? "./data/aira.db";
+mkdirSync(path.substring(0, path.lastIndexOf("/") || 1), { recursive: true });
+const db = new Database(path, { create: true });
 db.run(`CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   role TEXT NOT NULL CHECK (role IN ('user', 'model')),
@@ -28,24 +31,12 @@ const insert = db.prepare(`INSERT INTO messages
   VALUES (?, ?, ?, ?, ?, ?)`);
 
 export function saveMessage(message: HistoryMessage): number {
-  const result = insert.run(
-    message.role,
-    message.userId ?? null,
-    message.user ?? null,
-    message.text,
-    message.timestamp,
-    message.fileName ?? null,
-  );
+  const result = insert.run(message.role, message.userId ?? null, message.user ?? null, message.text, message.timestamp, message.fileName ?? null);
   return Number(result.lastInsertRowid);
 }
 
 export function getHistory(limit = 50): HistoryMessage[] {
-  return db.query(`
-    SELECT id, role, user_id AS userId, user_name AS user, text, timestamp, file_name AS fileName
-    FROM messages ORDER BY id DESC LIMIT ?
-  `).all(limit).reverse() as HistoryMessage[];
+  return db.query(`SELECT id, role, user_id AS userId, user_name AS user, text, timestamp, file_name AS fileName FROM messages ORDER BY id DESC LIMIT ?`).all(limit).reverse() as HistoryMessage[];
 }
 
-export function closeHistoryDb(): void {
-  db.close();
-}
+export function closeHistoryDb(): void { db.close(); }
