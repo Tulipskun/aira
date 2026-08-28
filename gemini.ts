@@ -2,13 +2,11 @@ import { GoogleGenAI } from "@google/genai";
 
 export interface ContextConfig {
   model?: string;
-  maxTokens?: number;
   apiKey?: string;
 }
 
 const DEFAULT_CONFIG: Required<ContextConfig> = {
   model: "gemini-flash-lite-latest",
-  maxTokens: 14000,
   apiKey: process.env.GEMINI_API_KEY,
 };
 
@@ -23,18 +21,7 @@ type Turn = {
   content: ContentBlock[];
 };
 
-type TurnPair = {
-  turns: Turn[];
-};
-
-let history: TurnPair[] = [];
-
-function flatten(pairs: TurnPair[], extraTurns: Turn[] = []): Turn[] {
-  const flat: Turn[] = [];
-  for (const pair of pairs) flat.push(...pair.turns);
-  flat.push(...extraTurns);
-  return flat;
-}
+let history: Turn[] = [];
 
 export function createFakeToolInjection(
   toolName: string,
@@ -46,39 +33,13 @@ export function createFakeToolInjection(
   return [
     {
       role: "model",
-      content: [
-        {
-          type: "function_call",
-          id: fakeCallId,
-          name: toolName,
-          args: fakeArgs,
-        },
-      ],
+      content: [{ type: "function_call", id: fakeCallId, name: toolName, args: fakeArgs }],
     },
     {
       role: "tool",
-      content: [
-        {
-          type: "function_result",
-          call_id: fakeCallId,
-          name: toolName,
-          result: data,
-        },
-      ],
+      content: [{ type: "function_result", call_id: fakeCallId, name: toolName, result: data }],
     },
   ];
-}
-
-function buildContextWindow(
-  userMessage: string,
-  injectedTurns: Turn[] = []
-): Turn[] {
-  const pendingUserTurn: Turn = {
-    role: "user",
-    content: [{ type: "text", text: userMessage }],
-  };
-
-  return flatten(history, [...injectedTurns, pendingUserTurn]);
 }
 
 export interface SendMessageOptions {
@@ -99,44 +60,36 @@ type InteractionStep = {
 };
 
 function responseToTurns(steps: InteractionStep[]): Turn[] {
-  const turns: Turn[] = [];
-
-  for (const step of steps) {
+  return steps.flatMap((step): Turn[] => {
     if (step.type === "function_call") {
-      turns.push({
+      return [{
         role: "model",
-        content: [
-          {
-            type: "function_call",
-            id: step.id ?? `call_${Date.now()}`,
-            name: step.name ?? "unknown",
-            args: step.arguments ?? {},
-          },
-        ],
-      });
-    } else if (step.type === "thought") {
-      turns.push({
-        role: "model",
-        content: [
-          {
-            type: "thought",
-            signature: step.signature ?? "",
-            summary: step.summary
-              ?.map((part) => part.text ?? "")
-              .filter(Boolean)
-              .join("\n"),
-          },
-        ],
-      });
-    } else if (step.type === "text" && step.text) {
-      turns.push({
-        role: "model",
-        content: [{ type: "text", text: step.text }],
-      });
+        content: [{
+          type: "function_call",
+          id: step.id ?? `call_${Date.now()}`,
+          name: step.name ?? "unknown",
+          args: step.arguments ?? {},
+        }],
+      }];
     }
-  }
 
-  return turns;
+    if (step.type === "thought") {
+      return [{
+        role: "model",
+        content: [{
+          type: "thought",
+          signature: step.signature ?? "",
+          summary: step.summary?.map((part) => part.text ?? "").filter(Boolean).join("\n"),
+        }],
+      }];
+    }
+
+    if (step.type === "text" && step.text) {
+      return [{ role: "model", content: [{ type: "text", text: step.text }] }];
+    }
+
+    return [];
+  });
 }
 
 export async function sendMessage(
@@ -150,18 +103,16 @@ export async function sendMessage(
     onToolCall = async () => ({}),
   } = options;
 
-  const finalConfig: Required<ContextConfig> = { ...DEFAULT_CONFIG, ...config };
+  const finalConfig = { ...DEFAULT_CONFIG, ...config };
   const ai = new GoogleGenAI({ apiKey: finalConfig.apiKey });
-
-  const contextWindow = buildContextWindow(userMessage, injectedTurns);
-
-  const turnSteps: Turn[] = [
-    ...injectedTurns,
-    { role: "user", content: [{ type: "text", text: userMessage }] },
-  ];
+  const userTurn: Turn = {
+    role: "user",
+    content: [{ type: "text", text: userMessage }],
+  };
+  const contextWindow = [...history, ...injectedTurns, userTurn];
+  const turnSteps: Turn[] = [...injectedTurns, userTurn];
 
   let requestInput: unknown = contextWindow;
-  let finalText = "";
 
   for (;;) {
     const response = await ai.interactions.create({
@@ -175,59 +126,36 @@ export async function sendMessage(
     const responseTurns = responseToTurns(steps);
     turnSteps.push(...responseTurns);
 
-    const functionCalls = steps.filter(
-      (step) => step.type === "function_call"
-    );
-
-    if (functionCalls.length === 0) {
-      finalText = response.output_text ?? "";
-      break;
+    const functionCalls = steps.filter((step) => step.type === "function_call");
+    if (!functionCalls.length) {
+      const finalText = response.output_text ?? "";
+      if (finalText && !responseTurns.some((turn) =>
+        turn.content.some((block) => block.type === "text" && block.text === finalText)
+      )) {
+        turnSteps.push({ role: "model", content: [{ type: "text", text: finalText }] });
+      }
+      history.push(...turnSteps);
+      return finalText;
     }
 
     const functionResults: Turn[] = [];
-
     for (const call of functionCalls) {
-      const args = call.arguments ?? {};
-      const argsText = JSON.stringify(args);
-      const result = await onToolCall(call.name ?? "unknown", argsText);
-
+      const result = await onToolCall(
+        call.name ?? "unknown",
+        JSON.stringify(call.arguments ?? {})
+      );
       functionResults.push({
         role: "tool",
-        content: [
-          {
-            type: "function_result",
-            call_id: call.id ?? "",
-            name: call.name,
-            result,
-          },
-        ],
+        content: [{
+          type: "function_result",
+          call_id: call.id ?? "",
+          name: call.name,
+          result,
+        }],
       });
     }
 
     turnSteps.push(...functionResults);
-    requestInput = [
-      ...contextWindow,
-      ...responseTurns,
-      ...functionResults,
-    ];
+    requestInput = [...contextWindow, ...responseTurns, ...functionResults];
   }
-
-  if (finalText) {
-    const lastModelText = turnSteps[turnSteps.length - 1];
-    const alreadyStored =
-      lastModelText?.role === "model" &&
-      lastModelText.content.some(
-        (block) => block.type === "text" && block.text === finalText
-      );
-
-    if (!alreadyStored) {
-      turnSteps.push({
-        role: "model",
-        content: [{ type: "text", text: finalText }],
-      });
-    }
-  }
-
-  history.push({ turns: turnSteps });
-  return finalText;
 }
