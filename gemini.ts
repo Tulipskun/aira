@@ -6,15 +6,25 @@ export type Content =
   | { type: "function_call"; id: string; name: string; args: Record<string, unknown> }
   | { type: "function_result"; call_id: string; name?: string; result: unknown };
 
-export type Turn = {
+export type HistoryTurn = {
   role: "user" | "model" | "tool";
+  author_id?: string;
+  author_name?: string;
   content: Content[];
+  timestamp?: string;
 };
+
+export type Turn = HistoryTurn;
 
 export type FunctionCall = {
   id: string;
   name: string;
   args: Record<string, unknown>;
+};
+
+export type FileAttachment = {
+  uri: string;
+  mimeType: string;
 };
 
 export interface GeminiRequestOptions {
@@ -24,23 +34,16 @@ export interface GeminiRequestOptions {
   responseMode?: "text" | "tool";
 }
 
-type KeyState = {
-  gemini1: number;
-  gemini2: number;
-};
+type KeyState = { gemini1: number; gemini2: number };
 
 const STATE_FILE = process.env.GEMINI_KEY_STATE_FILE ?? ".gemini-key-state.json";
 
 function envKeys(name: string): string[] {
-  return (process.env[name] ?? "")
-    .split(",")
-    .map((key) => key.trim())
-    .filter(Boolean);
+  return (process.env[name] ?? "").split(",").map((key) => key.trim()).filter(Boolean);
 }
 
 function loadKeyState(): KeyState {
   if (!existsSync(STATE_FILE)) return { gemini1: 0, gemini2: 0 };
-
   try {
     const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
     return {
@@ -69,8 +72,16 @@ function is429(error: unknown): boolean {
   return value.status === 429 || value.code === 429 || value.response?.status === 429;
 }
 
-export function user(text: string): Turn {
-  return { role: "user", content: [{ type: "text", text }] };
+export function user(text: string, files: FileAttachment[] = [], author?: { id: string; name: string }): Turn {
+  const content: Content[] = [{ type: "text", text }];
+  for (const file of files) {
+    content.push({ type: "text", text: `[attachment: ${file.uri} (${file.mimeType})]` });
+  }
+  return {
+    role: "user",
+    ...(author && { author_id: author.id, author_name: author.name }),
+    content,
+  };
 }
 
 export function fakeTool(name: string, args: Record<string, unknown>, result: unknown): Turn[] {
@@ -81,8 +92,16 @@ export function fakeTool(name: string, args: Record<string, unknown>, result: un
   ];
 }
 
-export function ctxWindowCreate(history: Turn[], message: string, temporaryTurns: Turn[] = []): Turn[] {
-  return [...history, user(message), ...temporaryTurns];
+export function ctxWindowCreate(
+  history: HistoryTurn[],
+  message: string,
+  temporaryTurns: Turn[] = [],
+  files: FileAttachment[] = [],
+  author?: { id: string; name: string }
+): Turn[] {
+  const turns = history.map((turn) => ({ ...turn }));
+  const current = user(message, files, author);
+  return [...turns, current, ...temporaryTurns];
 }
 
 export async function sendRequestGemini(
@@ -92,26 +111,19 @@ export async function sendRequestGemini(
   const mode = options.responseMode ?? "text";
   const keys = mode === "tool" ? envKeys("GEMINI2_API_KEYS") : envKeys("GEMINI1_API_KEYS");
   const fallbackKey = options.apiKey ?? process.env.GEMINI_API_KEY;
-
   if (keys.length === 0 && !fallbackKey) {
     throw new Error(`No API key configured for ${mode === "tool" ? "Gemini2" : "Gemini1"}`);
   }
 
-  const model = options.model ?? (
-    mode === "tool"
-      ? process.env.GEMINI2_MODEL ?? "gemini-flash-lite-latest"
-      : process.env.GEMINI1_MODEL ?? "gemini-flash-lite-latest"
-  );
-
+  const model = options.model ?? (mode === "tool"
+    ? process.env.GEMINI2_MODEL ?? "gemini-flash-lite-latest"
+    : process.env.GEMINI1_MODEL ?? "gemini-flash-lite-latest");
   const modeKey = mode === "tool" ? "gemini2" : "gemini1";
   const attempts = keys.length || 1;
   let lastError: unknown;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const key = keys.length
-      ? keys[keyState[modeKey] % keys.length]
-      : fallbackKey!;
-
+    const key = keys.length ? keys[keyState[modeKey] % keys.length] : fallbackKey!;
     try {
       const ai = new GoogleGenAI({ apiKey: key });
       const response = await ai.interactions.create({
@@ -131,7 +143,6 @@ export async function sendRequestGemini(
             args: step.arguments ?? {},
           }));
       }
-
       return response.output_text ?? "";
     } catch (error) {
       lastError = error;
@@ -139,6 +150,5 @@ export async function sendRequestGemini(
       rotateKey(modeKey, keys.length);
     }
   }
-
   throw lastError;
 }
