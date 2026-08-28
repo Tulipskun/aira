@@ -1,0 +1,15 @@
+{
+  "name": "aira",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "chromadb": "latest"
+  },
+  "devDependencies": {
+    "typescript": "latest"
+  }
+}
