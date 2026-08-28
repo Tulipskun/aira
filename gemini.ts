@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, type Interactions } from "@google/genai";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 export type Message = {
@@ -9,14 +9,16 @@ export type Message = {
   timestamp: string;
   fileName?: string;
 };
-export type GeminiRequest = { messages: Message[]; temporary?: unknown[] };
+export type GeminiRequest = { messages: Message[]; temporary?: Interactions.Step[] };
 export type FunctionCall = { id: string; name: string; args: Record<string, unknown> };
+export type FakeToolResult = { name: string; args: Record<string, unknown>; result: unknown };
 
 export interface GeminiRequestOptions {
   model?: string;
   apiKey?: string;
-  tools?: unknown[];
+  tools?: Interactions.Tool[];
   responseMode?: "text" | "tool";
+  systemInstruction?: string;
 }
 
 type KeyState = { gemini1: number; gemini2: number };
@@ -45,7 +47,7 @@ function isRetryable5xx(error: unknown): boolean { const status = errorStatus(er
 function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function backoffDelay(retry: number): number { return BASE_BACKOFF_MS * 2 ** retry + Math.floor(Math.random() * 100); }
 
-function messageStep(message: Message) {
+function messageStep(message: Message): Interactions.Step {
   const metadata = {
     ...(message.role === "user" && message.user && { user: message.user }),
     text: message.text,
@@ -53,13 +55,26 @@ function messageStep(message: Message) {
     ...(message.fileName && { file: message.fileName }),
   };
   return {
-    type: message.role === "model" ? "model_output" as const : "user_input" as const,
-    content: [{ type: "text" as const, text: JSON.stringify(metadata) }],
+    type: message.role === "model" ? "model_output" : "user_input",
+    content: [{ type: "text", text: JSON.stringify(metadata) }],
   };
 }
 
+export function fakeToolCallResult(name: string, args: Record<string, unknown>, result: unknown): Interactions.Step[] {
+  const callId = crypto.randomUUID();
+  return [
+    { type: "function_call", id: callId, name, arguments: args },
+    {
+      type: "function_result",
+      name,
+      call_id: callId,
+      result: [{ type: "text", text: JSON.stringify(result) }],
+    },
+  ];
+}
+
 export function ctxWindowCreate(
-  messages: Message[], message: string, user: string, timestamp: string, fileName?: string, temporary: unknown[] = [], userId?: string,
+  messages: Message[], message: string, user: string, timestamp: string, fileName?: string, temporary: Interactions.Step[] = [], userId?: string,
 ): GeminiRequest {
   return {
     messages: [...messages, { role: "user", userId, user, text: message, timestamp, ...(fileName && { fileName }) }],
@@ -84,9 +99,10 @@ export async function sendRequestGemini(requestBody: GeminiRequest, options: Gem
       const ai = new GoogleGenAI({ apiKey: key });
       const response = await ai.interactions.create({
         model,
-        input: requestBody.messages.flatMap(messageStep),
+        input: [...requestBody.messages.map(messageStep), ...(requestBody.temporary ?? [])],
         tools: options.tools ?? [],
-        ...(mode === "tool" ? { generationConfig: { toolChoice: { allowedTools: { mode: "any" } } } } : {}),
+        ...(options.systemInstruction && { system_instruction: options.systemInstruction }),
+        ...(mode === "tool" ? { generation_config: { tool_choice: { allowed_tools: { mode: "any" } } } } : {}),
         store: false,
       });
       if (mode === "tool") {
