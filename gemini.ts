@@ -36,28 +36,6 @@ function flatten(pairs: TurnPair[], extraTurns: Turn[] = []): Turn[] {
   return flat;
 }
 
-function toCountableContents(turns: Turn[]) {
-  return turns.map((turn) => ({
-    role: turn.role,
-    parts: turn.content.map((block) => ({
-      text: block.type === "text" ? block.text : JSON.stringify(block),
-    })),
-  }));
-}
-
-async function countTokens(
-  ai: GoogleGenAI,
-  model: string,
-  turns: Turn[]
-): Promise<number> {
-  const response = await ai.models.countTokens({
-    model,
-    contents: toCountableContents(turns),
-  });
-
-  return response.totalTokens;
-}
-
 export function createFakeToolInjection(
   toolName: string,
   fakeArgs: Record<string, unknown>,
@@ -91,28 +69,16 @@ export function createFakeToolInjection(
   ];
 }
 
-async function buildContextWindow(
-  ai: GoogleGenAI,
+function buildContextWindow(
   userMessage: string,
-  injectedTurns: Turn[] = [],
-  config: ContextConfig = {}
-): Promise<Turn[]> {
-  const finalConfig: Required<ContextConfig> = { ...DEFAULT_CONFIG, ...config };
+  injectedTurns: Turn[] = []
+): Turn[] {
   const pendingUserTurn: Turn = {
     role: "user",
     content: [{ type: "text", text: userMessage }],
   };
-  const extraTurns = [...injectedTurns, pendingUserTurn];
 
-  while (history.length > 0) {
-    const candidate = flatten(history, extraTurns);
-    const totalTokens = await countTokens(ai, finalConfig.model, candidate);
-
-    if (totalTokens <= finalConfig.maxTokens) break;
-    history.shift();
-  }
-
-  return flatten(history, extraTurns);
+  return flatten(history, [...injectedTurns, pendingUserTurn]);
 }
 
 export interface SendMessageOptions {
@@ -187,12 +153,7 @@ export async function sendMessage(
   const finalConfig: Required<ContextConfig> = { ...DEFAULT_CONFIG, ...config };
   const ai = new GoogleGenAI({ apiKey: finalConfig.apiKey });
 
-  const contextWindow = await buildContextWindow(
-    ai,
-    userMessage,
-    injectedTurns,
-    finalConfig
-  );
+  const contextWindow = buildContextWindow(userMessage, injectedTurns);
 
   const turnSteps: Turn[] = [
     ...injectedTurns,
