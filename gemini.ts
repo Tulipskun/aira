@@ -1,13 +1,13 @@
 import { GoogleGenAI } from "@google/genai";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-export type FileAttachment = { uri: string; mimeType: string };
 export type Message = {
   role: "user" | "model";
+  userId?: string;
   user?: string;
   text: string;
   timestamp: string;
-  file?: FileAttachment;
+  fileName?: string;
 };
 export type GeminiRequest = { messages: Message[]; temporary?: unknown[] };
 export type FunctionCall = { id: string; name: string; args: Record<string, unknown> };
@@ -24,95 +24,55 @@ const STATE_FILE = process.env.GEMINI_KEY_STATE_FILE ?? ".gemini-key-state.json"
 const MAX_5XX_RETRIES = 3;
 const BASE_BACKOFF_MS = 250;
 
-function envKeys(name: string): string[] {
-  return (process.env[name] ?? "").split(",").map((key) => key.trim()).filter(Boolean);
-}
-
+function envKeys(name: string): string[] { return (process.env[name] ?? "").split(",").map((key) => key.trim()).filter(Boolean); }
 function loadKeyState(): KeyState {
   if (!existsSync(STATE_FILE)) return { gemini1: 0, gemini2: 0 };
   try {
     const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-    return {
-      gemini1: Number.isInteger(state.gemini1) ? state.gemini1 : 0,
-      gemini2: Number.isInteger(state.gemini2) ? state.gemini2 : 0,
-    };
-  } catch {
-    return { gemini1: 0, gemini2: 0 };
-  }
+    return { gemini1: Number.isInteger(state.gemini1) ? state.gemini1 : 0, gemini2: Number.isInteger(state.gemini2) ? state.gemini2 : 0 };
+  } catch { return { gemini1: 0, gemini2: 0 }; }
 }
-
 const keyState = loadKeyState();
-
-function saveKeyState(): void {
-  writeFileSync(STATE_FILE, `${JSON.stringify(keyState, null, 2)}\n`);
-}
-
-function rotateKey(mode: "gemini1" | "gemini2", count: number): void {
-  keyState[mode] = (keyState[mode] + 1) % count;
-  saveKeyState();
-}
-
+function saveKeyState(): void { writeFileSync(STATE_FILE, `${JSON.stringify(keyState, null, 2)}\n`); }
+function rotateKey(mode: "gemini1" | "gemini2", count: number): void { keyState[mode] = (keyState[mode] + 1) % count; saveKeyState(); }
 function errorStatus(error: unknown): number | undefined {
   if (!error || typeof error !== "object") return undefined;
   const e = error as { status?: number; code?: number; response?: { status?: number } };
   return e.status ?? e.code ?? e.response?.status;
 }
-
 function is429(error: unknown): boolean { return errorStatus(error) === 429; }
-function isRetryable5xx(error: unknown): boolean {
-  const status = errorStatus(error);
-  return status !== undefined && status >= 500 && status <= 599;
-}
+function isRetryable5xx(error: unknown): boolean { const status = errorStatus(error); return status !== undefined && status >= 500 && status <= 599; }
 function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function backoffDelay(retry: number): number { return BASE_BACKOFF_MS * 2 ** retry + Math.floor(Math.random() * 100); }
 
 function messageStep(message: Message) {
   const metadata = {
-    user: message.user,
+    ...(message.role === "user" && message.user && { user: message.user }),
     text: message.text,
     timestamp: message.timestamp,
-    ...(message.file && { file: { uri: message.file.uri, mimeType: message.file.mimeType } }),
+    ...(message.fileName && { file: message.fileName }),
   };
-
-  const content = [
-    { type: "text" as const, text: JSON.stringify(metadata) },
-    ...(message.file
-      ? [{ type: "image" as const, uri: message.file.uri, mime_type: message.file.mimeType }]
-      : []),
-  ];
-
   return {
     type: message.role === "model" ? "model_output" as const : "user_input" as const,
-    content,
+    content: [{ type: "text" as const, text: JSON.stringify(metadata) }],
   };
 }
 
 export function ctxWindowCreate(
-  messages: Message[],
-  message: string,
-  user: string,
-  timestamp: string,
-  file?: FileAttachment,
-  temporary: unknown[] = []
+  messages: Message[], message: string, user: string, timestamp: string, fileName?: string, temporary: unknown[] = [], userId?: string,
 ): GeminiRequest {
   return {
-    messages: [...messages, { role: "user", user, text: message, timestamp, ...(file && { file }) }],
+    messages: [...messages, { role: "user", userId, user, text: message, timestamp, ...(fileName && { fileName }) }],
     temporary,
   };
 }
 
-export async function sendRequestGemini(
-  requestBody: GeminiRequest,
-  options: GeminiRequestOptions = {}
-): Promise<string | FunctionCall[]> {
+export async function sendRequestGemini(requestBody: GeminiRequest, options: GeminiRequestOptions = {}): Promise<string | FunctionCall[]> {
   const mode = options.responseMode ?? "text";
   const keys = envKeys(mode === "tool" ? "GEMINI2_API_KEYS" : "GEMINI1_API_KEYS");
   const fallbackKey = options.apiKey ?? process.env.GEMINI_API_KEY;
   if (!keys.length && !fallbackKey) throw new Error(`No API key configured for ${mode}`);
-
-  const model = options.model ?? (mode === "tool"
-    ? process.env.GEMINI2_MODEL ?? "gemini-flash-lite-latest"
-    : process.env.GEMINI1_MODEL ?? "gemini-flash-lite-latest");
+  const model = options.model ?? (mode === "tool" ? process.env.GEMINI2_MODEL ?? "gemini-flash-lite-latest" : process.env.GEMINI1_MODEL ?? "gemini-flash-lite-latest");
   const stateKey = mode === "tool" ? "gemini2" : "gemini1";
   let lastError: unknown;
   let serverRetries = 0;
@@ -126,33 +86,19 @@ export async function sendRequestGemini(
         model,
         input: requestBody.messages.flatMap(messageStep),
         tools: options.tools ?? [],
-        ...(mode === "tool"
-          ? { generationConfig: { toolChoice: { allowedTools: { mode: "any" } } } }
-          : {}),
+        ...(mode === "tool" ? { generationConfig: { toolChoice: { allowedTools: { mode: "any" } } } } : {}),
         store: false,
       });
-
       if (mode === "tool") {
-        return response.steps
-          .filter((step) => step.type === "function_call")
-          .map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
+        return response.steps.filter((step) => step.type === "function_call").map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
       }
       return response.output_text ?? "";
     } catch (error) {
       lastError = error;
-      if (is429(error) && keys.length) {
-        rotateKey(stateKey, keys.length);
-        keyAttempts++;
-        serverRetries = 0;
-        continue;
-      }
-      if (isRetryable5xx(error) && serverRetries < MAX_5XX_RETRIES) {
-        await sleep(backoffDelay(serverRetries++));
-        continue;
-      }
+      if (is429(error) && keys.length) { rotateKey(stateKey, keys.length); keyAttempts++; serverRetries = 0; continue; }
+      if (isRetryable5xx(error) && serverRetries < MAX_5XX_RETRIES) { await sleep(backoffDelay(serverRetries++)); continue; }
       throw error;
     }
   }
-
   throw lastError;
 }
