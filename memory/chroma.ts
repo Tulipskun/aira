@@ -22,6 +22,10 @@ async function collection() {
 
 export async function saveMemory(memory: Memory): Promise<void> {
   const vector = await embed(memory.text);
+  await saveMemoryVector(memory, vector);
+}
+
+export async function saveMemoryVector(memory: Memory, vector: number[]): Promise<void> {
   await (await collection()).upsert({
     ids: [memory.id],
     embeddings: [vector],
@@ -35,7 +39,10 @@ export async function saveMemory(memory: Memory): Promise<void> {
 }
 
 export async function searchMemories(text: string, limit = 5): Promise<Memory[]> {
-  const vector = await embed(text);
+  return searchMemoriesByVector(await embed(text), limit);
+}
+
+export async function searchMemoriesByVector(vector: number[], limit = 5): Promise<Memory[]> {
   const result = await (await collection()).query({
     queryEmbeddings: [vector],
     nResults: limit,
