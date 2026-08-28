@@ -16,7 +16,7 @@ export interface GeminiOptions {
   tools?: unknown[];
 }
 
-const DEFAULT_MODEL = "gemini-flash-lite-latest";
+const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-lite-latest";
 
 export async function sendMessage(
   message: string,
