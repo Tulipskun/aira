@@ -1,4 +1,4 @@
-import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest, type Message } from "./gemini";
+import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "./gemini";
 import { embed } from "./memory/embedding";
 import { saveMemory, searchMemoriesByVector, type Memory } from "./memory/chroma";
 import { getHistory, saveMessage } from "./sql/history";
@@ -12,11 +12,6 @@ export type ProcessMessageInput = {
   timestamp: string;
   fileName?: string;
   relatedUserIds?: string[];
-};
-
-export type PipelineResult = {
-  response: string;
-  background: Promise<void>;
 };
 
 const executeTool: Interactions.Tool = {
@@ -44,30 +39,20 @@ const executeTool: Interactions.Tool = {
 
 function relationshipInstructions(relationships: Relationship[]): string {
   if (!relationships.length) return "No relationship data is available for the users involved in this turn.";
-  return [
-    "Relationship state for relevant users:",
-    ...relationships.map((r) => `- ${r.userName}: state=${r.state}, xp=${r.xp}, affinity=${r.affinity}`),
-  ].join("\n");
+  return ["Relationship state for relevant users:", ...relationships.map((r) => `- ${r.userName}: state=${r.state}, xp=${r.xp}, affinity=${r.affinity}`)].join("\n");
 }
 
 function memoryContext(username: string, memories: Memory[]): Interactions.Step[] {
-  return fakeToolCallResult("search_memory", { username }, memories.map((memory) => ({
-    text: memory.text,
-    timestamp: memory.timestamp,
-    metadata: memory.metadata,
-  })));
+  return fakeToolCallResult("search_memory", { username }, memories.map((memory) => ({ text: memory.text, timestamp: memory.timestamp, metadata: memory.metadata })));
 }
 
 function addModelResponse(request: GeminiRequest, response: string, timestamp: string): GeminiRequest {
-  return {
-    ...request,
-    messages: [...request.messages, { role: "model", text: response, timestamp }],
-  };
+  return { ...request, messages: [...request.messages, { role: "model", text: response, timestamp }] };
 }
 
-function executeCommands(commands: unknown, currentUserId: string, timestamp: string): Promise<void> {
-  if (!Array.isArray(commands)) return Promise.resolve();
-  return Promise.all(commands.map(async (command) => {
+async function executeCommands(commands: unknown, currentUserId: string, timestamp: string): Promise<void> {
+  if (!Array.isArray(commands)) return;
+  await Promise.all(commands.map(async (command) => {
     if (!command || typeof command !== "object") return;
     const item = command as { name?: unknown; args?: unknown };
     if (typeof item.name !== "string" || !item.args || typeof item.args !== "object") return;
@@ -102,7 +87,7 @@ function executeCommands(commands: unknown, currentUserId: string, timestamp: st
       default:
         return;
     }
-  }).then(() => undefined));
+  }));
 }
 
 async function runBackground(request: GeminiRequest, userId: string, timestamp: string, systemInstruction: string): Promise<void> {
@@ -111,55 +96,35 @@ async function runBackground(request: GeminiRequest, userId: string, timestamp: 
     tools: [executeTool],
     systemInstruction: `${systemInstruction}\nReturn one execute call containing every background operation required for this turn.`,
   });
-
   if (!Array.isArray(result)) return;
   for (const call of result) {
-    if (call.name !== "execute") continue;
-    await executeCommands(call.args.commands, userId, timestamp);
+    if (call.name === "execute") await executeCommands(call.args.commands, userId, timestamp);
   }
 }
 
-export async function processMessage(input: ProcessMessageInput): Promise<PipelineResult> {
+export async function processMessage(input: ProcessMessageInput): Promise<string> {
   const history = getHistory(Number(process.env.HISTORY_LIMIT ?? 50));
-  const request = ctxWindowCreate(
-    history,
-    input.text,
-    input.user,
-    input.timestamp,
-    input.fileName,
-    [],
-    input.userId,
-  );
+  const request = ctxWindowCreate(history, input.text, input.user, input.timestamp, input.fileName, [], input.userId);
 
-  saveMessage({
-    role: "user",
-    userId: input.userId,
-    user: input.user,
-    text: input.text,
-    timestamp: input.timestamp,
-    fileName: input.fileName,
-  });
+  saveMessage({ role: "user", userId: input.userId, user: input.user, text: input.text, timestamp: input.timestamp, fileName: input.fileName });
 
   const vector = await embed(input.text);
   const memories = await searchMemoriesByVector(vector, Number(process.env.MEMORY_RESULTS ?? 5));
   const relatedUserIds = [...new Set([input.userId, ...(input.relatedUserIds ?? [])])];
   const relationships = getRelationships(relatedUserIds);
   const systemInstruction = relationshipInstructions(relationships);
-  const temporary = [
-    ...request.temporary ?? [],
-    ...memoryContext(input.user, memories),
-  ];
+  const temporary = [...(request.temporary ?? []), ...memoryContext(input.user, memories)];
   const gemini1Request = { ...request, temporary };
 
-  const response = await sendRequestGemini(gemini1Request, {
-    responseMode: "text",
-    systemInstruction,
-  }) as string;
-
+  const response = await sendRequestGemini(gemini1Request, { responseMode: "text", systemInstruction }) as string;
   saveMessage({ role: "model", text: response, timestamp: input.timestamp });
 
   const completedRequest = addModelResponse(gemini1Request, response, input.timestamp);
-  const background = Promise.resolve().then(() => runBackground(completedRequest, input.userId, input.timestamp, systemInstruction));
+  setTimeout(() => {
+    void runBackground(completedRequest, input.userId, input.timestamp, systemInstruction).catch((error) => {
+      console.error("[PIPELINE] background processing failed", error);
+    });
+  }, 0);
 
-  return { response, background };
+  return response;
 }
