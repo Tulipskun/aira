@@ -1,8 +1,8 @@
-import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "./gemini";
-import { embed } from "./memory/embedding";
-import { saveMemory, searchMemoriesByVector, type Memory } from "./memory/chroma";
-import { getHistory, saveMessage } from "./sql/history";
-import { adjustRelationshipStats, getRelationships, type Relationship } from "./sql/relationship";
+import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "./gemini.js";
+import { embed } from "./memory/embedding.js";
+import { saveMemory, searchMemoriesByVector, type Memory } from "./memory/chroma.js";
+import { getHistory, saveMessage } from "./sql/history.js";
+import { adjustRelationshipStats, getRelationships, type Relationship } from "./sql/relationship.js";
 import type { Interactions } from "@google/genai";
 
 export type ProcessMessageInput = {
