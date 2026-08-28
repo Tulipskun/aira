@@ -19,6 +19,8 @@ Flow:
 13. Gemini2 is forced to call the single `execute` tool.
 14. Background execution applies relationship stats and ingests new memories into Chroma.
 
+Gemini never receives Discord IDs. Gemini2 names users by username in `execute` commands; the application resolves that username back to the internal Discord `user_id` using the SQL relationship records before updating state.
+
 Discord user IDs are used only by the application and SQL. They are never included in Gemini context or instructions.
 
 Fake tool steps are request-only and are never persisted to SQL.
