@@ -14,6 +14,7 @@ export interface GeminiRequestOptions {
   model?: string;
   apiKey?: string;
   tools?: unknown[];
+  responseMode?: "text" | "tool";
 }
 
 const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-lite-latest";
