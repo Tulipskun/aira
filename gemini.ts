@@ -65,6 +65,30 @@ function is429(error: unknown): boolean {
   return e.status === 429 || e.code === 429 || e.response?.status === 429;
 }
 
+function messageStep(message: Message): Record<string, unknown> {
+  const content: Record<string, unknown>[] = [
+    {
+      type: "text",
+      text: JSON.stringify({
+        user: message.user,
+        text: message.text,
+        timestamp: message.timestamp,
+        ...(message.file && { file: { uri: message.file.uri, mimeType: message.file.mimeType } }),
+      }),
+    },
+  ];
+
+  if (message.file) {
+    content.push({
+      type: "image",
+      uri: message.file.uri,
+      mime_type: message.file.mimeType,
+    });
+  }
+
+  return { type: "user_input", content };
+}
+
 export function ctxWindowCreate(
   messages: Message[],
   message: string,
@@ -100,17 +124,33 @@ export async function sendRequestGemini(
       const ai = new GoogleGenAI({ apiKey: key });
       const response = await ai.interactions.create({
         model,
-        input: JSON.stringify({ messages: requestBody.messages, ...(requestBody.temporary?.length && { temporary: requestBody.temporary }) }),
+        input: [
+          ...requestBody.messages.map(messageStep),
+          ...(requestBody.temporary ?? []),
+        ] as never,
         tools: options.tools ?? [],
-        ...(mode === "tool" ? { generation_config: { tool_choice: "any" } } : {}),
+        ...(mode === "tool"
+          ? {
+              generation_config: {
+                tool_choice: {
+                  allowed_tools: { mode: "any" },
+                },
+              },
+            }
+          : {}),
         store: false,
       });
 
       if (mode === "tool") {
-        return (response.steps ?? [])
-          .filter((step: any) => step.type === "function_call")
-          .map((step: any) => ({ id: step.id ?? "", name: step.name ?? "", args: step.arguments ?? {} }));
+        return response.steps
+          .filter((step) => step.type === "function_call")
+          .map((step) => ({
+            id: step.id,
+            name: step.name,
+            args: step.arguments as Record<string, unknown>,
+          }));
       }
+
       return response.output_text ?? "";
     } catch (error) {
       lastError = error;
@@ -118,5 +158,6 @@ export async function sendRequestGemini(
       rotateKey(stateKey, keys.length);
     }
   }
+
   throw lastError;
 }
