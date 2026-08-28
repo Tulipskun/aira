@@ -6,9 +6,13 @@ Flow:
 
 `text -> Gemini Embedding 2 -> vector -> ChromaDB`
 
-Search:
+Search in the main pipeline:
 
-`query -> Gemini Embedding 2 -> vector -> ChromaDB -> memories`
+`new user text -> Gemini Embedding 2 -> ChromaDB -> temporary search_memory(username) result -> Gemini1`
+
+Background ingestion:
+
+`Gemini2 execute(ingest_memory(...)) -> Gemini Embedding 2 -> ChromaDB`
 
 The embedding model is `gemini-embedding-2` by default and can be overridden with `GEMINI_EMBEDDING2_MODEL`. Output dimension defaults to 768 and can be changed with `GEMINI_EMBEDDING2_DIMENSION`.
 
