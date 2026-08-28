@@ -41,7 +41,7 @@ export function ctxWindowCreate(history: Turn[], message: string, temporaryTurns
   return [...history, user(message), ...temporaryTurns];
 }
 
-export async function sendRequestGemini1(
+export async function sendRequestGemini(
   request_body: Turn[],
   options: GeminiRequestOptions = {}
 ): Promise<string | FunctionCall[]> {
