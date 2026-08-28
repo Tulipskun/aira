@@ -35,7 +35,7 @@ export function getRelationships(userIds: string[]): Relationship[] {
 }
 
 export function upsertRelationship(value: Relationship): void {
-  db.run(`
+  db.query(`
     INSERT INTO relationships (user_id, user_name, state, xp, affinity)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
@@ -43,7 +43,7 @@ export function upsertRelationship(value: Relationship): void {
       state = excluded.state,
       xp = excluded.xp,
       affinity = excluded.affinity
-  `, value.userId, value.userName, value.state, value.xp, value.affinity);
+  `).run(value.userId, value.userName, value.state, value.xp, value.affinity);
 }
 
 export function adjustRelationshipStats(userId: string, delta: { affinity?: number; xp?: number; state?: string; userName?: string }): void {
