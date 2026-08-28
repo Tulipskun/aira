@@ -10,6 +10,7 @@
     "chromadb": "latest"
   },
   "devDependencies": {
+    "@types/bun": "latest",
     "typescript": "latest"
   }
 }
