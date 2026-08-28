@@ -19,12 +19,20 @@ export interface GeminiOptions {
 const DEFAULT_MODEL = "gemini-flash-lite-latest";
 
 export async function sendMessage(
-  input: Turn[],
+  message: string,
+  history: Turn[] = [],
+  temporaryTurns: Turn[] = [],
   options: GeminiOptions = {}
 ): Promise<string> {
   const ai = new GoogleGenAI({
     apiKey: options.apiKey ?? process.env.GEMINI_API_KEY,
   });
+
+  const input: Turn[] = [
+    ...history,
+    user(message),
+    ...temporaryTurns,
+  ];
 
   const response = await ai.interactions.create({
     model: options.model ?? DEFAULT_MODEL,
