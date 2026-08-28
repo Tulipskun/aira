@@ -2,7 +2,13 @@ import { GoogleGenAI } from "@google/genai";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 export type FileAttachment = { uri: string; mimeType: string };
-export type Message = { user: string; text: string; timestamp: string; file?: FileAttachment };
+export type Message = {
+  role: "user" | "model";
+  user?: string;
+  text: string;
+  timestamp: string;
+  file?: FileAttachment;
+};
 export type GeminiRequest = { messages: Message[]; temporary?: unknown[] };
 export type FunctionCall = { id: string; name: string; args: Record<string, unknown> };
 
@@ -52,39 +58,33 @@ function errorStatus(error: unknown): number | undefined {
   return e.status ?? e.code ?? e.response?.status;
 }
 
-function is429(error: unknown): boolean {
-  return errorStatus(error) === 429;
-}
-
+function is429(error: unknown): boolean { return errorStatus(error) === 429; }
 function isRetryable5xx(error: unknown): boolean {
   const status = errorStatus(error);
   return status !== undefined && status >= 500 && status <= 599;
 }
+function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function backoffDelay(retry: number): number { return BASE_BACKOFF_MS * 2 ** retry + Math.floor(Math.random() * 100); }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+function messageStep(message: Message) {
+  const metadata = {
+    user: message.user,
+    text: message.text,
+    timestamp: message.timestamp,
+    ...(message.file && { file: { uri: message.file.uri, mimeType: message.file.mimeType } }),
+  };
 
-function backoffDelay(retry: number): number {
-  return BASE_BACKOFF_MS * 2 ** retry + Math.floor(Math.random() * 100);
-}
+  const content = [
+    { type: "text" as const, text: JSON.stringify(metadata) },
+    ...(message.file
+      ? [{ type: "image" as const, uri: message.file.uri, mime_type: message.file.mimeType }]
+      : []),
+  ];
 
-function messageStep(message: Message): Record<string, unknown> {
-  const content: Record<string, unknown>[] = [{
-    type: "text",
-    text: JSON.stringify({
-      user: message.user,
-      text: message.text,
-      timestamp: message.timestamp,
-      ...(message.file && { file: { uri: message.file.uri, mimeType: message.file.mimeType } }),
-    }),
-  }];
-
-  if (message.file) {
-    content.push({ type: "image", uri: message.file.uri, mime_type: message.file.mimeType });
-  }
-
-  return { type: "user_input", content };
+  return {
+    type: message.role === "model" ? "model_output" as const : "user_input" as const,
+    content,
+  };
 }
 
 export function ctxWindowCreate(
@@ -96,7 +96,7 @@ export function ctxWindowCreate(
   temporary: unknown[] = []
 ): GeminiRequest {
   return {
-    messages: [...messages, { user, text: message, timestamp, ...(file && { file }) }],
+    messages: [...messages, { role: "user", user, text: message, timestamp, ...(file && { file }) }],
     temporary,
   };
 }
@@ -124,10 +124,10 @@ export async function sendRequestGemini(
       const ai = new GoogleGenAI({ apiKey: key });
       const response = await ai.interactions.create({
         model,
-        input: [...requestBody.messages.map(messageStep), ...(requestBody.temporary ?? [])] as never,
+        input: requestBody.messages.flatMap(messageStep),
         tools: options.tools ?? [],
         ...(mode === "tool"
-          ? { generation_config: { tool_choice: { allowed_tools: { mode: "any" } } } }
+          ? { generationConfig: { toolChoice: { allowedTools: { mode: "any" } } } }
           : {}),
         store: false,
       });
@@ -135,29 +135,21 @@ export async function sendRequestGemini(
       if (mode === "tool") {
         return response.steps
           .filter((step) => step.type === "function_call")
-          .map((step) => ({
-            id: step.id,
-            name: step.name,
-            args: step.arguments as Record<string, unknown>,
-          }));
+          .map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
       }
       return response.output_text ?? "";
     } catch (error) {
       lastError = error;
-
       if (is429(error) && keys.length) {
         rotateKey(stateKey, keys.length);
         keyAttempts++;
         serverRetries = 0;
         continue;
       }
-
       if (isRetryable5xx(error) && serverRetries < MAX_5XX_RETRIES) {
-        await sleep(backoffDelay(serverRetries));
-        serverRetries++;
+        await sleep(backoffDelay(serverRetries++));
         continue;
       }
-
       throw error;
     }
   }
