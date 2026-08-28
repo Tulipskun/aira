@@ -10,7 +10,7 @@ export type Turn = {
   content: Content[];
 };
 
-export interface GeminiOptions {
+export interface GeminiRequestOptions {
   model?: string;
   apiKey?: string;
   tools?: unknown[];
@@ -18,25 +18,17 @@ export interface GeminiOptions {
 
 const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-lite-latest";
 
-export async function sendMessage(
-  message: string,
-  history: Turn[] = [],
-  temporaryTurns: Turn[] = [],
-  options: GeminiOptions = {}
+export async function sendRequestGemini1(
+  request_body: Turn[],
+  options: GeminiRequestOptions = {}
 ): Promise<string> {
   const ai = new GoogleGenAI({
     apiKey: options.apiKey ?? process.env.GEMINI_API_KEY,
   });
 
-  const input: Turn[] = [
-    ...history,
-    user(message),
-    ...temporaryTurns,
-  ];
-
   const response = await ai.interactions.create({
     model: options.model ?? DEFAULT_MODEL,
-    input: input as never,
+    input: request_body as never,
     tools: options.tools ?? [],
     store: false,
   });
@@ -48,24 +40,21 @@ export function user(text: string): Turn {
   return { role: "user", content: [{ type: "text", text }] };
 }
 
-export function fakeToolCall(
+export function fakeTool(
   name: string,
   args: Record<string, unknown>,
-  id = `call_${Date.now()}`
-): Turn {
-  return {
-    role: "model",
-    content: [{ type: "function_call", id, name, args }],
-  };
-}
+  result: unknown
+): Turn[] {
+  const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-export function fakeToolResult(
-  name: string,
-  result: unknown,
-  callId: string
-): Turn {
-  return {
-    role: "tool",
-    content: [{ type: "function_result", call_id: callId, name, result }],
-  };
+  return [
+    {
+      role: "model",
+      content: [{ type: "function_call", id: callId, name, args }],
+    },
+    {
+      role: "tool",
+      content: [{ type: "function_result", call_id: callId, name, result }],
+    },
+  ];
 }
