@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, type Message } from "discord.js";
 import { processMessage } from "./pipeline.js";
 import { MessageScheduler, type ScheduledMessage } from "./scheduler.js";
+import { fetchEmotionImage } from "./images.js";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error("DISCORD_TOKEN is required");
@@ -65,7 +66,11 @@ const scheduler = new MessageScheduler({
       ? `${result.text}\n\n${result.relationships.map((r) => `${r.userName}: ${r.state} (${r.affinity})`).join("\n")}`
       : result.text;
 
-    await channel.send({ content });
+    const image = await fetchEmotionImage(result.image);
+    await channel.send({
+      content,
+      ...(image ? { files: [{ attachment: image, name: result.image }] } : {}),
+    });
   },
 });
 
