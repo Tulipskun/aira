@@ -1,10 +1,12 @@
 import { ChromaClient } from "chromadb";
 import { embed } from "./embedding.js";
 
+const chromaUrl = process.env.CHROMA_URL ?? "http://127.0.0.1:8000";
+const parsedUrl = new URL(chromaUrl);
 const client = new ChromaClient({
-  host: process.env.CHROMA_HOST ?? "localhost",
-  port: Number(process.env.CHROMA_PORT ?? 8000),
-  ssl: process.env.CHROMA_SSL === "true",
+  host: parsedUrl.hostname,
+  port: Number(parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80)),
+  ssl: parsedUrl.protocol === "https:",
 });
 const collectionName = process.env.CHROMA_COLLECTION ?? "aira_memories";
 
@@ -47,9 +49,7 @@ function primitiveMetadata(value: unknown): Record<string, Primitive> | undefine
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const result: Record<string, Primitive> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (item === null || typeof item === "string" || typeof item === "number" || typeof item === "boolean") {
-      result[key] = item;
-    }
+    if (item === null || typeof item === "string" || typeof item === "number" || typeof item === "boolean") result[key] = item;
   }
   return Object.keys(result).length ? result : undefined;
 }
@@ -60,7 +60,6 @@ export async function searchMemoriesByVector(vector: number[], limit = 5): Promi
     nResults: limit,
     include: ["documents", "metadatas", "distances"],
   });
-
   const ids = result.ids?.[0] ?? [];
   const documents = result.documents?.[0] ?? [];
   const metadatas = result.metadatas?.[0] ?? [];
