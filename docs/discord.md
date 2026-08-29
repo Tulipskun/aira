@@ -2,25 +2,30 @@
 
 ## Message handling
 
-- Messages from bots are ignored.
-- Any message beginning with `!` is treated as a command and never enters the AI pipeline.
+- Bot messages are ignored.
+- Messages beginning with `!` are command messages and never enter the AI pipeline.
 - Unknown `!` commands are ignored.
-- Registered commands currently: `!islacomehere`, `!unset`.
-
-## Owner-only commands
-
-`DISCORD_OWNER_ID` identifies the only Discord user allowed to execute the registered commands.
-
-- `!islacomehere` — locks the AI response channel to the channel where the command was sent.
-- `!unset` — removes the channel lock.
-- Non-owner attempts are ignored.
+- Registered commands are `!islacomehere` and `!unset`.
+- Registered commands are owner-only via `DISCORD_OWNER_ID`.
 
 ## Channel lock
 
-Normal AI messages are accepted only when `message.channelId` matches the persisted response channel ID.
+The AI responds only in the configured channel.
 
-The channel lock is stored in `data/discord-config.json`, so it survives process restart. `data/` is gitignored and must remain local runtime state.
+`!islacomehere` sets the current channel as the AI channel.
 
-If no channel is configured, normal messages are ignored until the owner runs `!islacomehere`.
+`!unset` clears the channel lock.
 
-Discord user IDs are used internally for identity but are not sent to Gemini.
+The configuration is persisted in `data/discord-config.json` and therefore survives process restart. `data/` is runtime state and is gitignored.
+
+If no channel is configured, normal messages are ignored.
+
+## Identity and attachments
+
+Discord `userId` is the stable internal identity and is used for SQL history/relationship data. It is not sent to Gemini.
+
+The application keeps only the attachment filename in conversation data. Bundled emotion images are resolved locally from `images/`; no legacy-repository fetch is used at runtime.
+
+## Scheduling
+
+Accepted messages are passed to `MessageScheduler`. Scheduling is per user: a user's new message resets the 5-second debounce, with a 12-second maximum wait. A message from another user interrupts the pending batch so the previous user's response can be processed immediately.
