@@ -8,12 +8,38 @@ Chroma is the long-term vector memory database. Chroma stores vectors and metada
 
 SQLite is not the semantic memory store. It stores conversation history and structured relationship/profile data.
 
+## Chroma runtime
+
+Chroma runs as a separate local service using `docker-compose.yml`. Its persistent storage is mounted from:
+
+```text
+.aira/chroma/
+```
+
+The application connects to `http://127.0.0.1:8000` by default through `CHROMA_URL`. The Chroma service stores its database/vector data under `/data` inside the container, which is mapped to `.aira/chroma` on the host.
+
+`.aira/` is ignored by Git, so Chroma runtime data is never committed to the repository.
+
+Start it with:
+
+```bash
+docker compose up -d chroma
+```
+
+Stop it with:
+
+```bash
+docker compose down
+```
+
 ## Retrieval
 
 ```text
 current user input
   -> Gemini Embedding 2
-  -> Chroma similarity search
+  -> local Chroma server
+  -> .aira/chroma
+  -> similarity search
   -> relevant memories
   -> temporary search_memory(username) result
   -> Gemini 1
@@ -29,14 +55,11 @@ Gemini 2 may return `ingest_memory(...)` as part of its forced execute operation
 Gemini 2
   -> ingest_memory
   -> Gemini Embedding 2
-  -> Chroma
+  -> local Chroma server
+  -> .aira/chroma
 ```
 
 Memory ingestion that is not required to construct the current Discord response may run after the response has been sent.
-
-## Runtime storage
-
-The Node application's local runtime state is stored under `.aira/` and ignored by Git. Chroma itself is accessed through `CHROMA_URL` and is not the SQLite database.
 
 ## Request isolation
 
