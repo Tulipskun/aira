@@ -10,3 +10,4 @@ data/
 !.env.example
 *.bak
 .discord-attachments/
+project_knowledge.md
