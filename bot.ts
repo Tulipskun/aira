@@ -70,7 +70,7 @@ const scheduler = new MessageScheduler({
     });
 
     const channel = await client.channels.fetch(responseChannelId);
-    if (!channel?.isTextBased()) return;
+    if (!channel || !channel.isTextBased() || !("send" in channel)) return;
 
     const image = await fetchEmotionImage(result.image);
     const embed = new EmbedBuilder()
