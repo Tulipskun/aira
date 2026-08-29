@@ -62,9 +62,17 @@ function messageStep(message: Message): Interactions.Step {
   };
 }
 
+// The Interactions API rejects a `function_call` step unless the model turn that "made" the
+// call is present too: it needs a `thought` step carrying a valid `signature` right before it.
+// Without it every request fails with 400 "Request contains an invalid argument."; with a
+// malformed signature it fails with 400 "Corrupted thought signature.". The signature is not
+// bound to the payload, so one captured value can be reused across requests and models.
+const THOUGHT_SIGNATURE = process.env.GEMINI1_THOUGHT_SIGNATURE ?? "El4KXAERTTIPV5DSwWOxBfzxqrZ7KbEV9e9KtO4jGvcB6fuuTxysDRrjCc+qdvx4lAPLBxk1qBtDEvIfZpovKWuoS8XqngT1bXfW4W0Bar04RyQJbG7rvweMa71A1cCR";
+
 export function fakeToolCallResult(name: string, args: Record<string, unknown>, result: unknown): Interactions.Step[] {
   const callId = crypto.randomUUID();
   return [
+    { type: "thought", signature: THOUGHT_SIGNATURE },
     { type: "function_call", id: callId, name, arguments: args },
     { type: "function_result", name, call_id: callId, result: [{ type: "text", text: JSON.stringify(result) }] },
   ];
