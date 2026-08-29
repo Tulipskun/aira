@@ -7,6 +7,7 @@ import { getUserProfiles, type UserProfile } from "../sql/profile.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
+import type { Interactions } from "@google/genai";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..");
 
@@ -17,6 +18,31 @@ export type ProcessMessageResult = { text: string; image?: string };
 const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
 
 const RELATIONSHIP_LABELS: Record<string, string> = { stranger: "คนแปลกหน้า", friend: "เพื่อน", close_friend: "เพื่อนสนิท", crush: "คนที่ไอล่าชอบ", lover: "คนรัก", soulmate: "คู่ชีวิต", enemy: "ศัตรู", sibling: "พี่น้อง", family: "ครอบครัว" };
+
+const EXECUTE_TOOL: Interactions.Tool = {
+  type: "function",
+  name: "execute",
+  description: "Apply relationship, memory, and image operations decided from the current turn.",
+  parameters: {
+    type: "object",
+    properties: {
+      operations: {
+        type: "array",
+        description: "Operations to apply.",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", enum: ["adjust_affinity", "add_xp", "set_relationship", "ingest_memory", "select_image"] },
+            args: { type: "object" },
+          },
+          required: ["name", "args"],
+        },
+      },
+    },
+    required: ["operations"],
+  },
+};
+
 function userProfileBlock(profile: UserProfile | null, relationship: Relationship | null): string {
   const name = profile?.name ?? relationship?.userName ?? "ไม่ทราบชื่อ";
   const relationshipText = relationship ? RELATIONSHIP_LABELS[relationship.state] ?? relationship.state : "ไม่มีข้อมูลความสัมพันธ์";
@@ -24,11 +50,17 @@ function userProfileBlock(profile: UserProfile | null, relationship: Relationshi
   const facts = profile?.facts.length ? profile.facts.map((fact) => `- ${fact}`).join("\n") : "- ไม่มี";
   return `<user_profile>\nชื่อ: ${name}\nความสัมพันธ์กับ Isla: ${relationshipText}\nฉายาที่ Isla ตั้งให้: ${nicknames}\nfact:\n${facts}\n</user_profile>`;
 }
+
 function userMemoryBlock(memories: { text: string; timestamp: string }[]): string {
   const content = memories.length ? memories.map((memory) => `- ${memory.text}`).join("\n") : "- ไม่มีความทรงจำที่เกี่ยวข้อง";
   return `<user_memory>\n${content}\n</user_memory>`;
 }
-async function runGemini2(request: GeminiRequest): Promise<ExecuteItem[]> { const result = await sendRequestGemini(request, { responseMode: "tool" }); return typeof result === "string" ? [] : result.map((call) => ({ name: call.name, args: call.args })); }
+
+async function runGemini2(request: GeminiRequest): Promise<ExecuteItem[]> {
+  const result = await sendRequestGemini(request, { responseMode: "tool", tools: [EXECUTE_TOOL] });
+  return typeof result === "string" ? [] : result.map((call) => ({ name: call.name, args: call.args }));
+}
+
 async function applyExecute(items: ExecuteItem[], userId: string, timestamp: string): Promise<string | undefined> {
   let selectedImage: string | undefined;
   for (const item of items) {
