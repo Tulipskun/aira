@@ -9,7 +9,8 @@
   "dependencies": {
     "@google/genai": "latest",
     "chromadb": "latest",
-    "discord.js": "latest"
+    "discord.js": "latest",
+    "dotenv": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",
