@@ -23,7 +23,7 @@ Gemini 2 is awaited before the Discord reply because its relationship/state outp
 
 ## Discord commands
 
-`!islacomehere` and `!unset` are owner-only. `!islacomehere` locks the AI to the current channel; `!unset` removes the lock. The channel configuration persists in `data/discord-config.json` across restart.
+`!islacomehere` and `!unset` are owner-only. `!islacomehere` locks the AI to the current channel; `!unset` removes the lock. The channel configuration persists in `.aira/discord-config.json` across restart.
 
 Unknown `!` commands are ignored and do not enter the AI pipeline. Normal messages from channels other than the configured channel are ignored.
 
@@ -32,7 +32,7 @@ Unknown `!` commands are ignored and do not enter the AI pipeline. Normal messag
 - SQLite: conversation history and structured relationship/state.
 - Chroma: long-term semantic memory.
 - `images/`: bundled emotion assets selected by filename.
-- `data/`: persistent runtime configuration; not committed.
+- `.aira/`: persistent runtime configuration; not committed.
 
 ## Setup
 

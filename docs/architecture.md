@@ -4,14 +4,14 @@
 
 ```text
 Discord
-  -> bot.ts
-  -> command filter + channel lock
-  -> MessageScheduler
-  -> pipeline.ts
-  -> Gemini Embedding 2
-  -> Chroma similarity search
-  -> SQLite history + relationship + profile
-  -> Gemini 1
+  -> src/bot/bot.ts
+  -> command filter + channel lock (src/bot/commands.ts)
+  -> MessageScheduler (src/pipeline/scheduler.ts)
+  -> src/pipeline/pipeline.ts
+  -> Gemini Embedding 2 (src/memory/embedding.ts)
+  -> Chroma similarity search (src/memory/chroma.ts)
+  -> SQLite history + relationship + profile (src/sql/)
+  -> Gemini 1 (src/gemini/client.ts)
   -> Gemini 2 (must wait for Gemini 1)
   -> execute
   -> SQLite relationship/profile + Chroma memory
@@ -31,7 +31,7 @@ All model names are configurable from `.env` and are centralized in `config.ts`.
 
 API keys remain separate per model role: `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, and `GEMINI_EMBEDDING2_API_KEYS`.
 
-`GEMINI1_SYSTEM_PROMPT_FILE` points to the editable Gemini 1 character/system prompt. Default: `./prompts/isla.md`.
+`GEMINI1_SYSTEM_PROMPT_FILE` points to the editable Gemini 1 character/system prompt. Default: `./src/gemini/prompts/isla.md`.
 
 Gemini Embedding 2 generates vectors for Chroma retrieval and long-term memory ingestion. Chroma is only the vector database.
 

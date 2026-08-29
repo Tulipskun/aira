@@ -1,6 +1,6 @@
 # AI Pipeline
 
-`pipeline.ts` processes a scheduled batch from Discord.
+`src/pipeline/pipeline.ts` processes a scheduled batch from Discord.
 
 ## Request path
 
@@ -22,7 +22,7 @@
 
 ## Gemini 1 user profile
 
-The character/system prompt is loaded from `GEMINI1_SYSTEM_PROMPT_FILE` (default `./prompts/isla.md`) and is not hardcoded in `pipeline.ts`.
+The character/system prompt is loaded from `GEMINI1_SYSTEM_PROMPT_FILE` (default `./src/gemini/prompts/isla.md`) and is not hardcoded in `pipeline.ts`.
 
 The dynamic profile is appended after that prompt:
 

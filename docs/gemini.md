@@ -9,7 +9,7 @@ Gemini 1 is the dialogue model.
 Its `systemInstruction` is assembled at runtime:
 
 ```text
-prompts/isla.md
+src/gemini/prompts/isla.md
       +
 <user_profile>...</user_profile>
 ```

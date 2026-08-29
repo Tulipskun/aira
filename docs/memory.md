@@ -10,27 +10,15 @@ SQLite is not the semantic memory store. It stores conversation history and stru
 
 ## Chroma runtime
 
-Chroma runs as a separate local service using `docker-compose.yml`. Its persistent storage is mounted from:
+Chroma runs as a separate local service started by the Bun supervisor (`scripts/supervisor.ts`). Its persistent storage is:
 
 ```text
 .aira/chroma/
 ```
 
-The application connects to `http://127.0.0.1:8000` by default through `CHROMA_URL`. The Chroma service stores its database/vector data under `/data` inside the container, which is mapped to `.aira/chroma` on the host.
+The application connects to `http://127.0.0.1:8000` by default through `CHROMA_URL`. The supervisor starts the local chroma binary with `--path .aira/chroma` and waits for its heartbeat before starting Aira.
 
 `.aira/` is ignored by Git, so Chroma runtime data is never committed to the repository.
-
-Start it with:
-
-```bash
-docker compose up -d chroma
-```
-
-Stop it with:
-
-```bash
-docker compose down
-```
 
 ## Retrieval
 

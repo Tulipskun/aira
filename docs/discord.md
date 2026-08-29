@@ -16,7 +16,7 @@ The AI responds only in the configured channel.
 
 `!unset` clears the channel lock.
 
-The configuration is persisted in `data/discord-config.json` and therefore survives process restart. `data/` is runtime state and is gitignored.
+The configuration is persisted in `.aira/discord-config.json` and therefore survives process restart. `.aira/` is runtime state and is gitignored.
 
 If no channel is configured, normal messages are ignored.
 
