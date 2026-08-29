@@ -5,9 +5,9 @@ import { handleCommand, isKnownCommand } from "./commands.js";
 import { createOnFlush, toScheduledMessage } from "./message-handler.js";
 import { getResponseChannelId } from "./discord-config.js";
 
-const token = process.env.DISCORD_TOKEN;
+const token = process.env.ISLA_TOKEN;
 const ownerId = process.env.DISCORD_OWNER_ID;
-if (!token) throw new Error("DISCORD_TOKEN is required");
+if (!token) throw new Error("ISLA_TOKEN is required");
 if (!ownerId) throw new Error("DISCORD_OWNER_ID is required");
 
 const client = new Client({

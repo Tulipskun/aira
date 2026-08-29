@@ -36,7 +36,7 @@ Unknown `!` commands are ignored and do not enter the AI pipeline. Normal messag
 
 ## Setup
 
-Copy `.env.example` to `.env` and fill in the Discord token, owner ID, Gemini models/keys, and service endpoints.
+Copy `.env.example` to `.env` and fill in `ISLA_TOKEN` (the bot's Discord token), owner ID, Gemini models/keys, and service endpoints.
 
 ```bash
 bun install
