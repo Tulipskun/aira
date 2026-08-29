@@ -1,41 +1,49 @@
 # Architecture
 
-## Flow
+## Main flow
 
 ```text
 Discord
   -> bot.ts
-  -> command filter / MessageScheduler
+  -> command filter + channel lock
+  -> MessageScheduler
   -> pipeline.ts
   -> Embedding 2
-  -> Chroma search
-  -> SQL relationship
+  -> Chroma memory search
+  -> SQL history + relationship
   -> Gemini 1
-  -> Gemini 2 (wait for Gemini 1)
-  -> execute parser
+  -> Gemini 2 (must wait for Gemini 1)
+  -> forced execute parser
   -> SQL relationship/stats
   -> select_image(filename)
-  -> image filename registry
-  -> fetch legacy emotion asset
+  -> local images/<filename>
   -> final Discord response + image
-  -> background memory embedding/write to Chroma
 ```
 
-Gemini 2 is part of the response path because its relationship/state result and selected emotion image are required before replying to the user. Only work that is not required for the current response, such as long-term memory embedding/write, may run after the response.
+Gemini 2 is part of the response path. The bot does not reply until Gemini 2 has returned because relationship/state changes and `select_image` may be required to build the final response.
 
-## Emotion images
+Only work that is not required for the current response may run afterward, such as embedding and persisting newly ingested long-term memory.
 
-`select_image` returns a filename. `images.ts` validates that filename against the known emotion-image registry and resolves it to the corresponding asset in the legacy `AI-roleplay-chat/images` repository. The bot fetches the asset and sends it as a Discord attachment.
+## Multi-user input
 
-The image filename is not treated as an arbitrary URL, so Gemini cannot make the bot fetch an unrelated resource.
+The scheduler batches messages per Discord `userId`. The pipeline receives the batch as normal application data and formats author names/timestamps for Gemini. Discord IDs remain internal and are never sent to Gemini.
 
-## Identity
+## Data stores
 
-- Discord `userId` is the stable internal identity.
-- Username is display/context data and may change.
-- Discord user IDs are not sent to Gemini.
-- File content is not stored in history; only the filename is stored.
+- SQLite: conversation history, relationship, XP, affinity and structured state.
+- Chroma: long-term memory vectors.
+- Local `images/`: bundled emotion assets.
+- `data/discord-config.json`: persistent Discord channel configuration.
 
-## Commands
+## Image flow
 
-Messages beginning with `!` are ignored unless the command is registered. Registered commands are handled separately from the AI pipeline.
+`select_image` returns a filename, not a URL. `images.ts` validates it against the bundled image registry and resolves `./images/<filename>`. No runtime fetch from the legacy repository is used.
+
+## Commands and channel lock
+
+Messages beginning with `!` never enter the AI pipeline. Registered commands are owner-only.
+
+- `!islacomehere`: locks the AI channel to the current Discord channel.
+- `!unset`: removes the channel lock.
+
+The channel lock persists across restart. Normal messages from other channels are ignored.
