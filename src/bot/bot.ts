@@ -1,7 +1,8 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, type Message } from "discord.js";
+import { Client, Events, GatewayIntentBits, type Message } from "discord.js";
 import { MessageScheduler } from "../pipeline/scheduler.js";
 import { handleCommand, isKnownCommand } from "./commands.js";
+import { handleIslaCommand, ISLA_COMMAND_NAME } from "./interactions.js";
 import { createOnFlush, toScheduledMessage } from "./message-handler.js";
 import { getResponseChannelId } from "./discord-config.js";
 
@@ -43,6 +44,17 @@ client.on("messageCreate", async (message: Message) => {
 
   scheduler.interruptByOtherUser(scheduled.userId);
   scheduler.push(scheduled);
+});
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand() || interaction.commandName !== ISLA_COMMAND_NAME) return;
+  try {
+    await handleIslaCommand(interaction);
+  } catch (error) {
+    // Never let a failed reply become an unhandled rejection: the interaction may already be
+    // answered, so log only.
+    console.error(`[DISCORD] /${ISLA_COMMAND_NAME} handler failed: ${String((error as Error)?.message ?? error)}`);
+  }
 });
 
 process.once("SIGINT", () => scheduler.flushAll());
