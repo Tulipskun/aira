@@ -50,10 +50,8 @@ export class MessageScheduler {
   }
 
   interruptByOtherUser(userId: string): void {
-    const now = Date.now();
-    for (const [pendingUserId, pending] of this.pending) {
-      if (pendingUserId === userId) continue;
-      if (now - pending.firstAt >= this.debounceMs) void this.flush(pendingUserId);
+    for (const pendingUserId of this.pending.keys()) {
+      if (pendingUserId !== userId) this.flush(pendingUserId);
     }
   }
 
