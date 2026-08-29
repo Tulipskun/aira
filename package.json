@@ -3,11 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "start": "bun run bot.ts"
   },
   "dependencies": {
     "@google/genai": "latest",
-    "chromadb": "latest"
+    "chromadb": "latest",
+    "discord.js": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",
