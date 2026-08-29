@@ -4,6 +4,7 @@ export type ScheduledMessage = {
   text: string;
   timestamp: string;
   fileName?: string;
+  channelId: string;
 };
 
 export type MessageSchedulerOptions = {
