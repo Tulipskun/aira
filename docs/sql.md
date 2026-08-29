@@ -1,24 +1,32 @@
 # SQL
 
-SQLite (`bun:sqlite`) ใช้เก็บข้อมูลถาวรที่ต้อง query แบบ structured
+SQLite (`bun:sqlite`) is the persistent store for structured application state.
 
-## Relationship
+## Relationship / stats
 
-เก็บ:
+Store structured user state such as:
 
-- `user_id` — Discord ID, stable identity
-- `user_name` — ชื่อปัจจุบัน
+- `user_id` — Discord ID; stable identity
+- `user_name` — current display name
 - `state`
 - `xp`
 - `affinity`
+- other relationship/stat fields required by the state system
 
-`user_id` เป็น primary identity เพื่อรองรับกรณี user เปลี่ยนชื่อ
+`user_id` remains the identity when a Discord username changes.
 
-## History
+Gemini does not receive the Discord ID.
 
-เก็บ conversation history โดยแยก model/user role
+## Conversation history
 
-- user message: `userId`, username, text, timestamp, filename (ถ้ามี)
-- model response: text, timestamp
+SQLite also stores conversation history so context can be reconstructed after restart.
 
-Fake tool call/result เป็นข้อมูลชั่วคราวของ Gemini request และไม่เก็บลง history
+User messages retain the application-side user ID, username, text, timestamp and optional filename. Model responses retain their role/text/timestamp. Attachment binary data is not stored here; only the filename is retained.
+
+## Gemini 2 updates
+
+Gemini 2 returns structured `execute` operations. The parser applies relationship/stat changes to SQLite and the resulting state can be used to build the current Discord response.
+
+## Temporary data
+
+Fake tool calls/results used to provide Chroma memories to Gemini are request-local and are not stored as conversation history.
