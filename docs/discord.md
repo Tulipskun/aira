@@ -20,6 +20,15 @@ The configuration is persisted in `data/discord-config.json` and therefore survi
 
 If no channel is configured, normal messages are ignored.
 
+## AI response
+
+AI replies are sent as a Discord Embed rather than plain message content.
+
+- Embed description: Gemini 1 response text
+- Embed image: local emotion image selected by Gemini 2, when available
+- Embed footer: `Isla`
+- The selected image is attached to the same Discord message and referenced with `attachment://...`
+
 ## Identity and attachments
 
 Discord `userId` is the stable internal identity and is used for SQL history/relationship data. It is not sent to Gemini.
