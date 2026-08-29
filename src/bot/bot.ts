@@ -1,92 +1,14 @@
 import "dotenv/config";
-import { Client, EmbedBuilder, GatewayIntentBits, type Message } from "discord.js";
-import { processMessage } from "../pipeline/pipeline.js";
-import { MessageScheduler, type ScheduledMessage } from "../pipeline/scheduler.js";
-import { fetchEmotionImage } from "./images.js";
-import { getResponseChannelId, setResponseChannelId, unsetResponseChannelId } from "./discord-config.js";
+import { Client, GatewayIntentBits, type Message } from "discord.js";
+import { MessageScheduler } from "../pipeline/scheduler.js";
+import { handleCommand, isKnownCommand } from "./commands.js";
+import { createOnFlush, toScheduledMessage } from "./message-handler.js";
+import { getResponseChannelId } from "./discord-config.js";
 
 const token = process.env.DISCORD_TOKEN;
 const ownerId = process.env.DISCORD_OWNER_ID;
 if (!token) throw new Error("DISCORD_TOKEN is required");
 if (!ownerId) throw new Error("DISCORD_OWNER_ID is required");
-
-const VALID_COMMANDS = new Set(["islacomehere", "unset"]);
-
-function commandName(text: string): string {
-  return text.slice(1).trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
-}
-
-async function handleCommand(message: Message): Promise<void> {
-  if (message.author.id !== ownerId) return;
-
-  switch (commandName(message.content)) {
-    case "islacomehere":
-      await setResponseChannelId(message.channelId);
-      await message.reply("Locked to this channel.");
-      return;
-    case "unset":
-      await unsetResponseChannelId();
-      await message.reply("Channel lock removed.");
-      return;
-  }
-}
-
-function toScheduledMessage(message: Message): ScheduledMessage | null {
-  const text = message.content.trim();
-  if (!text) return null;
-
-  return {
-    userId: message.author.id,
-    user: message.author.username,
-    text,
-    timestamp: new Date(message.createdTimestamp).toISOString(),
-    fileName: message.attachments.first()?.name ?? undefined,
-    channelId: message.channelId,
-  };
-}
-
-const scheduler = new MessageScheduler({
-  debounceMs: 5_000,
-  maxWaitMs: 12_000,
-  onFlush: async (messages) => {
-    if (!messages.length) return;
-
-    const responseChannelId = getResponseChannelId();
-    if (!responseChannelId) return;
-    if (messages[0].channelId !== responseChannelId) return;
-
-    const input = messages.reduce(
-      (text, message) => (text ? `${text}\n${message.user}: ${message.text}` : `${message.user}: ${message.text}`),
-      "",
-    );
-
-    const first = messages[0];
-    const result = await processMessage({
-      userId: first.userId,
-      user: first.user,
-      text: input,
-      timestamp: first.timestamp,
-      fileName: first.fileName,
-    });
-
-    const channel = await client.channels.fetch(responseChannelId);
-    if (!channel || !channel.isTextBased() || !("send" in channel)) return;
-
-    const image = await fetchEmotionImage(result.image);
-    const embed = new EmbedBuilder()
-      .setDescription(result.text)
-      .setFooter({ text: "Isla" });
-
-    if (image && result.image) {
-      embed.setImage(`attachment://${result.image}`);
-    }
-
-    await channel.send({
-      embeds: [embed],
-      ...(image && result.image ? { files: [{ attachment: image, name: result.image }] } : {}),
-    });
-  },
-});
 
 const client = new Client({
   intents: [
@@ -96,14 +18,20 @@ const client = new Client({
   ],
 });
 
-client.on("messageCreate", async (message) => {
+const scheduler = new MessageScheduler({
+  debounceMs: 5_000,
+  maxWaitMs: 12_000,
+  onFlush: createOnFlush(client),
+});
+
+client.on("messageCreate", async (message: Message) => {
   if (message.author.bot) return;
 
   const text = message.content.trim();
   if (!text) return;
 
   if (text.startsWith("!")) {
-    if (VALID_COMMANDS.has(commandName(text))) await handleCommand(message);
+    if (isKnownCommand(text)) await handleCommand(message, ownerId);
     return;
   }
 
