@@ -5,13 +5,16 @@ import { getHistory, saveMessage } from "../sql/history.js";
 import { getRelationships, adjustRelationshipStats, type Relationship } from "../sql/relationship.js";
 import { getUserProfiles, type UserProfile } from "../sql/profile.js";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { config } from "../config.js";
+
+const PROJECT_ROOT = join(import.meta.dirname, "..", "..");
 
 export type IncomingMessage = { userId: string; user: string; text: string; timestamp: string; fileName?: string };
 type ExecuteItem = { name?: string; args?: Record<string, unknown> };
 export type ProcessMessageResult = { text: string; image?: string };
 
-const systemPrompt = readFileSync(config.paths.gemini1SystemPrompt, "utf8").trim();
+const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
 
 const RELATIONSHIP_LABELS: Record<string, string> = { stranger: "คนแปลกหน้า", friend: "เพื่อน", close_friend: "เพื่อนสนิท", crush: "คนที่ไอล่าชอบ", lover: "คนรัก", soulmate: "คู่ชีวิต", enemy: "ศัตรู", sibling: "พี่น้อง", family: "ครอบครัว" };
 function userProfileBlock(profile: UserProfile | null, relationship: Relationship | null): string {
