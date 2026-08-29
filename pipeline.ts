@@ -6,24 +6,28 @@ import { getRelationships, adjustRelationshipStats, type Relationship } from "./
 import { getUserProfiles, type UserProfile } from "./sql/profile.js";
 import { readFileSync } from "node:fs";
 
-export type IncomingMessage = {
-  userId: string;
-  user: string;
-  text: string;
-  timestamp: string;
-  fileName?: string;
-};
-
+export type IncomingMessage = { userId: string; user: string; text: string; timestamp: string; fileName?: string };
 type ExecuteItem = { name?: string; args?: Record<string, unknown> };
 export type ProcessMessageResult = { text: string; image?: string };
 
 const systemPromptPath = process.env.GEMINI1_SYSTEM_PROMPT_FILE ?? "./prompts/isla.md";
 const systemPrompt = readFileSync(systemPromptPath, "utf8").trim();
 
+const RELATIONSHIP_LABELS: Record<string, string> = {
+  stranger: "คนแปลกหน้า",
+  friend: "เพื่อน",
+  close_friend: "เพื่อนสนิท",
+  crush: "คนที่ไอล่าชอบ",
+  lover: "คนรัก",
+  soulmate: "คู่ชีวิต",
+  enemy: "ศัตรู",
+  sibling: "พี่น้อง",
+  family: "ครอบครัว",
+};
+
 function userProfileBlock(profile: UserProfile | null, relationship: Relationship | null): string {
-  if (!profile && !relationship) return "<user_profile>\nไม่มีข้อมูลผู้ใช้ในฐานข้อมูล\n</user_profile>";
   const name = profile?.name ?? relationship?.userName ?? "ไม่ทราบชื่อ";
-  const relationshipText = relationship ? `state=${relationship.state}, xp=${relationship.xp}, affinity=${relationship.affinity}` : "ไม่มีข้อมูลความสัมพันธ์";
+  const relationshipText = relationship ? RELATIONSHIP_LABELS[relationship.state] ?? relationship.state : "ไม่มีข้อมูลความสัมพันธ์";
   const nicknames = profile?.nicknames.length ? profile.nicknames.join(", ") : "-";
   const facts = profile?.facts.length ? profile.facts.map((fact) => `- ${fact}`).join("\n") : "- ไม่มี";
   return `<user_profile>\nชื่อ: ${name}\nความสัมพันธ์กับ Isla: ${relationshipText}\nฉายาที่ Isla ตั้งให้: ${nicknames}\nfact:\n${facts}\n</user_profile>`;
@@ -84,29 +88,14 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const profile = getUserProfiles([message.userId])[0] ?? null;
   const profileBlock = userProfileBlock(profile, relationship);
 
-  const request1 = ctxWindowCreate(
-    history,
-    message.text,
-    message.user,
-    message.timestamp,
-    message.fileName,
-    fakeMemoryTool(message.user, memories),
-    message.userId,
-  );
+  const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, message.fileName, fakeMemoryTool(message.user, memories), message.userId);
   request1.temporary = fakeMemoryTool(message.user, memories);
   const response1 = await sendRequestGemini(request1, { systemInstruction: `${systemPrompt}\n\n${profileBlock}` });
   const responseText = typeof response1 === "string" ? response1 : "";
   saveMessage({ role: "model", text: responseText, timestamp: new Date().toISOString() });
 
   const responseTimestamp = new Date().toISOString();
-  const request2 = ctxWindowCreate(
-    history,
-    responseText,
-    "Isla",
-    responseTimestamp,
-    undefined,
-    fakeToolCallResult("gemini1_response", {}, { text: responseText }),
-  );
+  const request2 = ctxWindowCreate(history, responseText, "Isla", responseTimestamp, undefined, fakeToolCallResult("gemini1_response", {}, { text: responseText }));
   request2.messages.push({ role: "model", text: responseText, timestamp: responseTimestamp });
   request2.temporary = fakeToolCallResult("gemini1_response", {}, { text: responseText });
   request2.messages.push({ role: "user", user: message.user, userId: message.userId, text: message.text, timestamp: message.timestamp, ...(message.fileName && { fileName: message.fileName }) });
