@@ -71,7 +71,7 @@ while (Date.now() < deadline) {
 }
 if (Date.now() >= deadline) { log("[SUPERVISOR] Chroma startup timeout"); stop(1); }
 
-airaProcess = spawn("bun", ["run", "bot.ts"], {
+airaProcess = spawn("bun", ["run", "src/bot/bot.ts"], {
   cwd: root,
   stdio: ["ignore", "pipe", "pipe"],
   env: process.env,
