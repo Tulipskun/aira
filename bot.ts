@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, type Message } from "discord.js";
+import { Client, EmbedBuilder, GatewayIntentBits, type Message } from "discord.js";
 import { processMessage } from "./pipeline.js";
 import { MessageScheduler, type ScheduledMessage } from "./scheduler.js";
 import { fetchEmotionImage } from "./images.js";
@@ -72,14 +72,18 @@ const scheduler = new MessageScheduler({
     const channel = await client.channels.fetch(responseChannelId);
     if (!channel?.isTextBased()) return;
 
-    const content = result.relationships.length
-      ? `${result.text}\n\n${result.relationships.map((r) => `${r.userName}: ${r.state} (${r.affinity})`).join("\n")}`
-      : result.text;
-
     const image = await fetchEmotionImage(result.image);
+    const embed = new EmbedBuilder()
+      .setDescription(result.text)
+      .setFooter({ text: "Isla" });
+
+    if (image && result.image) {
+      embed.setImage(`attachment://${result.image}`);
+    }
+
     await channel.send({
-      content,
-      ...(image ? { files: [{ attachment: image, name: result.image }] } : {}),
+      embeds: [embed],
+      ...(image && result.image ? { files: [{ attachment: image, name: result.image }] } : {}),
     });
   },
 });
