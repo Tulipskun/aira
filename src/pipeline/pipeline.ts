@@ -16,6 +16,7 @@ type ExecuteItem = { name?: string; args?: Record<string, unknown> };
 export type ProcessMessageResult = { text: string; image?: string };
 
 const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
+const gemini2SystemPrompt = "วิเคราะห์บทสนทนาระหว่าง Isla และผู้ใช้ที่ส่งมา ว่า Isla รู้สึกอย่างไร และควรแสดงอารมณ์อย่างไร โดยใช้ tools ที่เกี่ยวข้อง";
 
 const RELATIONSHIP_LABELS: Record<string, string> = { stranger: "คนแปลกหน้า", friend: "เพื่อน", close_friend: "เพื่อนสนิท", crush: "คนที่ไอล่าชอบ", lover: "คนรัก", soulmate: "คู่ชีวิต", enemy: "ศัตรู", sibling: "พี่น้อง", family: "ครอบครัว" };
 
@@ -57,23 +58,35 @@ function userMemoryBlock(memories: { text: string; timestamp: string }[]): strin
 }
 
 async function runGemini2(request: GeminiRequest): Promise<ExecuteItem[]> {
-  const result = await sendRequestGemini(request, { responseMode: "tool", tools: [EXECUTE_TOOL] });
+  const result = await sendRequestGemini(request, { responseMode: "tool", tools: [EXECUTE_TOOL], systemInstruction: gemini2SystemPrompt });
   return typeof result === "string" ? [] : result.map((call) => ({ name: call.name, args: call.args }));
 }
 
 async function applyExecute(items: ExecuteItem[], userId: string, timestamp: string): Promise<string | undefined> {
   let selectedImage: string | undefined;
   for (const item of items) {
-    const args = item.args ?? {};
-    switch (item.name) {
-      case "adjust_affinity": { const delta = Number(args.delta ?? 0); if (Number.isFinite(delta)) adjustRelationshipStats(userId, { affinity: delta }); break; }
-      case "add_xp": { const delta = Number(args.delta ?? 0); if (Number.isFinite(delta)) adjustRelationshipStats(userId, { xp: delta }); break; }
-      case "set_relationship": { const state = typeof args.state === "string" ? args.state : undefined; if (state) adjustRelationshipStats(userId, { state }); break; }
-      case "ingest_memory": { const text = typeof args.text === "string" ? args.text.trim() : ""; if (text) await saveMemoryVector({ id: crypto.randomUUID(), text, userId, timestamp }, await embed(text)); break; }
-      case "select_image": { if (typeof args.image === "string" && args.image.trim()) selectedImage = args.image.trim(); break; }
+    if (item.name !== "execute") continue;
+    const operations = Array.isArray(item.args?.operations) ? item.args.operations : [];
+    for (const operation of operations) {
+      if (!operation || typeof operation !== "object") continue;
+      const op = operation as { name?: unknown; args?: unknown };
+      if (typeof op.name !== "string" || !op.args || typeof op.args !== "object" || Array.isArray(op.args)) continue;
+      const args = op.args as Record<string, unknown>;
+      switch (op.name) {
+        case "adjust_affinity": { const delta = Number(args.delta ?? 0); if (Number.isFinite(delta)) adjustRelationshipStats(userId, { affinity: delta }); break; }
+        case "add_xp": { const delta = Number(args.delta ?? 0); if (Number.isFinite(delta)) adjustRelationshipStats(userId, { xp: delta }); break; }
+        case "set_relationship": { const state = typeof args.state === "string" ? args.state : undefined; if (state) adjustRelationshipStats(userId, { state }); break; }
+        case "ingest_memory": { const text = typeof args.text === "string" ? args.text.trim() : ""; if (text) await saveMemoryVector({ id: crypto.randomUUID(), text, userId, timestamp }, await embed(text)); break; }
+        case "select_image": { if (typeof args.image === "string" && args.image.trim()) selectedImage = args.image.trim(); break; }
+      }
     }
   }
   return selectedImage;
+}
+
+function relationshipBlock(relationship: Relationship | null): string {
+  if (!relationship) return "<relationship>\nไม่มีข้อมูลความสัมพันธ์\n</relationship>";
+  return `<relationship>\nstate: ${RELATIONSHIP_LABELS[relationship.state] ?? relationship.state}\nxp: ${relationship.xp}\naffinity: ${relationship.affinity}\nfamiliarity: ${relationship.familiarity}\ntrust: ${relationship.trust}\nromanticApproachCount: ${relationship.romanticApproachCount}\nsevereConflictCount: ${relationship.severeConflictCount}\n</relationship>`;
 }
 
 export async function processMessage(message: IncomingMessage): Promise<ProcessMessageResult> {
@@ -92,11 +105,9 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const responseTimestamp = new Date().toISOString();
   saveMessage({ role: "model", text: responseText, timestamp: responseTimestamp });
 
+  const analysisInput = `${message.user}: ${message.text}\nIsla: ${responseText}\n\n${relationshipBlock(relationship)}`;
   const request2: GeminiRequest = {
-    messages: [
-      ...request1.messages,
-      { role: "model", text: responseText, timestamp: responseTimestamp },
-    ],
+    messages: [{ role: "user", user: message.user, userId: message.userId, text: analysisInput, timestamp: responseTimestamp }],
   };
   const executeItems = await runGemini2(request2);
   const image = await applyExecute(executeItems, message.userId, message.timestamp);
