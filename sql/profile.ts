@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 export type UserProfile = {
   userId: string;
@@ -7,7 +9,9 @@ export type UserProfile = {
   facts: string[];
 };
 
-const db = new Database(process.env.SQLITE_PATH ?? "./data/aira.db", { create: true });
+const path = process.env.SQLITE_PATH ?? "./.aira/aira.db";
+mkdirSync(dirname(path), { recursive: true });
+const db = new Database(path, { create: true });
 db.run(`CREATE TABLE IF NOT EXISTS user_profiles (
   user_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
