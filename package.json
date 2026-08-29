@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "start": "bun run scripts/supervisor.ts"
+    "start": "bun run scripts/supervisor.ts start",
+    "stop": "bun run scripts/supervisor.ts stop",
+    "logs": "bun run scripts/supervisor.ts logs"
   },
   "dependencies": {
     "@google/genai": "latest",
