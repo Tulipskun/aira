@@ -20,7 +20,7 @@ export type Memory = {
 };
 
 async function collection() {
-  return client.getOrCreateCollection({ name: collectionName });
+  return client.getOrCreateCollection({ name: collectionName, embeddingFunction: null });
 }
 
 export async function saveMemory(memory: Memory): Promise<void> {
