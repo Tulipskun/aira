@@ -1,18 +1,41 @@
 # Memory
 
-## Embedding
+## Roles
 
-ใช้ embedding model แยกสำหรับ long-term memory
+Embedding 2 is used for both memory retrieval and long-term memory ingestion.
 
-## Chroma
+Chroma is the long-term vector memory store.
 
-Chroma ใช้เก็บและค้นหา long-term memories ด้วย vector similarity
+SQLite is not the long-term semantic memory store; it stores conversation history and structured relationship/state data.
 
-Flow:
+## Retrieval
 
 ```text
-message -> embedding -> Chroma query
-memory -> embedding -> Chroma add
+current user input
+  -> Embedding 2
+  -> Chroma similarity search
+  -> relevant memories
+  -> temporary search_memory(username) result
+  -> Gemini 1
 ```
 
-ผลการค้นหาจะถูกส่งให้ Gemini 1 ผ่าน temporary fake tool `search_memory(username)` และไม่ถูกบันทึกเป็น conversation history
+The memory search is performed before Gemini 1 so the dialogue model receives relevant memories as request-local context.
+
+## Ingestion
+
+Gemini 2 may return `ingest_memory(...)` as part of its forced `execute` operations.
+
+```text
+Gemini 2
+  -> ingest_memory
+  -> Embedding 2
+  -> Chroma
+```
+
+Memory ingestion that is not required to construct the current Discord response may run after the response has been sent.
+
+## Request isolation
+
+Fake memory tool calls/results are temporary request data. They are not written into conversation history.
+
+Memory records may contain application metadata such as user association and timestamp, but Discord user IDs are application-side data and are not sent to Gemini.
