@@ -1,7 +1,11 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 const IMAGE_BASE_URL = "https://raw.githubusercontent.com/Tulipskun/AI-roleplay-chat/main/images/";
 
-// Emotion image assets remain in the legacy repository. Gemini 2 returns a filename;
-// this registry resolves that filename to the corresponding immutable asset location.
+// Emotion images are now bundled locally in ./images (copied from the legacy repository).
+// Gemini 2 returns a filename; this registry resolves it to a local file first,
+// falling back to the legacy remote URL only if the local file is missing.
 const IMAGE_FILES = [
   "isla_about_to_cry_but_holding_back.jpg",
   "isla_angry_fang.jpg",
@@ -42,9 +46,19 @@ export function resolveEmotionImage(fileName: string | undefined): string | unde
 }
 
 export async function fetchEmotionImage(fileName: string | undefined): Promise<Buffer | undefined> {
-  const url = resolveEmotionImage(fileName);
-  if (!url) return undefined;
+  if (!fileName) return undefined;
+  const normalized = fileName.trim().split("/").pop() ?? "";
+  if (!IMAGE_SET.has(normalized)) return undefined;
 
+  try {
+    const localPath = join(import.meta.dirname ?? ".", "images", normalized);
+    const data = await readFile(localPath);
+    return Buffer.from(data);
+  } catch {
+    // local file missing — fall back to remote fetch
+  }
+
+  const url = `${IMAGE_BASE_URL}${encodeURIComponent(normalized)}`;
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to fetch emotion image: ${response.status} ${response.statusText}`);
   return Buffer.from(await response.arrayBuffer());
