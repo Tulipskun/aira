@@ -17,6 +17,7 @@ export type ProcessMessageResult = { text: string; image?: string };
 
 const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
 const gemini2SystemPrompt = "วิเคราะห์บทสนทนาระหว่าง Isla และผู้ใช้ที่ส่งมา ว่า Isla รู้สึกอย่างไร และควรแสดงอารมณ์อย่างไร โดยใช้ tools ที่เกี่ยวข้อง";
+const SYNTHETIC_THOUGHT_SIGNATURE = "El4KXAERTTIPV5DSwWOxBfzxqrZ7KbEV9e9KtO4jGvcB6fuuTxysDRrjCc+qdvx4lAPLBxk1qBtDEvIfZpovKWuoS8XqngT1bXfW4W0Bar04RyQJbG7rvweMa71A1cCR";
 
 const RELATIONSHIP_LABELS: Record<string, string> = { stranger: "คนแปลกหน้า", friend: "เพื่อน", close_friend: "เพื่อนสนิท", crush: "คนที่ไอล่าชอบ", lover: "คนรัก", soulmate: "คู่ชีวิต", enemy: "ศัตรู", sibling: "พี่น้อง", family: "ครอบครัว" };
 
@@ -107,8 +108,16 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
 
   const analysisInput = `${message.user}: ${message.text}\nIsla: ${responseText}\n\n${relationshipBlock(relationship)}`;
   const request2: GeminiRequest = {
-    messages: [{ role: "user", user: message.user, userId: message.userId, text: analysisInput, timestamp: responseTimestamp }],
+    messages: [
+      { role: "user", user: message.user, userId: message.userId, text: message.text, timestamp: message.timestamp },
+      { role: "model", text: analysisInput, timestamp: responseTimestamp },
+    ],
   };
+  (request2 as GeminiRequest & { steps?: Interactions.Interaction[] }).steps = [
+    { type: "thought", signature: SYNTHETIC_THOUGHT_SIGNATURE } as Interactions.Interaction,
+    { type: "text", text: responseText } as Interactions.Interaction,
+  ];
+
   const executeItems = await runGemini2(request2);
   const image = await applyExecute(executeItems, message.userId, message.timestamp);
   return { text: responseText, image };
