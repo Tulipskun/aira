@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 export type Relationship = {
   userId: string;
@@ -8,7 +10,9 @@ export type Relationship = {
   affinity: number;
 };
 
-const db = new Database(process.env.SQLITE_PATH ?? "./data/aira.db", { create: true });
+const path = process.env.SQLITE_PATH ?? "./.aira/aira.db";
+mkdirSync(dirname(path), { recursive: true });
+const db = new Database(path, { create: true });
 db.run(`CREATE TABLE IF NOT EXISTS relationships (
   user_id TEXT PRIMARY KEY,
   user_name TEXT NOT NULL,
