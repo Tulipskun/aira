@@ -4,13 +4,19 @@ import type { ScheduledMessage } from "../pipeline/scheduler.js";
 import { fetchEmotionImage } from "./images.js";
 import { getResponseChannelId } from "./discord-config.js";
 
+export function displayNameOf(message: Message): string {
+  // member.displayName = guild nickname ?? user.displayName; user.displayName = global name ?? username.
+  // member is populated from the MESSAGE_CREATE payload, so no extra GuildMembers intent is needed.
+  return message.member?.displayName || message.author.displayName || message.author.username;
+}
+
 export function toScheduledMessage(message: Message): ScheduledMessage | null {
   const text = message.content.trim();
   if (!text) return null;
 
   return {
     userId: message.author.id,
-    user: message.author.username,
+    user: displayNameOf(message),
     text,
     timestamp: new Date(message.createdTimestamp).toISOString(),
     fileName: message.attachments.first()?.name ?? undefined,
