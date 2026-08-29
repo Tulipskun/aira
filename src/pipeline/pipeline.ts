@@ -1,4 +1,4 @@
-import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
+import { ctxWindowCreate, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
 import { embed } from "../memory/embedding.js";
 import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
 import { getHistory, saveMessage } from "../sql/history.js";
@@ -85,15 +85,19 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const profile = getUserProfiles([message.userId])[0] ?? null;
   const profileBlock = userProfileBlock(profile, relationship);
   const memoryBlock = userMemoryBlock(memories.map((m) => ({ text: m.text, timestamp: m.timestamp ?? "" })));
+
   const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, message.fileName, undefined, message.userId);
   const response1 = await sendRequestGemini(request1, { systemInstruction: `${systemPrompt}\n\n${profileBlock}\n\n${memoryBlock}` });
   const responseText = typeof response1 === "string" ? response1 : "";
   const responseTimestamp = new Date().toISOString();
   saveMessage({ role: "model", text: responseText, timestamp: responseTimestamp });
-  const request2 = ctxWindowCreate(history, responseText, "Isla", responseTimestamp, undefined, fakeToolCallResult("gemini1_response", {}, { text: responseText }));
-  request2.messages.push({ role: "model", text: responseText, timestamp: responseTimestamp });
-  request2.temporary = fakeToolCallResult("gemini1_response", {}, { text: responseText });
-  request2.messages.push({ role: "user", user: message.user, userId: message.userId, text: message.text, timestamp: message.timestamp, ...(message.fileName && { fileName: message.fileName }) });
+
+  const request2: GeminiRequest = {
+    messages: [
+      ...request1.messages,
+      { role: "model", text: responseText, timestamp: responseTimestamp },
+    ],
+  };
   const executeItems = await runGemini2(request2);
   const image = await applyExecute(executeItems, message.userId, message.timestamp);
   return { text: responseText, image };
