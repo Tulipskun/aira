@@ -7,11 +7,19 @@ Discord
   -> bot.ts
   -> command filter / MessageScheduler
   -> pipeline.ts
+  -> Embedding 2
+  -> Chroma search
+  -> SQL relationship
   -> Gemini 1
-  -> Discord response
-  -> Gemini 2 (background)
-  -> SQL / Chroma
+  -> Gemini 2 (wait for Gemini 1)
+  -> execute parser
+  -> SQL relationship/stats
+  -> select image
+  -> final Discord response
+  -> background memory embedding/write to Chroma
 ```
+
+Gemini 2 is part of the response path because its relationship/state result and selected emotion image are required before replying to the user. Only work that is not required for the current response, such as long-term memory embedding/write, may run after the response.
 
 ## Identity
 
