@@ -14,12 +14,20 @@ Discord
   -> Gemini 2 (wait for Gemini 1)
   -> execute parser
   -> SQL relationship/stats
-  -> select image
-  -> final Discord response
+  -> select_image(filename)
+  -> image filename registry
+  -> fetch legacy emotion asset
+  -> final Discord response + image
   -> background memory embedding/write to Chroma
 ```
 
 Gemini 2 is part of the response path because its relationship/state result and selected emotion image are required before replying to the user. Only work that is not required for the current response, such as long-term memory embedding/write, may run after the response.
+
+## Emotion images
+
+`select_image` returns a filename. `images.ts` validates that filename against the known emotion-image registry and resolves it to the corresponding asset in the legacy `AI-roleplay-chat/images` repository. The bot fetches the asset and sends it as a Discord attachment.
+
+The image filename is not treated as an arbitrary URL, so Gemini cannot make the bot fetch an unrelated resource.
 
 ## Identity
 
