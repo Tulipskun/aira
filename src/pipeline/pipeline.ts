@@ -52,7 +52,7 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const relationship = getRelationships([message.userId])[0] ?? null;
   const profile = getUserProfiles([message.userId])[0] ?? null;
   const profileBlock = userProfileBlock(profile, relationship);
-  const memoryBlock = userMemoryBlock(memories);
+  const memoryBlock = userMemoryBlock(memories.map((m) => ({ text: m.text, timestamp: m.timestamp ?? "" })));
   const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, message.fileName, undefined, message.userId);
   const response1 = await sendRequestGemini(request1, { systemInstruction: `${systemPrompt}\n\n${profileBlock}\n\n${memoryBlock}` });
   const responseText = typeof response1 === "string" ? response1 : "";
