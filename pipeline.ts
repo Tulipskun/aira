@@ -14,10 +14,16 @@ export type ProcessMessageInput = {
   relatedUserIds?: string[];
 };
 
+export type ProcessMessageResult = {
+  text: string;
+  image?: string;
+  relationships: Relationship[];
+};
+
 const executeTool: Interactions.Tool = {
   type: "function",
   name: "execute",
-  description: "Apply background AI state changes. Return all required operations together.",
+  description: "Apply required AI state changes for this turn. Return all operations together.",
   parameters: {
     type: "object",
     properties: {
@@ -26,7 +32,7 @@ const executeTool: Interactions.Tool = {
         items: {
           type: "object",
           properties: {
-            name: { type: "string" },
+            name: { type: "string", enum: ["adjust_affinity", "add_xp", "set_relationship", "ingest_memory", "select_image"] },
             args: { type: "object" },
           },
           required: ["name", "args"],
@@ -56,12 +62,19 @@ function resolveUserId(username: unknown, currentUserId: string, relationships: 
   return match?.userId ?? currentUserId;
 }
 
-async function executeCommands(commands: unknown, currentUserId: string, timestamp: string, relationships: Relationship[]): Promise<void> {
-  if (!Array.isArray(commands)) return;
-  await Promise.all(commands.map(async (command) => {
-    if (!command || typeof command !== "object") return;
+async function executeCommands(
+  commands: unknown,
+  currentUserId: string,
+  timestamp: string,
+  relationships: Relationship[],
+): Promise<string | undefined> {
+  if (!Array.isArray(commands)) return undefined;
+  let selectedImage: string | undefined;
+
+  for (const command of commands) {
+    if (!command || typeof command !== "object") continue;
     const item = command as { name?: unknown; args?: unknown };
-    if (typeof item.name !== "string" || !item.args || typeof item.args !== "object") return;
+    if (typeof item.name !== "string" || !item.args || typeof item.args !== "object") continue;
     const args = item.args as Record<string, unknown>;
     const userId = resolveUserId(args.username, currentUserId, relationships);
 
@@ -69,43 +82,60 @@ async function executeCommands(commands: unknown, currentUserId: string, timesta
       case "adjust_affinity": {
         const delta = Number(args.delta ?? 0);
         if (Number.isFinite(delta)) adjustRelationshipStats(userId, { affinity: delta });
-        return;
+        break;
       }
       case "add_xp": {
         const delta = Number(args.delta ?? 0);
         if (Number.isFinite(delta)) adjustRelationshipStats(userId, { xp: delta });
-        return;
+        break;
       }
       case "set_relationship": {
         const state = typeof args.state === "string" ? args.state : undefined;
         if (state) adjustRelationshipStats(userId, { state });
-        return;
+        break;
       }
       case "ingest_memory": {
         const text = typeof args.text === "string" ? args.text.trim() : "";
-        if (!text) return;
-        await saveMemory({ id: crypto.randomUUID(), text, userId, timestamp });
-        return;
+        if (!text) break;
+        const memoryVector = await embed(text);
+        await saveMemory({ id: crypto.randomUUID(), text, userId, timestamp, vector: memoryVector });
+        break;
       }
-      default:
-        return;
+      case "select_image": {
+        if (typeof args.image === "string" && args.image.trim()) selectedImage = args.image.trim();
+        break;
+      }
     }
-  }));
+  }
+
+  return selectedImage;
 }
 
-async function runBackground(request: GeminiRequest, userId: string, timestamp: string, systemInstruction: string, relationships: Relationship[]): Promise<void> {
+async function runGemini2(
+  request: GeminiRequest,
+  userId: string,
+  timestamp: string,
+  systemInstruction: string,
+  relationships: Relationship[],
+): Promise<string | undefined> {
   const result = await sendRequestGemini(request, {
     responseMode: "tool",
     tools: [executeTool],
-    systemInstruction: `${systemInstruction}\nUse usernames, never Discord IDs, in execute command arguments. Return one execute call containing every background operation required for this turn.`,
+    systemInstruction: `${systemInstruction}\nUse usernames, never Discord IDs, in execute command arguments. Return one execute call containing every operation required before the response can be sent.`,
   });
-  if (!Array.isArray(result)) return;
+  if (!Array.isArray(result)) return undefined;
+
+  let selectedImage: string | undefined;
   for (const call of result) {
-    if (call.name === "execute") await executeCommands(call.args.commands, userId, timestamp, relationships);
+    if (call.name === "execute") {
+      const image = await executeCommands(call.args.commands, userId, timestamp, relationships);
+      if (image) selectedImage = image;
+    }
   }
+  return selectedImage;
 }
 
-export async function processMessage(input: ProcessMessageInput): Promise<string> {
+export async function processMessage(input: ProcessMessageInput): Promise<ProcessMessageResult> {
   const history = getHistory(Number(process.env.HISTORY_LIMIT ?? 50));
   const request = ctxWindowCreate(history, input.text, input.user, input.timestamp, input.fileName, [], input.userId);
 
@@ -123,11 +153,8 @@ export async function processMessage(input: ProcessMessageInput): Promise<string
   saveMessage({ role: "model", text: response, timestamp: input.timestamp });
 
   const completedRequest = addModelResponse(gemini1Request, response, input.timestamp);
-  setTimeout(() => {
-    void runBackground(completedRequest, input.userId, input.timestamp, systemInstruction, relationships).catch((error) => {
-      console.error("[PIPELINE] background processing failed", error);
-    });
-  }, 0);
+  const image = await runGemini2(completedRequest, input.userId, input.timestamp, systemInstruction, relationships);
+  const finalRelationships = getRelationships(relatedUserIds);
 
-  return response;
+  return { text: response, image, relationships: finalRelationships };
 }
