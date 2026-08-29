@@ -19,10 +19,8 @@ async function handleCommand(message: Message): Promise<void> {
 
   switch (name) {
     case "islacomehere":
-      // Command behavior can be added without changing message filtering.
       return;
     case "unset":
-      // Command behavior can be added without changing message filtering.
       return;
   }
 }
@@ -52,13 +50,22 @@ const scheduler = new MessageScheduler({
     );
 
     const first = messages[0];
-    await processMessage({
+    const result = await processMessage({
       userId: first.userId,
       user: first.user,
       text: input,
       timestamp: first.timestamp,
       fileName: first.fileName,
     });
+
+    const channel = await client.channels.fetch(messages[0].channelId);
+    if (!channel?.isTextBased()) return;
+
+    const content = result.relationships.length
+      ? `${result.text}\n\n${result.relationships.map((r) => `${r.userName}: ${r.state} (${r.affinity})`).join("\n")}`
+      : result.text;
+
+    await channel.send({ content });
   },
 });
 
@@ -84,6 +91,7 @@ client.on("messageCreate", async (message) => {
   const scheduled = toScheduledMessage(message);
   if (!scheduled) return;
 
+  scheduled.channelId = message.channelId;
   scheduler.interruptByOtherUser(scheduled.userId);
   scheduler.push(scheduled);
 });
