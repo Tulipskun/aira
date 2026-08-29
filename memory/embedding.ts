@@ -1,9 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 const MODEL = process.env.GEMINI_EMBEDDING2_MODEL ?? "gemini-embedding-2";
 const DIMENSION = Number(process.env.GEMINI_EMBEDDING2_DIMENSION ?? 768);
-const STATE_FILE = process.env.GEMINI_KEY_STATE_FILE ?? ".gemini-key-state.json";
+const STATE_FILE = process.env.GEMINI_KEY_STATE_FILE ?? ".aira/gemini-key-state.json";
 
 type State = { embedding2: number };
 
@@ -24,6 +25,7 @@ function loadState(): State {
 const state = loadState();
 
 function saveState(): void {
+  mkdirSync(dirname(STATE_FILE), { recursive: true });
   writeFileSync(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
 }
 
