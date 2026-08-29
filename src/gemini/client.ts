@@ -2,6 +2,7 @@ import { GoogleGenAI, type Interactions } from "@google/genai";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "../config.js";
+import { addThoughtSignature, invalidateThoughtSignature, nextThoughtSignature } from "./thought-signatures.js";
 
 export type Message = {
   role: "user" | "model";
@@ -26,6 +27,9 @@ export interface GeminiRequestOptions {
 type KeyState = { gemini1: number; gemini2: number };
 const STATE_FILE = config.paths.geminiKeyState;
 const MAX_5XX_RETRIES = 3;
+// Each retry costs one fast 400 and drains one bad signature from the pool, so a generous cap
+// still converges quickly; the seed signature is the last-resort fallback once the pool empties.
+const MAX_SIGNATURE_RETRIES = 8;
 const BASE_BACKOFF_MS = 250;
 
 function envKeys(name: string): string[] { return (process.env[name] ?? "").split(",").map((key) => key.trim()).filter(Boolean); }
@@ -46,6 +50,14 @@ function errorStatus(error: unknown): number | undefined {
 }
 function is429(error: unknown): boolean { return errorStatus(error) === 429; }
 function isRetryable5xx(error: unknown): boolean { const status = errorStatus(error); return status !== undefined && status >= 500 && status <= 599; }
+// A rejected signature surfaces as one of two 400 messages depending on how malformed it is:
+// "Corrupted thought signature." or "The value is invalid for 'input[N].signature'. Expected
+// string, corrupt base64". Both mean "drop this signature and try another".
+function isBadThoughtSignature(error: unknown): boolean {
+  if (errorStatus(error) !== 400) return false;
+  const message = String((error as { message?: unknown } | undefined)?.message ?? "");
+  return /corrupted thought signature|\.signature'|signature[^\n]*corrupt/i.test(message);
+}
 function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function backoffDelay(retry: number): number { return BASE_BACKOFF_MS * 2 ** retry + Math.floor(Math.random() * 100); }
 
@@ -65,17 +77,34 @@ function messageStep(message: Message): Interactions.Step {
 // The Interactions API rejects a `function_call` step unless the model turn that "made" the
 // call is present too: it needs a `thought` step carrying a valid `signature` right before it.
 // Without it every request fails with 400 "Request contains an invalid argument."; with a
-// malformed signature it fails with 400 "Corrupted thought signature.". The signature is not
-// bound to the payload, so one captured value can be reused across requests and models.
-const THOUGHT_SIGNATURE = process.env.GEMINI1_THOUGHT_SIGNATURE ?? "El4KXAERTTIPV5DSwWOxBfzxqrZ7KbEV9e9KtO4jGvcB6fuuTxysDRrjCc+qdvx4lAPLBxk1qBtDEvIfZpovKWuoS8XqngT1bXfW4W0Bar04RyQJbG7rvweMa71A1cCR";
-
+// malformed/expired one it fails with 400 "Corrupted thought signature.". Signatures are not
+// bound to a payload, so they are pooled and rotated (see thought-signatures.ts): Gemini 2
+// donates one on every tool call and Gemini 1 consumes them round-robin.
 export function fakeToolCallResult(name: string, args: Record<string, unknown>, result: unknown): Interactions.Step[] {
   const callId = crypto.randomUUID();
   return [
-    { type: "thought", signature: THOUGHT_SIGNATURE },
+    { type: "thought", signature: nextThoughtSignature() },
     { type: "function_call", id: callId, name, arguments: args },
     { type: "function_result", name, call_id: callId, result: [{ type: "text", text: JSON.stringify(result) }] },
   ];
+}
+
+// Drop the signature(s) that were just rejected and rebuild the steps with the next pool
+// entries. Returns null when nothing better is available -- either there is no thought step, or
+// the pool is empty and only the seed remains, which would be retried unchanged.
+function rotateThoughtSignatures(temporary: Interactions.Step[]): Interactions.Step[] | null {
+  const used = temporary
+    .filter((step) => step.type === "thought")
+    .map((step) => (step as { signature?: string }).signature);
+  if (!used.length) return null;
+  for (const signature of used) invalidateThoughtSignature(signature);
+  const rotated = temporary.map((step) =>
+    step.type === "thought" ? { ...step, signature: nextThoughtSignature() } : step,
+  );
+  const fresh = rotated
+    .filter((step) => step.type === "thought")
+    .map((step) => (step as { signature?: string }).signature);
+  return fresh.some((signature, index) => signature !== used[index]) ? rotated : null;
 }
 
 export function ctxWindowCreate(messages: Message[], message: string, user: string, timestamp: string, fileName?: string, temporary: Interactions.Step[] = [], userId?: string): GeminiRequest {
@@ -92,6 +121,8 @@ export async function sendRequestGemini(requestBody: GeminiRequest, options: Gem
   let lastError: unknown;
   let serverRetries = 0;
   let keyAttempts = 0;
+  let signatureAttempts = 0;
+  let temporary = [...(requestBody.temporary ?? [])];
 
   while (keyAttempts < (keys.length || 1)) {
     const key = keys.length ? keys[keyState[stateKey] % keys.length] : fallbackKey!;
@@ -99,18 +130,30 @@ export async function sendRequestGemini(requestBody: GeminiRequest, options: Gem
       const ai = new GoogleGenAI({ apiKey: key });
       const response = await ai.interactions.create({
         model,
-        input: [...requestBody.messages.map(messageStep), ...(requestBody.temporary ?? [])],
+        input: [...requestBody.messages.map(messageStep), ...temporary],
         tools: options.tools ?? [],
         ...(options.systemInstruction && { system_instruction: options.systemInstruction }),
         ...(mode === "tool" ? { generation_config: { tool_choice: { allowed_tools: { mode: "any" } } } } : {}),
         store: false,
       });
-      if (mode === "tool") return response.steps.filter((step) => step.type === "function_call").map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
+      if (mode === "tool") {
+        for (const step of response.steps) {
+          if (step.type === "thought") addThoughtSignature((step as { signature?: string }).signature);
+        }
+        return response.steps.filter((step) => step.type === "function_call").map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
+      }
       return response.output_text ?? "";
     } catch (error) {
       lastError = error;
       if (is429(error) && keys.length) { rotateKey(stateKey, keys.length); keyAttempts++; serverRetries = 0; continue; }
       if (isRetryable5xx(error) && serverRetries < MAX_5XX_RETRIES) { await sleep(backoffDelay(serverRetries++)); continue; }
+      if (isBadThoughtSignature(error) && signatureAttempts < MAX_SIGNATURE_RETRIES) {
+        const rotated = rotateThoughtSignatures(temporary);
+        if (!rotated) throw error;
+        temporary = rotated;
+        signatureAttempts++;
+        continue;
+      }
       throw error;
     }
   }
