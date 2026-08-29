@@ -1,11 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const IMAGE_BASE_URL = "https://raw.githubusercontent.com/Tulipskun/AI-roleplay-chat/main/images/";
-
-// Emotion images are now bundled locally in ./images (copied from the legacy repository).
-// Gemini 2 returns a filename; this registry resolves it to a local file first,
-// falling back to the legacy remote URL only if the local file is missing.
+// Emotion images are bundled in ./images.
+// Gemini 2 returns a filename; only allow known filenames and resolve locally.
 const IMAGE_FILES = [
   "isla_about_to_cry_but_holding_back.jpg",
   "isla_angry_fang.jpg",
@@ -39,27 +36,25 @@ const IMAGE_FILES = [
 
 const IMAGE_SET = new Set<string>(IMAGE_FILES);
 
+function normalizeImageName(fileName: string): string {
+  return fileName.trim().split("/").pop() ?? "";
+}
+
 export function resolveEmotionImage(fileName: string | undefined): string | undefined {
   if (!fileName) return undefined;
-  const normalized = fileName.trim().split("/").pop() ?? "";
-  return IMAGE_SET.has(normalized) ? `${IMAGE_BASE_URL}${encodeURIComponent(normalized)}` : undefined;
+  const normalized = normalizeImageName(fileName);
+  return IMAGE_SET.has(normalized) ? join(import.meta.dirname ?? ".", "images", normalized) : undefined;
 }
 
 export async function fetchEmotionImage(fileName: string | undefined): Promise<Buffer | undefined> {
   if (!fileName) return undefined;
-  const normalized = fileName.trim().split("/").pop() ?? "";
+  const normalized = normalizeImageName(fileName);
   if (!IMAGE_SET.has(normalized)) return undefined;
 
   try {
     const localPath = join(import.meta.dirname ?? ".", "images", normalized);
-    const data = await readFile(localPath);
-    return Buffer.from(data);
+    return Buffer.from(await readFile(localPath));
   } catch {
-    // local file missing — fall back to remote fetch
+    return undefined;
   }
-
-  const url = `${IMAGE_BASE_URL}${encodeURIComponent(normalized)}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to fetch emotion image: ${response.status} ${response.statusText}`);
-  return Buffer.from(await response.arrayBuffer());
 }
