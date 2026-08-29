@@ -1,5 +1,7 @@
 import { GoogleGenAI, type Interactions } from "@google/genai";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { config } from "./config.js";
 
 export type Message = {
   role: "user" | "model";
@@ -22,7 +24,7 @@ export interface GeminiRequestOptions {
 }
 
 type KeyState = { gemini1: number; gemini2: number };
-const STATE_FILE = process.env.GEMINI_KEY_STATE_FILE ?? ".gemini-key-state.json";
+const STATE_FILE = config.paths.geminiKeyState;
 const MAX_5XX_RETRIES = 3;
 const BASE_BACKOFF_MS = 250;
 
@@ -35,7 +37,7 @@ function loadKeyState(): KeyState {
   } catch { return { gemini1: 0, gemini2: 0 }; }
 }
 const keyState = loadKeyState();
-function saveKeyState(): void { writeFileSync(STATE_FILE, `${JSON.stringify(keyState, null, 2)}\n`); }
+function saveKeyState(): void { mkdirSync(dirname(STATE_FILE), { recursive: true }); writeFileSync(STATE_FILE, `${JSON.stringify(keyState, null, 2)}\n`); }
 function rotateKey(mode: "gemini1" | "gemini2", count: number): void { keyState[mode] = (keyState[mode] + 1) % count; saveKeyState(); }
 function errorStatus(error: unknown): number | undefined {
   if (!error || typeof error !== "object") return undefined;
@@ -64,22 +66,12 @@ export function fakeToolCallResult(name: string, args: Record<string, unknown>, 
   const callId = crypto.randomUUID();
   return [
     { type: "function_call", id: callId, name, arguments: args },
-    {
-      type: "function_result",
-      name,
-      call_id: callId,
-      result: [{ type: "text", text: JSON.stringify(result) }],
-    },
+    { type: "function_result", name, call_id: callId, result: [{ type: "text", text: JSON.stringify(result) }] },
   ];
 }
 
-export function ctxWindowCreate(
-  messages: Message[], message: string, user: string, timestamp: string, fileName?: string, temporary: Interactions.Step[] = [], userId?: string,
-): GeminiRequest {
-  return {
-    messages: [...messages, { role: "user", userId, user, text: message, timestamp, ...(fileName && { fileName }) }],
-    temporary,
-  };
+export function ctxWindowCreate(messages: Message[], message: string, user: string, timestamp: string, fileName?: string, temporary: Interactions.Step[] = [], userId?: string): GeminiRequest {
+  return { messages: [...messages, { role: "user", userId, user, text: message, timestamp, ...(fileName && { fileName }) }], temporary };
 }
 
 export async function sendRequestGemini(requestBody: GeminiRequest, options: GeminiRequestOptions = {}): Promise<string | FunctionCall[]> {
@@ -87,7 +79,7 @@ export async function sendRequestGemini(requestBody: GeminiRequest, options: Gem
   const keys = envKeys(mode === "tool" ? "GEMINI2_API_KEYS" : "GEMINI1_API_KEYS");
   const fallbackKey = options.apiKey ?? process.env.GEMINI_API_KEY;
   if (!keys.length && !fallbackKey) throw new Error(`No API key configured for ${mode}`);
-  const model = options.model ?? (mode === "tool" ? process.env.GEMINI2_MODEL ?? "gemini-flash-lite-latest" : process.env.GEMINI1_MODEL ?? "gemini-flash-lite-latest");
+  const model = options.model ?? (mode === "tool" ? config.models.gemini2 : config.models.gemini1);
   const stateKey = mode === "tool" ? "gemini2" : "gemini1";
   let lastError: unknown;
   let serverRetries = 0;
@@ -105,9 +97,7 @@ export async function sendRequestGemini(requestBody: GeminiRequest, options: Gem
         ...(mode === "tool" ? { generation_config: { tool_choice: { allowed_tools: { mode: "any" } } } } : {}),
         store: false,
       });
-      if (mode === "tool") {
-        return response.steps.filter((step) => step.type === "function_call").map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
-      }
+      if (mode === "tool") return response.steps.filter((step) => step.type === "function_call").map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
       return response.output_text ?? "";
     } catch (error) {
       lastError = error;
