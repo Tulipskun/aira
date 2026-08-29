@@ -12,11 +12,8 @@
     "types": ["bun"]
   },
   "include": [
-    "*.ts",
-    "gemini/**/*.ts",
-    "memory/**/*.ts",
-    "pipeline/**/*.ts",
-    "sql/**/*.ts"
+    "src/**/*.ts",
+    "scripts/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }

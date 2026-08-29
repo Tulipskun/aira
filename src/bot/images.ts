@@ -43,7 +43,7 @@ function normalizeImageName(fileName: string): string {
 export function resolveEmotionImage(fileName: string | undefined): string | undefined {
   if (!fileName) return undefined;
   const normalized = normalizeImageName(fileName);
-  return IMAGE_SET.has(normalized) ? join(import.meta.dirname ?? ".", "images", normalized) : undefined;
+  return IMAGE_SET.has(normalized) ? join(import.meta.dirname ?? ".", "..", "..", "images", normalized) : undefined;
 }
 
 export async function fetchEmotionImage(fileName: string | undefined): Promise<Buffer | undefined> {
@@ -52,7 +52,7 @@ export async function fetchEmotionImage(fileName: string | undefined): Promise<B
   if (!IMAGE_SET.has(normalized)) return undefined;
 
   try {
-    const localPath = join(import.meta.dirname ?? ".", "images", normalized);
+    const localPath = join(import.meta.dirname ?? ".", "..", "..", "images", normalized);
     return Buffer.from(await readFile(localPath));
   } catch {
     return undefined;

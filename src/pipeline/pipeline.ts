@@ -1,11 +1,11 @@
-import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "./gemini.js";
-import { embed } from "./memory/embedding.js";
-import { saveMemoryVector, searchMemoriesByVector, type Memory } from "./memory/chroma.js";
-import { getHistory, saveMessage } from "./sql/history.js";
-import { getRelationships, adjustRelationshipStats, type Relationship } from "./sql/relationship.js";
-import { getUserProfiles, type UserProfile } from "./sql/profile.js";
+import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
+import { embed } from "../memory/embedding.js";
+import { saveMemoryVector, searchMemoriesByVector, type Memory } from "../memory/chroma.js";
+import { getHistory, saveMessage } from "../sql/history.js";
+import { getRelationships, adjustRelationshipStats, type Relationship } from "../sql/relationship.js";
+import { getUserProfiles, type UserProfile } from "../sql/profile.js";
 import { readFileSync } from "node:fs";
-import { config } from "./config.js";
+import { config } from "../config.js";
 
 export type IncomingMessage = { userId: string; user: string; text: string; timestamp: string; fileName?: string };
 type ExecuteItem = { name?: string; args?: Record<string, unknown> };

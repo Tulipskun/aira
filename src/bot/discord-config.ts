@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-const CONFIG_PATH = process.env.DISCORD_CONFIG_PATH ?? join(import.meta.dirname ?? ".", ".aira", "discord-config.json");
+const CONFIG_PATH = process.env.DISCORD_CONFIG_PATH ?? join(import.meta.dirname ?? ".", "..", "..", ".aira", "discord-config.json");
 
 type DiscordConfig = {
   responseChannelId: string | null;

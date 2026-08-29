@@ -9,6 +9,6 @@ export const config = {
   },
   paths: {
     geminiKeyState: process.env.GEMINI_KEY_STATE_FILE ?? ".aira/gemini-key-state.json",
-    gemini1SystemPrompt: process.env.GEMINI1_SYSTEM_PROMPT_FILE ?? "./prompts/isla.md",
+    gemini1SystemPrompt: process.env.GEMINI1_SYSTEM_PROMPT_FILE ?? "./src/gemini/prompts/isla.md",
   },
 };

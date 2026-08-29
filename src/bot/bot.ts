@@ -1,9 +1,9 @@
 import "dotenv/config";
 import { Client, EmbedBuilder, GatewayIntentBits, type Message } from "discord.js";
-import { processMessage } from "./pipeline.js";
-import { MessageScheduler, type ScheduledMessage } from "./scheduler.js";
+import { processMessage } from "../pipeline/pipeline.js";
+import { MessageScheduler, type ScheduledMessage } from "../pipeline/scheduler.js";
 import { fetchEmotionImage } from "./images.js";
-import { getResponseChannelId, setResponseChannelId, unsetResponseChannelId } from "./discord_config.js";
+import { getResponseChannelId, setResponseChannelId, unsetResponseChannelId } from "./discord-config.js";
 
 const token = process.env.DISCORD_TOKEN;
 const ownerId = process.env.DISCORD_OWNER_ID;

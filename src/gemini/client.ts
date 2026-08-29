@@ -1,7 +1,7 @@
 import { GoogleGenAI, type Interactions } from "@google/genai";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { config } from "./config.js";
+import { config } from "../config.js";
 
 export type Message = {
   role: "user" | "model";
