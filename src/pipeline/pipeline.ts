@@ -1,6 +1,6 @@
 import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
 import { embed } from "../memory/embedding.js";
-import { saveMemoryVector, searchMemoriesByVector, type Memory } from "../memory/chroma.js";
+import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
 import { getHistory, saveMessage } from "../sql/history.js";
 import { getRelationships, adjustRelationshipStats, type Relationship } from "../sql/relationship.js";
 import { getUserProfiles, type UserProfile } from "../sql/profile.js";
@@ -24,7 +24,10 @@ function userProfileBlock(profile: UserProfile | null, relationship: Relationshi
   const facts = profile?.facts.length ? profile.facts.map((fact) => `- ${fact}`).join("\n") : "- ไม่มี";
   return `<user_profile>\nชื่อ: ${name}\nความสัมพันธ์กับ Isla: ${relationshipText}\nฉายาที่ Isla ตั้งให้: ${nicknames}\nfact:\n${facts}\n</user_profile>`;
 }
-function fakeMemoryTool(username: string, memories: Memory[]) { return fakeToolCallResult("search_memory", { username }, memories.map((memory) => ({ text: memory.text, timestamp: memory.timestamp }))); }
+function userMemoryBlock(memories: { text: string; timestamp: string }[]): string {
+  const content = memories.length ? memories.map((memory) => `- ${memory.text}`).join("\n") : "- ไม่มีความทรงจำที่เกี่ยวข้อง";
+  return `<user_memory>\n${content}\n</user_memory>`;
+}
 async function runGemini2(request: GeminiRequest): Promise<ExecuteItem[]> { const result = await sendRequestGemini(request, { responseMode: "tool" }); return typeof result === "string" ? [] : result.map((call) => ({ name: call.name, args: call.args })); }
 async function applyExecute(items: ExecuteItem[], userId: string, timestamp: string): Promise<string | undefined> {
   let selectedImage: string | undefined;
@@ -49,10 +52,9 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const relationship = getRelationships([message.userId])[0] ?? null;
   const profile = getUserProfiles([message.userId])[0] ?? null;
   const profileBlock = userProfileBlock(profile, relationship);
-  const memoryTool = fakeMemoryTool(message.user, memories);
-  const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, message.fileName, memoryTool, message.userId);
-  request1.temporary = memoryTool;
-  const response1 = await sendRequestGemini(request1, { systemInstruction: `${systemPrompt}\n\n${profileBlock}` });
+  const memoryBlock = userMemoryBlock(memories);
+  const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, message.fileName, undefined, message.userId);
+  const response1 = await sendRequestGemini(request1, { systemInstruction: `${systemPrompt}\n\n${profileBlock}\n\n${memoryBlock}` });
   const responseText = typeof response1 === "string" ? response1 : "";
   const responseTimestamp = new Date().toISOString();
   saveMessage({ role: "model", text: responseText, timestamp: responseTimestamp });
