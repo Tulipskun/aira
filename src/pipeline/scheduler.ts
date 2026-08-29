@@ -68,6 +68,16 @@ export class MessageScheduler {
     for (const userId of this.pending.keys()) this.flush(userId);
   }
 
+  /** True while at least one user has messages waiting in the debounce queue. */
+  hasPending(): boolean {
+    return this.pending.size > 0;
+  }
+
+  /** Number of users with queued messages. */
+  pendingCount(): number {
+    return this.pending.size;
+  }
+
   private delay(firstAt: number, now: number): number {
     const sinceFirst = now - firstAt;
     return Math.max(0, Math.min(this.debounceMs, this.maxWaitMs - sinceFirst));
