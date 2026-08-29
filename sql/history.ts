@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 export type HistoryMessage = {
   id?: number;
@@ -11,8 +12,8 @@ export type HistoryMessage = {
   fileName?: string;
 };
 
-const path = process.env.SQLITE_PATH ?? "./data/aira.db";
-mkdirSync(path.substring(0, path.lastIndexOf("/") || 1), { recursive: true });
+const path = process.env.SQLITE_PATH ?? "./.aira/aira.db";
+mkdirSync(dirname(path), { recursive: true });
 const db = new Database(path, { create: true });
 db.run(`CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
