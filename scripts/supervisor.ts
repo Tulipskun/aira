@@ -20,7 +20,7 @@ if (command === "start") {
       process.exit(0);
     }
   }
-  const child = spawn("bun", ["run", daemon], { cwd: root, stdio: "ignore", detached: true, env: process.env });
+  const child = spawn(process.execPath, ["run", daemon], { cwd: root, stdio: "ignore", detached: true, env: process.env });
   child.unref();
   console.log(`[SUPERVISOR] Started (pid ${child.pid})`);
   process.exit(0);

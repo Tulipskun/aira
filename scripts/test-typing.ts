@@ -162,19 +162,24 @@ console.log("=== 5b. send() reject -> loop ไม่พัง, log มี cooldo
   loop.stop();
 }
 
-console.log("=== 6. sendTyping() กับ client จริง (mock) ===");
+console.log("=== 6. sendTyping() ยิง REST ตรง (mock client.rest) ===");
 {
-  const r1 = await sendTyping({ channels: { fetch: async () => null } } as any, "x");
-  check("channel หายไป -> not-textable/no-channel", r1.ok === false);
-  const r2 = await sendTyping({ channels: { fetch: async () => ({ isTextBased: () => false }) } } as any, "x");
-  check("non-text channel -> ok=false", r2.ok === false && r2.reason === "not-textable");
-  let typed = 0;
-  const r3 = await sendTyping({ channels: { fetch: async () => ({ isTextBased: () => true, sendTyping: async () => { typed++; } }) } } as any, "x");
-  check("text channel -> เรียก sendTyping()", r3.ok === true && typed === 1);
-  const r4 = await sendTyping({ channels: { fetch: async () => { throw new Error("403"); } } } as any, "x");
-  check("REST error -> ok=false ไม่ throw", r4.ok === false && r4.reason === "error");
-  const r5 = await sendTyping({} as any, null);
-  check("channelId null -> no-channel", r5.ok === false && r5.reason === "no-channel");
+  const r5 = await sendTyping({ rest: { post: async () => ({}) } } as any, null);
+  check("channelId null -> no-channel, ไม่ยิง REST", r5.ok === false && r5.reason === "no-channel");
+
+  const calls: string[] = [];
+  const ok = await sendTyping({ rest: { post: async (route: string) => { calls.push(route); return {}; } } } as any, "chan-1");
+  check("ยิง POST /channels/:id/typing ครั้งเดียว", ok.ok === true && calls.length === 1 && calls[0] === "/channels/chan-1/typing");
+
+  const fetched: string[] = [];
+  const noFetch = await sendTyping({
+    rest: { post: async () => ({}) },
+    channels: { fetch: async (id: string) => { fetched.push(id); return { isTextBased: () => true, sendTyping: async () => {} }; } },
+  } as any, "chan-2");
+  check("ไม่เรียก channels.fetch() (ตัด round-trip)", noFetch.ok === true && fetched.length === 0);
+
+  const err = await sendTyping({ rest: { post: async () => { throw new Error("403"); } } } as any, "chan-3");
+  check("REST error -> ok=false ไม่ throw", err.ok === false && err.reason === "error");
 }
 
 console.log("=== 7. integration: loop + MessageScheduler จริง (wiring เดียวกับ bot.ts) ===");

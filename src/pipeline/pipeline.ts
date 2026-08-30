@@ -1,4 +1,5 @@
 import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
+import { ISLA_REPLY_SCHEMA, parseIslaReply } from "../gemini/reply-format.js";
 import { embed } from "../memory/embedding.js";
 import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
@@ -85,6 +86,7 @@ async function runGemini2(message: IncomingMessage, responseText: string, relati
     responseMode: "tool",
     tools: [EXECUTE_TOOL],
     systemInstruction: gemini2SystemPrompt,
+    debug: { userId: message.userId, userName: message.user },
   });
   return typeof result === "string" ? [] : result.map((call) => ({ name: call.name, args: call.args }));
 }
@@ -107,21 +109,48 @@ export function restateHistory(history: HistoryMessage[], userId: string, user: 
 }
 
 export async function processMessage(message: IncomingMessage): Promise<ProcessMessageResult> {
+  // One line per turn showing where the time went. Cold-start stalls on this host used to
+  // be invisible: the log could not tell "the model is slow" from "DNS took 5s".
+  let mark = Date.now();
+  const lap = (): number => {
+    const now = Date.now();
+    const ms = now - mark;
+    mark = now;
+    return ms;
+  };
+
   const history = restateHistory(getHistory(50), message.userId, message.user);
   saveMessage({ role: "user", userId: message.userId, user: message.user, text: message.text, timestamp: message.timestamp, fileName: message.fileName });
+  const prepMs = lap();
   const vector = await embed(message.text);
+  const embedMs = lap();
   const memories = await searchMemoriesByVector(vector, 8);
+  const chromaMs = lap();
   const relationship = getRelationships([message.userId])[0] ?? null;
   const profile = getUserProfiles([message.userId])[0] ?? null;
   const profileBlock = userProfileBlock(profile, relationship, message.user);
   const temporaryMemory = fakeToolCallResult("search_memory", { user: message.user }, { memories: memories.map((memory) => ({ text: memory.text, timestamp: memory.timestamp ?? "" })) });
   const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, message.fileName, temporaryMemory, message.userId);
-  const response1 = await sendRequestGemini(request1, { systemInstruction: `${systemPrompt}\n\n${profileBlock}` });
-  const responseText = typeof response1 === "string" ? response1 : "";
+  const buildMs = lap();
+  const response1 = await sendRequestGemini(request1, {
+    systemInstruction: `${systemPrompt}\n\n${profileBlock}`,
+    responseFormat: { type: "text", mime_type: "application/json", schema: ISLA_REPLY_SCHEMA },
+    debug: { userId: message.userId, userName: message.user },
+  });
+  const gemini1Ms = lap();
+  // Gemini 1 answers as { Isla, summery }. Only `Isla` may reach the user or the history; the
+  // recap is metadata. parseIslaReply degrades to "send the raw text" when the model ignores the
+  // format, so a malformed turn still gets a reply instead of an empty message.
+  const reply = parseIslaReply(typeof response1 === "string" ? response1 : "");
+  if (!reply.parsed) console.warn(`[PIPELINE] ${message.user}: Gemini 1 reply was not valid JSON -- sent raw text, no summery`);
+  const responseText = reply.isla;
   const responseTimestamp = new Date().toISOString();
-  saveMessage({ role: "model", text: responseText, timestamp: responseTimestamp });
+  saveMessage({ role: "model", text: responseText, summary: reply.summery || null, timestamp: responseTimestamp });
 
   const executeItems = await runGemini2(message, responseText, relationship);
+  const gemini2Ms = lap();
   const image = await applyExecute(executeItems, message.userId, message.timestamp, message.user);
+  const applyMs = lap();
+  console.log(`[PIPELINE] ${message.user}: total=${prepMs + embedMs + chromaMs + buildMs + gemini1Ms + gemini2Ms + applyMs}ms prep=${prepMs} embed=${embedMs} chroma=${chromaMs} build=${buildMs} gemini1=${gemini1Ms} gemini2=${gemini2Ms} apply=${applyMs}`);
   return { text: responseText, image };
 }

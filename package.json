@@ -6,9 +6,11 @@
     "typecheck": "tsc --noEmit",
     "start": "bun run scripts/supervisor.ts start",
     "stop": "bun run scripts/supervisor.ts stop",
-    "logs": "bun run scripts/supervisor.ts logs"
+    "logs": "bun run scripts/supervisor.ts logs",
+    "forget": "bun run scripts/forget.ts"
   },
   "dependencies": {
+    "@chroma-core/default-embed": "^0.1.9",
     "@google/genai": "latest",
     "chromadb": "latest",
     "discord.js": "latest",

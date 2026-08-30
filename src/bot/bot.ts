@@ -5,6 +5,7 @@ import { handleCommand, isKnownCommand } from "./commands.js";
 import { handleIslaCommand, ISLA_COMMAND_NAME } from "./interactions.js";
 import { createOnFlush, toScheduledMessage } from "./message-handler.js";
 import { startTypingLoop, type TypingIndicator } from "./typing.js";
+import { warmNetwork } from "./warmup.js";
 import { getResponseChannelId } from "./discord-config.js";
 
 const token = process.env.ISLA_TOKEN;
@@ -84,5 +85,13 @@ client.once("ready", () => {
   const channelId = getResponseChannelId();
   console.log(`[DISCORD] Response channel: ${channelId ?? "not set"}`);
 });
+
+// Absorb this host's cold getaddrinfo stalls (see warmup.ts) before logging in, so the
+// first user message does not pay for them. Costs ~10s of startup, which nobody waits
+// on, and saves ~11s on the first reply, which everybody does. Runs before `login()` on
+// purpose: the stall is per process, so whoever resolves first absorbs it — letting the
+// gateway connection eat it would leave the embedding call still exposed.
+const warm = await warmNetwork();
+console.log(`[WARMUP] ${warm.stalls} DNS stall(s) absorbed in ${warm.lookups} lookups, ${warm.ms}ms`);
 
 await client.login(token);

@@ -34,16 +34,25 @@ let stopping = false;
 let chromaProcess: ReturnType<typeof spawn> | undefined;
 let airaProcess: ReturnType<typeof spawn> | undefined;
 
-function stop(code = 0) {
-  if (stopping) return;
-  stopping = true;
-  log("[SUPERVISOR] Stopping services");
-  airaProcess?.kill("SIGTERM");
-  chromaProcess?.kill("SIGTERM");
-  setTimeout(() => {
-    try { unlinkSync(pidFile); } catch {}
-    process.exit(code);
-  }, 1000).unref();
+// Returns a promise that never resolves: callers must never continue past stop().
+// Previously this fell through to the spawn() below, leaving bot.ts orphaned after a failed start.
+function stop(code = 0): Promise<never> {
+  if (!stopping) {
+    stopping = true;
+    log("[SUPERVISOR] Stopping services");
+    const children = [airaProcess, chromaProcess];
+    for (const child of children) {
+      try { child?.kill("SIGTERM"); } catch {}
+    }
+    setTimeout(() => {
+      for (const child of children) {
+        try { child?.kill("SIGKILL"); } catch {}
+      }
+      try { unlinkSync(pidFile); } catch {}
+      process.exit(code);
+    }, 1000);
+  }
+  return new Promise<never>(() => {});
 }
 
 process.once("SIGTERM", () => stop(0));
@@ -56,22 +65,29 @@ chromaProcess = spawn(chroma, ["run", "--path", resolve(runtime, "chroma"), "--h
 });
 chromaProcess.stdout?.on("data", (d) => log(`[CHROMA] ${String(d).trimEnd()}`));
 chromaProcess.stderr?.on("data", (d) => log(`[CHROMA] ${String(d).trimEnd()}`));
+chromaProcess.once("error", (err) => {
+  log(`[SUPERVISOR] Chroma failed to start (${(err as NodeJS.ErrnoException).code ?? err.message})`);
+  void stop(1);
+});
 chromaProcess.once("exit", (code, signal) => {
-  if (!stopping) { log(`[SUPERVISOR] Chroma exited (${signal ?? code}); stopping Aira`); stop(1); }
+  if (!stopping) { log(`[SUPERVISOR] Chroma exited (${signal ?? code}); stopping Aira`); void stop(1); }
 });
 
-const deadline = Date.now() + 30_000;
+// Chroma cold start on this host measures ~29s, which the old 30s deadline could not absorb.
+const deadline = Date.now() + 120_000;
 while (Date.now() < deadline) {
   try {
     const response = await fetch("http://127.0.0.1:8000/api/v2/heartbeat");
     if (response.ok) break;
   } catch {}
-  if (chromaProcess.exitCode !== null) stop(1);
+  if (chromaProcess.exitCode !== null) break;
   await Bun.sleep(250);
 }
-if (Date.now() >= deadline) { log("[SUPERVISOR] Chroma startup timeout"); stop(1); }
+if (Date.now() >= deadline) log("[SUPERVISOR] Chroma startup timeout");
+if (chromaProcess.exitCode !== null || Date.now() >= deadline) await stop(1);
 
-airaProcess = spawn("bun", ["run", "src/bot/bot.ts"], {
+// process.execPath, not "bun": bun is not on PATH in this host's non-login shells.
+airaProcess = spawn(process.execPath, ["run", "src/bot/bot.ts"], {
   cwd: root,
   stdio: ["ignore", "pipe", "pipe"],
   env: process.env,
@@ -79,8 +95,12 @@ airaProcess = spawn("bun", ["run", "src/bot/bot.ts"], {
 });
 airaProcess.stdout?.on("data", (d) => log(`[AIRA] ${String(d).trimEnd()}`));
 airaProcess.stderr?.on("data", (d) => log(`[AIRA] ${String(d).trimEnd()}`));
+airaProcess.once("error", (err) => {
+  log(`[SUPERVISOR] Aira failed to start (${(err as NodeJS.ErrnoException).code ?? err.message})`);
+  void stop(1);
+});
 airaProcess.once("exit", (code, signal) => {
-  if (!stopping) { log(`[SUPERVISOR] Aira exited (${signal ?? code}); stopping`); stop(1); }
+  if (!stopping) { log(`[SUPERVISOR] Aira exited (${signal ?? code}); stopping`); void stop(1); }
 });
 log(`[SUPERVISOR] Started (pid ${process.pid}), Chroma pid ${chromaProcess.pid}, Aira pid ${airaProcess.pid}`);
 

@@ -1,4 +1,4 @@
-import { ChromaClient } from "chromadb";
+import { ChromaClient, type Where } from "chromadb";
 import { embed } from "./embedding.js";
 
 const chromaUrl = process.env.CHROMA_URL ?? "http://127.0.0.1:8000";
@@ -74,4 +74,65 @@ export async function searchMemoriesByVector(vector: number[], limit = 5): Promi
 
 export async function chromaHeartbeat(): Promise<void> {
   await client.heartbeat();
+}
+
+export type MemoryFilter = { userId?: string; ids?: string[]; limit?: number };
+
+function memoryWhere(filter: MemoryFilter): Where {
+  if (!filter.userId) throw new Error("memoryWhere needs a userId");
+  return { userId: filter.userId };
+}
+
+function toMemory(id: string, document: string | null | undefined, metadata: Record<string, Primitive> | null | undefined): Memory {
+  return {
+    id,
+    text: document ?? "",
+    userId: typeof metadata?.userId === "string" ? metadata.userId : undefined,
+    timestamp: typeof metadata?.timestamp === "string" ? metadata.timestamp : undefined,
+    metadata: metadata ?? undefined,
+  };
+}
+
+async function resolveMemoryIds(filter: MemoryFilter): Promise<string[]> {
+  const col = await collection();
+  if (filter.ids?.length) {
+    const found = await col.get({ ids: filter.ids, include: ["metadatas"] });
+    if (!filter.userId) return found.ids;
+    const metadatas = found.metadatas ?? [];
+    return found.ids.filter((id, index) => metadatas[index]?.userId === filter.userId);
+  }
+  const found = await col.get({ ...(filter.userId ? { where: memoryWhere(filter) } : {}), include: [] });
+  return found.ids;
+}
+
+export async function countMemories(filter: MemoryFilter = {}): Promise<number> {
+  if (!filter.userId && !filter.ids?.length) return (await collection()).count();
+  return (await resolveMemoryIds(filter)).length;
+}
+
+export async function listMemories(filter: MemoryFilter = {}): Promise<Memory[]> {
+  let ids = await resolveMemoryIds(filter);
+  if (filter.limit) ids = ids.slice(-filter.limit);
+  if (!ids.length) return [];
+  const found = await (await collection()).get({ ids, include: ["documents", "metadatas"] });
+  const documents = found.documents ?? [];
+  const metadatas = found.metadatas ?? [];
+  return found.ids.map((id, index) => toMemory(id, documents[index], metadatas[index] as Record<string, Primitive> | null | undefined));
+}
+
+export async function deleteMemories(filter: MemoryFilter = {}): Promise<number> {
+  if (!filter.userId && !filter.ids?.length) throw new Error("deleteMemories refuses to delete everything without a filter -- pass --all explicitly");
+  const ids = await resolveMemoryIds(filter);
+  if (!ids.length) return 0;
+  await (await collection()).delete({ ids });
+  return ids.length;
+}
+
+export async function clearMemories(): Promise<number> {
+  const col = await collection();
+  const total = await col.count();
+  if (!total) return 0;
+  const { ids } = await col.get({ include: [] });
+  await col.delete({ ids });
+  return ids.length;
 }

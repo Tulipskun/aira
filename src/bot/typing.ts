@@ -1,4 +1,4 @@
-import type { Client } from "discord.js";
+import { Routes, type Client } from "discord.js";
 
 /**
  * Discord expires a typing indicator after ~10 seconds, so the loop has to re-arm it
@@ -12,23 +12,26 @@ const TYPING_MIN_GAP_MS = 1_000;
 /** Don't log the same failing channel more than once per minute. */
 const TYPING_ERROR_LOG_COOLDOWN_MS = 60_000;
 
-export type SendTypingResult = { ok: boolean; reason?: "no-channel" | "not-textable" | "error" };
+export type SendTypingResult = { ok: boolean; reason?: "no-channel" | "error" };
 
 /**
  * Fire a single "Isla is typing…" indicator in `channelId`.
+ *
+ * Posts straight to `POST /channels/{id}/typing` instead of
+ * `channels.fetch(id).sendTyping()`: the fetch is a second REST round-trip whose only
+ * purpose is to re-derive what the caller already knows (the channel is text-based —
+ * it is the configured response channel). On this host every cold round-trip costs
+ * seconds, so halving them halves the delay before the indicator appears.
+ *
  * Never throws: a typing indicator is cosmetic, so any failure is reported via the result.
  */
 export async function sendTyping(client: Client, channelId: string | null | undefined): Promise<SendTypingResult> {
   if (!channelId) return { ok: false, reason: "no-channel" };
 
   try {
-    const channel = await client.channels.fetch(channelId);
-    if (!channel || !channel.isTextBased() || !("sendTyping" in channel)) {
-      return { ok: false, reason: "not-textable" };
-    }
-    await channel.sendTyping();
+    await client.rest.post(Routes.channelTyping(channelId));
     return { ok: true };
-  } catch (error) {
+  } catch {
     return { ok: false, reason: "error" };
   }
 }

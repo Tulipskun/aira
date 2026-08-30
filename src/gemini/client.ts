@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "../config.js";
 import { addThoughtSignature, invalidateThoughtSignature, nextThoughtSignature } from "./thought-signatures.js";
+import { debugDump, type DebugContext, type DebugStage } from "./debug-dump.js";
 
 export type Message = {
   role: "user" | "model";
@@ -22,6 +23,14 @@ export interface GeminiRequestOptions {
   tools?: Interactions.Tool[];
   responseMode?: "text" | "tool";
   systemInstruction?: string;
+  /**
+   * Sent as the top-level `response_format` of the Interactions request -- the SDK's
+   * non-deprecated way to constrain output. For JSON text:
+   * `{ type: "text", mime_type: "application/json", schema: {...} }`.
+   */
+  responseFormat?: Record<string, unknown>;
+  /** Identity for the debug dump only (see debug-dump.ts); ignored unless GEMINI_DEBUG_PAYLOAD is on. */
+  debug?: DebugContext;
 }
 
 type KeyState = { gemini1: number; gemini2: number };
@@ -118,6 +127,7 @@ export async function sendRequestGemini(requestBody: GeminiRequest, options: Gem
   if (!keys.length && !fallbackKey) throw new Error(`No API key configured for ${mode}`);
   const model = options.model ?? (mode === "tool" ? config.models.gemini2 : config.models.gemini1);
   const stateKey = mode === "tool" ? "gemini2" : "gemini1";
+  const stage: DebugStage = stateKey;
   let lastError: unknown;
   let serverRetries = 0;
   let keyAttempts = 0;
@@ -126,25 +136,45 @@ export async function sendRequestGemini(requestBody: GeminiRequest, options: Gem
 
   while (keyAttempts < (keys.length || 1)) {
     const key = keys.length ? keys[keyState[stateKey] % keys.length] : fallbackKey!;
+    const attempt = keyAttempts + signatureAttempts + serverRetries + 1;
     try {
       const ai = new GoogleGenAI({ apiKey: key });
-      const response = await ai.interactions.create({
+      const payload = {
         model,
         input: [...requestBody.messages.map(messageStep), ...temporary],
         tools: options.tools ?? [],
         ...(options.systemInstruction && { system_instruction: options.systemInstruction }),
+        ...(options.responseFormat && { response_format: options.responseFormat }),
         ...(mode === "tool" ? { generation_config: { tool_choice: { allowed_tools: { mode: "any" } } } } : {}),
         store: false,
-      });
+      };
+      debugDump({ ts: new Date().toISOString(), stage, event: "request", model, attempt, ...options.debug, payload });
+      const response = await ai.interactions.create(payload);
       if (mode === "tool") {
         for (const step of response.steps) {
           if (step.type === "thought") addThoughtSignature((step as { signature?: string }).signature);
         }
-        return response.steps.filter((step) => step.type === "function_call").map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
+        const calls = response.steps.filter((step) => step.type === "function_call").map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
+        debugDump({ ts: new Date().toISOString(), stage, event: "response", model, attempt, ...options.debug, response: { steps: response.steps, calls } });
+        return calls;
       }
+      debugDump({ ts: new Date().toISOString(), stage, event: "response", model, attempt, ...options.debug, response: { output_text: response.output_text ?? "", steps: response.steps } });
       return response.output_text ?? "";
     } catch (error) {
       lastError = error;
+      debugDump({
+        ts: new Date().toISOString(),
+        stage,
+        event: "error",
+        model,
+        attempt,
+        ...options.debug,
+        error: {
+          name: error instanceof Error ? error.name : undefined,
+          status: errorStatus(error),
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
       if (is429(error) && keys.length) { rotateKey(stateKey, keys.length); keyAttempts++; serverRetries = 0; continue; }
       if (isRetryable5xx(error) && serverRetries < MAX_5XX_RETRIES) { await sleep(backoffDelay(serverRetries++)); continue; }
       if (isBadThoughtSignature(error) && signatureAttempts < MAX_SIGNATURE_RETRIES) {
