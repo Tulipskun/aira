@@ -7,6 +7,10 @@ export const config = {
   embedding: {
     dimension: Number(process.env.GEMINI_EMBEDDING2_DIMENSION ?? 768),
   },
+  display: {
+    // Zone used to *render* timestamps for the model. Storage stays UTC regardless.
+    timezone: process.env.ISLA_TIMEZONE ?? "Asia/Bangkok",
+  },
   paths: {
     geminiKeyState: process.env.GEMINI_KEY_STATE_FILE ?? ".aira/gemini-key-state.json",
     geminiThoughtSignatures: process.env.GEMINI_THOUGHT_SIGNATURE_FILE ?? ".aira/gemini-thought-signatures.json",

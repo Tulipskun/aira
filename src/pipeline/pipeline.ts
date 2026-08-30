@@ -1,5 +1,6 @@
 import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
 import { ISLA_REPLY_SCHEMA, parseIslaReply } from "../gemini/reply-format.js";
+import { thaiTimestamp } from "../gemini/time.js";
 import { embed } from "../memory/embedding.js";
 import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
@@ -129,7 +130,8 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const relationship = getRelationships([message.userId])[0] ?? null;
   const profile = getUserProfiles([message.userId])[0] ?? null;
   const profileBlock = userProfileBlock(profile, relationship, message.user);
-  const temporaryMemory = fakeToolCallResult("search_memory", { user: message.user }, { memories: memories.map((memory) => ({ text: memory.text, timestamp: memory.timestamp ?? "" })) });
+  // Chroma stores UTC; the model reads Thai local time, same rule as messageStep().
+  const temporaryMemory = fakeToolCallResult("search_memory", { user: message.user }, { memories: memories.map((memory) => ({ text: memory.text, timestamp: thaiTimestamp(memory.timestamp) })) });
   const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, message.fileName, temporaryMemory, message.userId);
   const buildMs = lap();
   const response1 = await sendRequestGemini(request1, {

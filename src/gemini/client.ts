@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { config } from "../config.js";
 import { addThoughtSignature, invalidateThoughtSignature, nextThoughtSignature } from "./thought-signatures.js";
 import { debugDump, type DebugContext, type DebugStage } from "./debug-dump.js";
+import { thaiTimestamp } from "./time.js";
 
 export type Message = {
   role: "user" | "model";
@@ -74,7 +75,9 @@ function messageStep(message: Message): Interactions.Step {
   const metadata = {
     ...(message.role === "user" && message.user && { user: message.user }),
     text: message.text,
-    timestamp: message.timestamp,
+    // Stored as UTC, shown to the model as Thailand local time with an explicit offset — see
+    // time.ts. The model is never asked to convert a zone, and never sees a bare wall clock.
+    timestamp: thaiTimestamp(message.timestamp),
     ...(message.fileName && { file: message.fileName }),
   };
   return {
