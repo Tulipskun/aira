@@ -8,14 +8,25 @@
  *
  *   bun run scripts/test-reply-reference.ts
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { MessagePayload } from "discord.js";
-import {
+
+const dir = mkdtempSync(join(tmpdir(), "aira-replyref-test-"));
+// Importing message-handler pulls in the pipeline and the SQLite layer, which runs the
+// user_profiles migration at module load. Point it at a throwaway database so a test run can
+// never touch the bot's real history (this is the same guard test-media.ts uses).
+process.env.SQLITE_PATH = join(dir, "test.db");
+
+const {
   buildReplyPayload,
   replyAnchorOf,
   replyReference,
   toScheduledMessage,
-} from "../src/bot/message-handler.js";
-import { MessageScheduler, type ScheduledMessage } from "../src/pipeline/scheduler.js";
+} = await import("../src/bot/message-handler.js");
+const { MessageScheduler } = await import("../src/pipeline/scheduler.js");
+import type { ScheduledMessage } from "../src/pipeline/scheduler.js";
 
 let pass = 0;
 let fail = 0;
@@ -155,5 +166,6 @@ console.log("=== 7. discord.js จริงแปลง replyReference() เป�
     bodyOf({ content: "hi", reply: { messageId: "123", failIfNotExists: false } }) === null);
 }
 
+rmSync(dir, { recursive: true, force: true });
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
