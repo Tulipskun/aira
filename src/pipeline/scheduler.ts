@@ -8,6 +8,12 @@ export type ScheduledMessage = {
   fileName?: string;
   channelId: string;
   /**
+   * Discord message id, used to reply to the *last* message of a flushed batch. Optional so
+   * callers that build messages by hand (tests, replays) keep compiling — the reply is simply
+   * skipped when it is missing rather than falling back to some earlier message in the batch.
+   */
+  messageId?: string;
+  /**
    * Media URLs referenced by the message (attachments, custom emojis, stickers), captured
    * without touching the network. The bytes are fetched when the batch flushes.
    */
