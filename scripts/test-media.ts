@@ -450,6 +450,81 @@ const fitsBinary = await collectMedia([{ name: "big.zip", mimeType: "application
 check("the same file under budget is classified normally", fitsBinary[0]?.kind === "unsupported" && /not readable/.test((fitsBinary[0] as { reason?: string }).reason ?? ""), JSON.stringify(fitsBinary));
 const realText = await collectMedia([{ name: "note.txt", mimeType: "text/plain", url: `${base}/note.txt` }], LOCAL);
 check("a served text file arrives as text", realText[0]?.kind === "text" && (realText[0] as { text?: string }).text === "สวัสดีครับ", JSON.stringify(realText));
+
+console.log("--- the media proxy's 415 must fall back to the direct CDN URL ---");
+// Measured against Discord: proxyURL answers 415 Unsupported Media Type for html/txt/md/json/
+// css/js/xml/yaml/sql/sh/svg/csv/pdf, while cdn.discordapp.com serves the same object at 200.
+const proxyLike = Bun.serve({ port: 0, fetch(req) {
+  const path = new URL(req.url).pathname;
+  if (path.startsWith("/proxy/")) return new Response("Unsupported Media Type", { status: 415 });
+  if (path === "/direct/index.html") {
+    return new Response("<!doctype html><h1>หน้าทดสอบ</h1>", { headers: { "content-type": "text/html" } });
+  }
+  if (path === "/direct/doc.pdf") return new Response("%PDF-1.4 fake", { headers: { "content-type": "application/pdf" } });
+  if (path === "/direct/gone.txt") return new Response("", { status: 404 });
+  return new Response("nope", { status: 404 });
+}});
+const pbase = `http://127.0.0.1:${proxyLike.port}`;
+
+const htmlViaFallback = await collectMedia([{
+  name: "index.html",
+  mimeType: "text/html",
+  url: `${pbase}/proxy/index.html`,
+  fallbackUrl: `${pbase}/direct/index.html`,
+}], LOCAL);
+check("a 415 proxy response recovers via fallbackUrl", htmlViaFallback[0]?.kind === "text", JSON.stringify(htmlViaFallback));
+check("the recovered text is the real file body", (htmlViaFallback[0] as { text?: string }).text?.includes("หน้าทดสอบ") === true, JSON.stringify(htmlViaFallback[0]));
+check("the fallback file is not reported as unsupported", htmlViaFallback[0] !== undefined && htmlViaFallback[0].kind !== "unsupported");
+
+const pdfViaFallback = await collectMedia([{
+  name: "doc.pdf",
+  mimeType: "application/pdf",
+  url: `${pbase}/proxy/doc.pdf`,
+  fallbackUrl: `${pbase}/direct/doc.pdf`,
+}], LOCAL);
+check("a PDF also survives the proxy 415", pdfViaFallback[0]?.kind === "document", JSON.stringify(pdfViaFallback));
+
+const bothDead = await collectMedia([{
+  name: "gone.txt",
+  mimeType: "text/plain",
+  url: `${pbase}/proxy/gone.txt`,
+  fallbackUrl: `${pbase}/direct/gone.txt`,
+}], LOCAL);
+check("when both URLs fail it still says could not be downloaded", bothDead[0]?.kind === "unsupported" && /could not be downloaded/.test((bothDead[0] as { reason?: string }).reason ?? ""), JSON.stringify(bothDead));
+
+const primaryWins = await collectMedia([{
+  name: "note.txt",
+  mimeType: "text/plain",
+  url: `${base}/note.txt`,
+  fallbackUrl: `${pbase}/direct/index.html`,
+}], LOCAL);
+check("a working proxy response never touches the fallback", primaryWins[0]?.kind === "text" && (primaryWins[0] as { text?: string }).text === "สวัสดีครับ", JSON.stringify(primaryWins));
+
+// SSRF: fallbackUrl is a second URL and must not smuggle a host the primary gate refused.
+const refusedFallback = await collectMedia([{
+  name: "index.html",
+  mimeType: "text/html",
+  url: `${pbase}/proxy/index.html`,
+  fallbackUrl: "http://169.254.169.254/latest/meta-data/",
+}], { allowUrl: (u) => u.startsWith(`http://127.0.0.1:${proxyLike.port}/proxy/`) });
+check("a disallowed fallbackUrl is dropped, not fetched", refusedFallback[0]?.kind === "unsupported" && /could not be downloaded/.test((refusedFallback[0] as { reason?: string }).reason ?? ""), JSON.stringify(refusedFallback));
+const keptPrimary = await collectMedia([{
+  name: "note.txt",
+  mimeType: "text/plain",
+  url: `${base}/note.txt`,
+  fallbackUrl: "http://169.254.169.254/x",
+}], { allowUrl: (u) => u.startsWith(base) });
+check("a disallowed fallback does not discard a readable file", keptPrimary[0]?.kind === "text" && (keptPrimary[0] as { text?: string }).text === "สวัสดีครับ", JSON.stringify(keptPrimary));
+
+// tooLarge is a property of the object, not the URL — retrying the mirror cannot help.
+const oversized = await collectMedia([{
+  name: "big.txt",
+  mimeType: "text/plain",
+  url: `${pbase}/proxy/big.txt`,
+  fallbackUrl: `${base}/note.txt`,
+}], { ...LOCAL, maxBytes: 8 });
+check("a 415 primary still falls back even when the fallback is over budget", oversized[0]?.kind === "unsupported" && /too large/.test((oversized[0] as { reason?: string }).reason ?? ""), JSON.stringify(oversized));
+proxyLike.stop();
 srv.stop();
 const bigText = await classifyMedia({ name: "huge.txt", mimeType: "text/plain", data: utf8("x".repeat(5000)) }, { maxTextChars: 1000 });
 check("oversized text is truncated, not dropped", bigText.kind === "text" && (bigText as { text: string }).text.length === 1000, JSON.stringify({ kind: bigText.kind, len: (bigText as { text?: string }).text?.length }));

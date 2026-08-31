@@ -393,7 +393,20 @@ export type MediaBearing = {
  * ScheduledMessage at receive time while the actual download happens later, at flush
  * time — the message path must not block on network I/O just to light the typing indicator.
  */
-export type MediaSource = { name: string; mimeType: string; url: string };
+export type MediaSource = {
+  name: string;
+  mimeType: string;
+  url: string;
+  /**
+   * Second URL to try when `url` fails. Discord's media proxy answers **415 Unsupported Media
+   * Type** for everything it will not render as media — measured: html, txt, md, json, css, js,
+   * xml, yaml, sql, sh, svg, csv and **pdf** all 415, while the same object on
+   * `cdn.discordapp.com` returns 200. Images, GIFs and mp4 pass through the proxy fine, so the
+   * proxy stays first (cache-friendly, works when hotlinking is blocked) and this carries the
+   * direct CDN URL for the rest.
+   */
+  fallbackUrl?: string;
+};
 
 /** Custom emojis referenced in a message, as CDN sources. Animated ones are served as GIF. */
 export function parseCustomEmojis(content: string): MediaSource[] {
@@ -431,6 +444,17 @@ async function fetchBytes(url: string, maxBytes: number): Promise<{ data: Buffer
 }
 
 /**
+ * Fetch a source, retrying on `fallbackUrl` when the primary URL refuses it. The proxy's 415 is
+ * not a dead link — the object exists and the direct CDN URL serves it — so without this every
+ * text/source and PDF attachment is discarded as "could not be downloaded" (see MediaSource).
+ */
+async function fetchSource(source: MediaSource, maxBytes: number): Promise<{ data: Buffer } | { tooLarge: true } | null> {
+  const primary = await fetchBytes(source.url, maxBytes);
+  if (primary || !source.fallbackUrl || source.fallbackUrl === source.url) return primary;
+  return fetchBytes(source.fallbackUrl, maxBytes);
+}
+
+/**
  * Every media source on a message: attachments, then custom emojis, then stickers.
  * Synchronous and network-free by design — this runs on the receive path.
  */
@@ -442,8 +466,11 @@ export function mediaSourcesOf(message: MediaBearing): MediaSource[] {
     sources.push({
       name,
       mimeType: effectiveMime(attachment.contentType, name),
-      // proxyURL is the media-proxy endpoint; it works without hotlinking Discord's CDN.
+      // proxyURL is the media-proxy endpoint; it works without hotlinking Discord's CDN. But the
+      // proxy 415s anything it does not treat as media (text, source, PDF), so keep the direct
+      // CDN URL as the retry target.
       url: attachment.proxyURL ?? attachment.url,
+      fallbackUrl: attachment.proxyURL && attachment.proxyURL !== attachment.url ? attachment.url : undefined,
     });
   }
 
@@ -460,6 +487,8 @@ export function mediaSourcesOf(message: MediaBearing): MediaSource[] {
   // Link unfurls: a klipy/tenor/giphy GIF link is not an attachment, but Discord has already
   // fetched it and exposes a proxied `video` (mp4, for gifv providers) or `image`. One source per
   // embed, best first — taking image *and* thumbnail would double-bill the same clip.
+  // No fallbackUrl here on purpose: the unprefixed URL is the third-party host, and never
+  // fetching it is the whole point of reading embeds instead of the link the user typed.
   for (const embed of message.embeds?.values() ?? []) {
     const picked = embed.video ?? embed.image ?? embed.thumbnail;
     if (!picked) continue;
@@ -499,7 +528,15 @@ export async function collectMedia(sources: MediaSource[], options: MediaOptions
       items.push({ kind: "unsupported", label: candidate.name, reason: "host not allowed" });
       continue;
     }
-    const fetched = await fetchBytes(candidate.url, opts.maxBytes);
+    // The fallback is a second URL and gets the same gate: a caller that only validated `url`
+    // must not be able to smuggle an internal address through `fallbackUrl`. When it fails the
+    // gate the source is still worth trying once — for a link embed `fallbackUrl` is the
+    // third-party host, which is *expected* to be refused, so drop the retry rather than the file.
+    const source: MediaSource =
+      candidate.fallbackUrl && !opts.allowUrl(candidate.fallbackUrl)
+        ? { ...candidate, fallbackUrl: undefined }
+        : candidate;
+    const fetched = await fetchSource(source, opts.maxBytes);
     if (!fetched) {
       items.push({ kind: "unsupported", label: candidate.name, reason: "could not be downloaded" });
       continue;
