@@ -21,23 +21,32 @@
  */
 
 import type { BondLevel } from "../sql/bonds.js";
+import { imageNames, isKnownImage, normalizeImageName } from "../bot/images.js";
 
-/** Isla's expression images, offered to Gemini 2 as the `select_image` enum. */
-export const IMAGES = [
-  "neutral",
-  "happy",
-  "laugh",
-  "shy_smile",
-  "soft_smile",
-  "angry",
-  "sad",
-  "surprised",
-  "confused",
-  "playful",
-  "sick",
-] as const;
+/** What the model answers when no picture fits this turn. Not a filename. */
+export const NO_IMAGE = "none";
 
-export type ImageName = (typeof IMAGES)[number];
+/**
+ * Isla's expression images, offered to Gemini 2 as the `select_image` enum.
+ *
+ * **The `images/` directory is the list** (see `bot/images.ts`) — there used to be a hardcoded
+ * array of invented names here (`neutral`, `happy`, `shy_smile`, …) that matched no file on disk,
+ * so the model could only ever pick a picture that failed to load, and adding artwork changed
+ * nothing. Dropping a file into `images/` now makes it offerable with no code edit.
+ *
+ * `imageChoices()` is the live read; `IMAGES` is the boot-time snapshot, kept because tests and
+ * callers want a plain array. The schema uses the getter so the enum handed to the API always
+ * agrees with the catalog printed in Gemini 2's system prompt — both are re-read per request, and
+ * both produce the same string until somebody actually adds a picture, so the prompt cache is not
+ * disturbed by the liveness.
+ */
+export function imageChoices(dir?: string): string[] {
+  return [...imageNames(dir), NO_IMAGE];
+}
+
+export const IMAGES: readonly string[] = imageChoices();
+
+export type ImageName = string;
 
 export const AFFINITY_MIN = -100;
 export const AFFINITY_MAX = 100;
@@ -70,6 +79,8 @@ export type IslaState = {
   /** Empty means "no image this turn" — a legitimate answer, not a failure. */
   selectImage: string;
   addFacts: string[];
+  /** Nicknames Isla gave the user in her reply this turn. Shown in the embed footer. */
+  addNicknames: string[];
   /** Empty means nothing worth keeping long-term. */
   ingestMemory: string;
   /** The reply was usable JSON matching the shape above. */
@@ -125,13 +136,25 @@ export const ISLA_STATE_SCHEMA = {
     },
     select_image: {
       type: "string",
-      enum: [...IMAGES],
-      description: "รูปอารมณ์ของไอล่าที่ตรงกับข้อความของเธอที่สุดในเทิร์นนี้",
+      // A getter, not a snapshot: the enum must never disagree with the file list in the prompt.
+      get enum() {
+        return imageChoices();
+      },
+      description:
+        "ไฟล์รูปอารมณ์ของไอล่าที่ตรงกับข้อความของเธอที่สุดในเทิร์นนี้ ต้องเป็นชื่อไฟล์ที่ระบุไว้ในรายการเท่านั้น " +
+        `(รวม "${NO_IMAGE}" เมื่อไม่มีรูปไหนเข้ากับอารมณ์ของเธอจริง ๆ — ดีกว่าส่งรูปผิด)`,
     },
     add_facts: {
       type: "array",
       items: { type: "string" },
       description: "ข้อเท็จจริงเกี่ยวกับผู้ใช้โดยตรง (ชื่อ, อายุ, การเรียน, งาน, ครอบครัว, ความชอบ, นิสัย) — ไม่เกิน 3 ข้อต่อเทิร์น",
+    },
+    add_nicknames: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "ฉายาที่ไอล่าเพิ่งตั้งให้ผู้ใช้ในข้อความของเทิร์นนี้ (คำสั้น ๆ ไม่มีเครื่องหมาย #) — " +
+        "ใส่เฉพาะที่เธอเรียกจริงในคำตอบของเธอ ถ้าไม่มีให้ส่งค่าว่าง []",
     },
     ingest_memory: {
       type: "string",
@@ -175,6 +198,7 @@ const FIELD_KEYS: Record<string, string[]> = {
   approveFamily: ["approve_family", "approveFamily", "family_accepted", "accept_family"],
   selectImage: ["select_image", "selectImage", "image", "expression"],
   addFacts: ["add_facts", "addFacts", "facts"],
+  addNicknames: ["add_nicknames", "addNicknames", "nicknames", "nickname"],
   ingestMemory: ["ingest_memory", "ingestMemory", "memory"],
 };
 
@@ -285,6 +309,7 @@ export function parseIslaState(raw: string, bond: BondName | string | null | und
       affinity: 0,
       selectImage: "",
       addFacts: [],
+      addNicknames: [],
       ingestMemory: "",
       parsed: false,
       warnings: ["empty reply"],
@@ -297,6 +322,7 @@ export function parseIslaState(raw: string, bond: BondName | string | null | und
       affinity: 0,
       selectImage: "",
       addFacts: [],
+      addNicknames: [],
       ingestMemory: "",
       parsed: false,
       warnings: ["reply was not JSON"],
@@ -325,7 +351,7 @@ export function parseIslaState(raw: string, bond: BondName | string | null | und
     }
   }
 
-  const state: IslaState = { affinity, selectImage: "", addFacts: [], ingestMemory: "", parsed: true, warnings };
+  const state: IslaState = { affinity, selectImage: "", addFacts: [], addNicknames: [], ingestMemory: "", parsed: true, warnings };
 
   // --- is_flirt: only asked when the rung can still turn romantic ---
   if (romanticallyAvailable(bond)) {
@@ -367,17 +393,23 @@ export function parseIslaState(raw: string, bond: BondName | string | null | und
   }
 
   // --- select_image ---
+  // Validated against the `images/` directory, not against a list copied into this file. The model
+  // may answer with a path prefix (`images/foo.jpg`) or with `none`; both are normal answers, and
+  // only a name that has no file behind it is a warning.
   const rawImage = read("selectImage");
-  const image = typeof rawImage === "string" ? rawImage.trim() : rawImage === undefined ? "" : String(rawImage);
-  if (!image) {
-    warnings.push("no select_image -- no image this turn");
-  } else if (!(IMAGES as readonly string[]).includes(image)) {
+  const image = typeof rawImage === "string" ? normalizeImageName(rawImage) : rawImage === undefined ? "" : normalizeImageName(String(rawImage));
+  if (!image || image.toLowerCase() === NO_IMAGE) {
+    // `none` is the model exercising its opt-out; an absent field is drift. Both mean "no picture",
+    // but only the second is worth a warning.
+    if (!image) warnings.push("no select_image -- no image this turn");
+  } else if (!isKnownImage(image)) {
     warnings.push(`unknown select_image "${image}" -- no image this turn`);
   } else {
     state.selectImage = image;
   }
 
   state.addFacts = asStringList(read("addFacts"));
+  state.addNicknames = asStringList(read("addNicknames"));
   const memory = read("ingestMemory");
   state.ingestMemory = typeof memory === "string" ? memory.trim() : memory === undefined ? "" : String(memory).trim();
 

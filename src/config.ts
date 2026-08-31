@@ -16,5 +16,8 @@ export const config = {
     geminiThoughtSignatures: process.env.GEMINI_THOUGHT_SIGNATURE_FILE ?? ".aira/gemini-thought-signatures.json",
     gemini1SystemPrompt: process.env.GEMINI1_SYSTEM_PROMPT_FILE ?? "./src/gemini/prompts/isla.md",
     geminiPayloadDump: process.env.GEMINI_DEBUG_PAYLOAD_FILE ?? ".aira/logs/gemini-payload.jsonl",
+    // Isla's expression images. The directory *is* the enum offered to Gemini 2, so adding a
+    // picture needs no code change. Relative paths resolve from the project root (see bot/images.ts).
+    images: process.env.ISLA_IMAGES_DIR ?? "./images",
   },
 };

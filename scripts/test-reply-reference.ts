@@ -26,12 +26,15 @@ const {
   toScheduledMessage,
 } = await import("../src/bot/message-handler.js");
 const { MessageScheduler } = await import("../src/pipeline/scheduler.js");
+const footer = await import("../src/bot/embed-footer.js");
+const { BOND_NAMES, bondEmoji } = await import("../src/sql/bonds.js");
+const bondsAll = BOND_NAMES as string[];
 import type { ScheduledMessage } from "../src/pipeline/scheduler.js";
 
 let pass = 0;
 let fail = 0;
-function check(label: string, cond: boolean): void {
-  console.log(`  ${cond ? "✅" : "❌"} ${label}`);
+function check(label: string, cond: boolean, seen?: unknown): void {
+  console.log(`  ${cond ? "✅" : "❌"} ${label}${cond || seen === undefined ? "" : ` -- got: ${JSON.stringify(seen)}`}`);
   cond ? pass++ : fail++;
 }
 
@@ -166,17 +169,19 @@ console.log("=== 7. discord.js จริงแปลง replyReference() เป�
     bodyOf({ content: "hi", reply: { messageId: "123", failIfNotExists: false } }) === null);
 }
 
-console.log("=== 8. mood → footer, color → เส้นสีของ embed ===");
+console.log("=== 8. mood/status → footer, color → เส้นสีของ embed ===");
 {
   const dataOf = (options: Parameters<typeof buildReplyPayload>[0]) =>
     (buildReplyPayload(options).embeds?.[0] as { data?: Record<string, unknown> }).data ?? {};
+  const footerOf = (options: Parameters<typeof buildReplyPayload>[0]) =>
+    (dataOf(options).footer as { text?: string } | undefined)?.text;
 
   const mooded = dataOf({ text: "ยินดีต้อนรับค่ะ", mood: "ยินดี", color: 0xf1c40f });
-  check("footer อารมณ์ภาษาไทย", (mooded.footer as { text?: string }).text === "ไอล่า · ยินดี");
+  check("footer มีบรรทัดอารมณ์", (mooded.footer as { text?: string } | undefined)?.text === "อารมณ์: ยินดี");
   check("embed ได้สีเป็น number", mooded.color === 0xf1c40f);
 
   const plain = dataOf({ text: "ไม่มีอารมณ์" });
-  check("ไม่มี mood -> footer เดิม", (plain.footer as { text?: string }).text === "Isla");
+  check("ไม่มี mood และไม่มี status -> footer fallback", (plain.footer as { text?: string } | undefined)?.text === "Isla");
   check("ไม่มี color -> ไม่ส่ง color เลย (ให้ Discord ใช้สี default)", !("color" in plain));
 
   // สีดำสนิทคือสีที่ใช้ได้จริง ถ้าโค้ดเขียน `if (options.color)` ค่า 0 จะถูกทิ้งเงียบ ๆ
@@ -184,20 +189,29 @@ console.log("=== 8. mood → footer, color → เส้นสีของ embed
   check("color = 0 (ดำ) ยังถูกส่ง", black.color === 0);
 
   const moodOnly = dataOf({ text: "งอน", mood: "งอน" });
-  check("มี mood อย่างเดียวก็ยังตั้ง footer", (moodOnly.footer as { text?: string }).text === "ไอล่า · งอน");
+  check("มี mood อย่างเดียวก็ยังตั้ง footer", (moodOnly.footer as { text?: string } | undefined)?.text === "อารมณ์: งอน");
   check("มี mood อย่างเดียว -> ไม่มี color key", !("color" in moodOnly));
+
+  // การ์ดความสัมพันธ์เต็มรูปแบบ (ตัวอย่างที่เจ้าของรูปแบบกำหนด)
+  const card = footerOf({
+    text: "คิดถึงเหมือนกันนะคะ",
+    mood: "สงบ",
+    status: { userName: "Farris", bond: "lover", xp: 199, xpDelta: 12, nickname: ["คนโปรด", "คนขี้แกล้ง"] },
+  });
+  check("การ์ดครบรูปตามที่กำหนด", card === "Farris (คนรัก) ❤️ 199 [+12] #คนโปรด #คนขี้แกล้ง\nอารมณ์: สงบ", card);
 
   const imageAndMood = dataOf({
     text: "เขิน",
     image: { buffer: Buffer.from("x"), name: "shy.png" },
     mood: "อาย",
     color: 0xe91e63,
+    status: { userName: "Yuuta", bond: "friend", xp: 160, xpDelta: 10 },
   });
-  check("มีรูป + mood + color ไปด้วยกัน", imageAndMood.color === 0xe91e63
-    && (imageAndMood.footer as { text?: string }).text === "ไอล่า · อาย"
+  check("มีรูป + mood + color + status ไปด้วยกัน", imageAndMood.color === 0xe91e63
+    && (imageAndMood.footer as { text?: string }).text === "Yuuta (เพื่อน) 🙂 160 [+10]\nอารมณ์: อาย"
     && (imageAndMood.image as { url?: string }).url === "attachment://shy.png");
 
-  // of-Discord proof: ค่าทั้งสองรอดผ่าน MessagePayload ไปถึง body จริง
+  // of-Discord proof: ทุกค่ารอดผ่าน MessagePayload ไปถึง body จริง
   const target = {
     isMessage: false,
     client: { options: { failIfNotExists: true, jsonTransformer: (x: unknown) => x } },
@@ -205,16 +219,72 @@ console.log("=== 8. mood → footer, color → เส้นสีของ embed
   };
   const payload = new MessagePayload(target as never, buildReplyPayload({
     text: "ขอบคุณค่ะ", mood: "ขอบคุณ", color: 0xf1c40f, replyTo: "999",
+    status: { userName: "Farris", bond: "lover", xp: 199, xpDelta: 12, nickname: ["คนโปรด"] },
   }) as never);
   payload.resolveBody();
   const body = payload.body as {
-    embeds?: Array<{ color?: number; footer?: { text?: string }; description?: string }>;
+    embeds?: Array<{ color?: number; footer?: { text?: string }; description?: string; timestamp?: string }>;
     message_reference?: { message_id?: string };
   };
   check("body ที่ส่งให้ Discord มี color", body.embeds?.[0]?.color === 0xf1c40f);
-  check("body มี footer ภาษาไทยตรงตัว", body.embeds?.[0]?.footer?.text === "ไอล่า · ขอบคุณ");
+  check("body มี footer สองบรรทัดตามรูปแบบ", body.embeds?.[0]?.footer?.text === "Farris (คนรัก) ❤️ 199 [+12] #คนโปรด\nอารมณ์: ขอบคุณ");
   check("footer/color ไม่ไปทับ message_reference", body.message_reference?.message_id === "999");
   check("ข้อความยังอยู่ใน description (ไม่ไปปนกับ mood)", body.embeds?.[0]?.description === "ขอบคุณค่ะ");
+  check("embed มี timestamp เป็น ISO string", typeof body.embeds?.[0]?.timestamp === "string"
+    && !Number.isNaN(Date.parse(body.embeds?.[0]?.timestamp ?? "")), body.embeds?.[0]?.timestamp);
+}
+
+console.log("=== 9. setTimestamp: ไม่ hardcode, ไม่พังเมื่อค่าใช้ไม่ได้ ===");
+{
+  const dataOf = (options: Parameters<typeof buildReplyPayload>[0]) =>
+    (buildReplyPayload(options).embeds?.[0] as { data?: Record<string, unknown> }).data ?? {};
+
+  const fixed = new Date("2026-08-31T13:00:00.000Z");
+  const stamped = dataOf({ text: "ค่ะ", timestamp: fixed });
+  check("timestamp ที่ส่งมาใช้ตรงตัว", stamped.timestamp === "2026-08-31T13:00:00.000Z", stamped.timestamp);
+
+  const epoch = dataOf({ text: "ค่ะ", timestamp: 1787000000000 });
+  check("รับ number (epoch ms) ได้", epoch.timestamp === new Date(1787000000000).toISOString(), epoch.timestamp);
+
+  const iso = dataOf({ text: "ค่ะ", timestamp: "2026-08-31T13:00:00.000Z" });
+  check("รับ ISO string ได้ (builders ไม่รับ string ตรง ๆ ต้องแปลงก่อน)", iso.timestamp === "2026-08-31T13:00:00.000Z", iso.timestamp);
+
+  const before = Date.now();
+  const defaulted = dataOf({ text: "ค่ะ" });
+  const after = Date.now();
+  const autoMs = Date.parse(String(defaulted.timestamp));
+  check("ไม่ส่ง timestamp -> ใช้เวลาตอนนี้ (ไม่ใช่ค่าคงที่ในโค้ด)", autoMs >= before - 1000 && autoMs <= after + 1000, defaulted.timestamp);
+
+  const junk = dataOf({ text: "ค่ะ", timestamp: "เมื่อวาน" });
+  check("ค่าที่ parse ไม่ได้เลย -> ไม่ตั้ง timestamp เลย (ไม่ throw)", !("timestamp" in junk), junk.timestamp);
+
+  const zero = dataOf({ text: "ค่ะ", timestamp: 0 });
+  check("timestamp = 0 (epoch) ถูกมองข้าม ไม่กลายเป็น 1970", !("timestamp" in zero), zero.timestamp);
+}
+
+console.log("=== 10. embed-footer: การตัดชื่อ/ป้าย และค่าที่ขาด ===");
+{
+  check("ชื่อเกิน 12 ตัวอักษรถูกตัด + ellipsis", footer.footerNameOf("Farris Farrisovich Long") === "Farris Farr…", footer.footerNameOf("Farris Farrisovich Long"));
+  check("ชื่อ 12 ตัวพอดีไม่ถูกตัด", footer.footerNameOf("abcdefghijkl") === "abcdefghijkl");
+  check("ชื่อภาษาไทยไม่ถูกตัดกลางสระ/วรรณยุกต์", (() => {
+    const name = "ไอล่า测试ชื่อไทยยาวมาก";
+    const clipped = footer.footerNameOf(name);
+    return clipped.length <= 12 && !/[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]$/.test(clipped);
+  })(), footer.footerNameOf("ไอล่า测试ชื่อไทยยาวมาก"));
+  check("ชื่อว่าง -> ไม่มีบรรทัดสถานะ", footer.statusLineOf({ userName: "  ", bond: "lover", xp: 5 }) === "");
+  check("bond ไม่รู้จัก -> ไม่แต่งสถานะให้", footer.statusLineOf({ userName: "A", bond: "bestie", xp: 3 }) === "A 3");
+  check("xpDelta 0 -> ไม่ใส่ [0]", footer.statusLineOf({ userName: "A", bond: "friend", xp: 3, xpDelta: 0 }) === "A (เพื่อน) 🙂 3");
+  check("xpDelta ติดลบมีเครื่องหมาย", footer.xpDeltaText(-7) === "-7" && footer.xpDeltaText(7) === "+7" && footer.xpDeltaText(0) === "");
+  check("nickname เกิน 3 ป้ายถูกตัด", footer.nicknameTagsOf(["a", "b", "c", "d", "e"]) === "#a #b #c");
+  check("nickname ว่าง/มี # ซ้ำถูกทิ้ง", footer.nicknameTagsOf(["", "  ", "มี#ในคำ", "\n"]) === "#มีในคำ");
+  check("nickname ยาวถูกตัด", (() => {
+    const tag = footer.nicknameTagsOf(["ชื่อเล่นยาวมากเป็นพิเศษสำหรับทดสอบการตัด"]);
+    return tag.startsWith("#") && tag.length <= footer.MAX_NICKNAME_CHARS + 1;
+  })(), footer.nicknameTagsOf(["ชื่อเล่นยาวมากเป็นพิเศษสำหรับทดสอบการตัด"]));
+  check("mood ว่าง -> ไม่มีบรรทัดอารมณ์", footer.moodLineOf("   ") === "");
+  check("mood หลายช่องว่างถูกบีบ", footer.moodLineOf("  ยินดี   มาก  ") === "อารมณ์: ยินดี มาก");
+  check("ทุก bond มี emoji", bondsAll.every((b) => bondEmoji(b) !== ""));
+  check("bond ไม่รู้จัก -> emoji ว่าง", bondEmoji("nope") === "" && bondEmoji(null) === "");
 }
 
 rmSync(dir, { recursive: true, force: true });

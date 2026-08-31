@@ -31,14 +31,17 @@ Relevant Chroma memories are provided separately through the temporary fake `sea
 
 Gemini 2 runs only after Gemini 1 has completed. Its input includes the relevant turn/context and Gemini 1's response.
 
-Gemini 2 uses one forced `execute` function. The function arguments contain operations the application must perform, for example:
+Gemini 2 answers with one flat JSON object, forced by the request's `response_format` (the same
+mechanism Gemini 1 uses). It reports *facts about the turn* — never a relationship rung:
 
-- relationship/stat updates
-- `ingest_memory(...)`
-- `select_image(...)`
-- future user-profile updates
+- `affinity` — how much the relationship moved (this becomes xp)
+- `is_flirt`, `approve_lover`, `approve_soulmate`, `approve_sibling`, `approve_family`
+- `select_image` — a filename from the `images/` directory, or `none`
+- `add_facts`, `add_nicknames`, `ingest_memory`
 
-The application parses the returned operations and applies them to SQL, Chroma, and the local image registry.
+The application parses that object and applies it to SQL, Chroma, and the local image registry; the
+bond itself is computed in code (`deriveBond()` in `src/sql/bonds.ts`), so a model can never name a
+rung or skip a prerequisite.
 
 Gemini 2 is on the synchronous response path because its relationship/state result and selected image can be required before the Discord reply is sent.
 

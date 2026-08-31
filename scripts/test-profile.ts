@@ -5,7 +5,7 @@
 // No network. Every case uses a throwaway SQLite file, and the applyState cases never set
 // `ingest_memory` — that is the only field that would reach Chroma/Gemini.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -18,6 +18,35 @@ function check(label: string, cond: boolean, seen?: unknown): void {
 
 const dir = mkdtempSync(join(tmpdir(), "aira-profile-test-"));
 const { Database } = await import("bun:sqlite");
+
+/*
+ * The `select_image` enum is read from the `images/` directory, so these tests need a directory of
+ * their own: pointing at the real one would make every assertion depend on how many pictures happen
+ * to be checked in, and a picture added later would "break" an unrelated parser test.
+ *
+ * Set before anything imports `config` or `bot/images`: `IMAGES` in state-format.ts is a module-level
+ * const, so the env var has to be in place before that module is first imported.
+ */
+const imagesDir = join(dir, "images");
+mkdirSync(imagesDir, { recursive: true });
+for (const name of ["neutral.jpg", "happy.jpg", "shy_smile.jpg", "angry.jpg", "sad.jpg"]) {
+  writeFileSync(join(imagesDir, name), `fake-jpeg:${name}`);
+}
+writeFileSync(
+  join(imagesDir, "manifest.json"),
+  JSON.stringify({
+    "neutral.jpg": "หน้าปกติ ยิ้มเล็กน้อย //group=calm_warm",
+    "happy.jpg": "ยิ้มกว้าง ตาปิด — ใช้ตอนดีใจ //group=excited",
+    // shy_smile.jpg is deliberately undocumented; notes.jpg has no file behind it.
+    "notes.jpg": "ไฟล์ที่ไม่มีอยู่จริงบนดิสก์",
+  }),
+);
+process.env.ISLA_IMAGES_DIR = imagesDir;
+const IMG = "neutral.jpg";
+const IMG_SHY = "shy_smile.jpg";
+
+const { imageNames, imageCatalog, imageListForPrompt, isKnownImage, resolveEmotionImage, fetchEmotionImage } =
+  await import("../src/bot/images.js");
 
 /** Import a fresh copy of the module so it opens `file` with its own migration pass. */
 async function loadProfile(file: string, tag: string) {
@@ -348,9 +377,11 @@ console.log("=== J. parseIslaState — Gemini 2's JSON reply ===");
   const parse = (raw: string, bond = "stranger") => st.parseIslaState(raw, bond);
 
   check("schema requires only the always-meaningful fields", JSON.stringify(st.ISLA_STATE_SCHEMA.required) === JSON.stringify(["affinity", "select_image"]), st.ISLA_STATE_SCHEMA.required);
-  check("schema offers the image enum", (st.ISLA_STATE_SCHEMA.properties.select_image.enum as readonly string[]).includes("shy_smile"));
+  check("schema offers the image enum from the directory", (st.ISLA_STATE_SCHEMA.properties.select_image.enum as readonly string[]).includes(IMG_SHY));
+  check("schema offers every file in the directory", imageNames().every((n: string) => (st.ISLA_STATE_SCHEMA.properties.select_image.enum as readonly string[]).includes(n)), st.ISLA_STATE_SCHEMA.properties.select_image.enum);
+  check("schema offers an explicit opt-out", (st.ISLA_STATE_SCHEMA.properties.select_image.enum as readonly string[]).includes("none"));
   check("schema has no bond field", !("bond" in st.ISLA_STATE_SCHEMA.properties) && !("state" in st.ISLA_STATE_SCHEMA.properties));
-  check("schema names every key the parser accepts", ["affinity", "is_flirt", "approve_lover", "approve_soulmate", "approve_sibling", "approve_family", "select_image", "add_facts", "ingest_memory"].every((k) => k in st.ISLA_STATE_SCHEMA.properties));
+  check("schema names every key the parser accepts", ["affinity", "is_flirt", "approve_lover", "approve_soulmate", "approve_sibling", "approve_family", "select_image", "add_facts", "add_nicknames", "ingest_memory"].every((k) => k in st.ISLA_STATE_SCHEMA.properties));
 
   check("required fields at stranger", st.requiredFieldsFor("stranger").join(",") === "affinity,selectImage,isFlirt", st.requiredFieldsFor("stranger"));
   check("required fields at crush adds approve_lover", st.requiredFieldsFor("crush").includes("approveLover"));
@@ -359,66 +390,66 @@ console.log("=== J. parseIslaState — Gemini 2's JSON reply ===");
   check("sibling/family are not asked about flirting", !st.romanticallyAvailable("sibling") && !st.romanticallyAvailable("family") && !st.romanticallyAvailable("enemy"));
   check("crush/lover/stranger can still become romantic", st.romanticallyAvailable("crush") && st.romanticallyAvailable("stranger"));
 
-  const good = parse('{"affinity":12,"is_flirt":false,"select_image":"happy","add_facts":["ชอบชา"],"ingest_memory":""}');
-  check("clean reply parses", good.parsed && good.affinity === 12 && good.selectImage === "happy", good);
+  const good = parse('{"affinity":12,"is_flirt":false,"select_image":"happy.jpg","add_facts":["ชอบชา"],"ingest_memory":""}');
+  check("clean reply parses", good.parsed && good.affinity === 12 && good.selectImage === "happy.jpg", good);
   check("facts read as a list", good.addFacts.length === 1 && good.addFacts[0] === "ชอบชา");
   check("empty memory is a legitimate answer", good.ingestMemory === "");
   check("no warnings on a complete reply", good.warnings.length === 0, good.warnings);
 
-  check("code fences tolerated", parse('```json\n{"affinity":10,"select_image":"neutral"}\n```').affinity === 10);
-  check("prose around the object tolerated", parse('here you go: {"affinity":10,"select_image":"neutral"} thanks').affinity === 10);
-  check("nested braces inside a string do not cut the object", parse('{"affinity":10,"select_image":"neutral","ingest_memory":"เขาบอกว่า {ชอบ} เรา"}').ingestMemory === "เขาบอกว่า {ชอบ} เรา");
+  check("code fences tolerated", parse('```json\n{"affinity":10,"select_image":"neutral.jpg"}\n```').affinity === 10);
+  check("prose around the object tolerated", parse('here you go: {"affinity":10,"select_image":"neutral.jpg"} thanks').affinity === 10);
+  check("nested braces inside a string do not cut the object", parse('{"affinity":10,"select_image":"neutral.jpg","ingest_memory":"เขาบอกว่า {ชอบ} เรา"}').ingestMemory === "เขาบอกว่า {ชอบ} เรา");
 
   // The floor: any non-negative turn is worth at least +10.
-  check("a positive turn below the floor is raised", parse('{"affinity":3,"select_image":"neutral"}').affinity === st.AFFINITY_NEUTRAL_FLOOR);
+  check("a positive turn below the floor is raised", parse('{"affinity":3,"select_image":"neutral.jpg"}').affinity === st.AFFINITY_NEUTRAL_FLOOR);
   check("the floor is 10", st.AFFINITY_NEUTRAL_FLOOR === 10);
-  check("exactly the floor is untouched", parse('{"affinity":10,"select_image":"neutral"}').affinity === 10);
-  check("negative values are NOT raised", parse('{"affinity":-3,"select_image":"neutral"}').affinity === -3);
-  check("zero stays zero", parse('{"affinity":0,"select_image":"neutral"}').affinity === 0);
-  check("clamped to +100", parse('{"affinity":5000,"select_image":"neutral"}').affinity === 100);
-  check("clamped to -100", parse('{"affinity":-5000,"select_image":"neutral"}').affinity === -100);
-  check("clamping is reported", parse('{"affinity":5000,"select_image":"neutral"}').warnings.some((w: string) => w.includes("clamped")));
-  check("a numeric string is read", parse('{"affinity":"15","select_image":"neutral"}').affinity === 15);
+  check("exactly the floor is untouched", parse('{"affinity":10,"select_image":"neutral.jpg"}').affinity === 10);
+  check("negative values are NOT raised", parse('{"affinity":-3,"select_image":"neutral.jpg"}').affinity === -3);
+  check("zero stays zero", parse('{"affinity":0,"select_image":"neutral.jpg"}').affinity === 0);
+  check("clamped to +100", parse('{"affinity":5000,"select_image":"neutral.jpg"}').affinity === 100);
+  check("clamped to -100", parse('{"affinity":-5000,"select_image":"neutral.jpg"}').affinity === -100);
+  check("clamping is reported", parse('{"affinity":5000,"select_image":"neutral.jpg"}').warnings.some((w: string) => w.includes("clamped")));
+  check("a numeric string is read", parse('{"affinity":"15","select_image":"neutral.jpg"}').affinity === 15);
   check("missing affinity means no change and warns", (() => {
-    const r = parse('{"select_image":"neutral"}');
+    const r = parse('{"select_image":"neutral.jpg"}');
     return r.affinity === 0 && r.parsed && r.warnings.some((w: string) => w.includes("missing affinity"));
-  })(), parse('{"select_image":"neutral"}').warnings);
+  })(), parse('{"select_image":"neutral.jpg"}').warnings);
 
   // is_flirt
-  check("is_flirt true read at stranger", parse('{"affinity":10,"is_flirt":true,"select_image":"neutral"}', "stranger").isFlirt === true);
+  check("is_flirt true read at stranger", parse('{"affinity":10,"is_flirt":true,"select_image":"neutral.jpg"}', "stranger").isFlirt === true);
   check("is_flirt false is a real answer, not a missing one", (() => {
-    const r = parse('{"affinity":10,"is_flirt":false,"select_image":"neutral"}', "crush");
+    const r = parse('{"affinity":10,"is_flirt":false,"select_image":"neutral.jpg"}', "crush");
     return r.isFlirt === false && !r.warnings.some((w: string) => w.includes("is_flirt"));
-  })(), parse('{"affinity":10,"is_flirt":false,"select_image":"neutral"}', "crush").warnings);
+  })(), parse('{"affinity":10,"is_flirt":false,"select_image":"neutral.jpg"}', "crush").warnings);
   check("missing is_flirt at a romantic rung warns and means false", (() => {
-    const r = parse('{"affinity":10,"select_image":"neutral"}', "crush");
+    const r = parse('{"affinity":10,"select_image":"neutral.jpg"}', "crush");
     return r.isFlirt === false && r.warnings.some((w: string) => w.includes("missing is_flirt"));
-  })(), parse('{"affinity":10,"select_image":"neutral"}', "crush").warnings);
+  })(), parse('{"affinity":10,"select_image":"neutral.jpg"}', "crush").warnings);
   check("is_flirt not expected at enemy", (() => {
-    const r = parse('{"affinity":10,"select_image":"neutral"}', "enemy");
+    const r = parse('{"affinity":10,"select_image":"neutral.jpg"}', "enemy");
     return r.isFlirt === undefined && r.warnings.length === 0;
-  })(), parse('{"affinity":10,"select_image":"neutral"}', "enemy").warnings);
+  })(), parse('{"affinity":10,"select_image":"neutral.jpg"}', "enemy").warnings);
   check("a volunteered is_flirt at sibling is ignored with a note", (() => {
-    const r = parse('{"affinity":10,"is_flirt":true,"select_image":"neutral"}', "sibling");
+    const r = parse('{"affinity":10,"is_flirt":true,"select_image":"neutral.jpg"}', "sibling");
     return r.isFlirt === undefined && r.warnings.some((w: string) => w.includes("ignored"));
-  })(), parse('{"affinity":10,"is_flirt":true,"select_image":"neutral"}', "sibling").warnings);
-  check("Thai yes/no words coerced", parse('{"affinity":10,"is_flirt":"ไม่ใช่","select_image":"neutral"}', "crush").isFlirt === false);
+  })(), parse('{"affinity":10,"is_flirt":true,"select_image":"neutral.jpg"}', "sibling").warnings);
+  check("Thai yes/no words coerced", parse('{"affinity":10,"is_flirt":"ไม่ใช่","select_image":"neutral.jpg"}', "crush").isFlirt === false);
 
   // approvals
-  check("approve_lover read at crush", parse('{"affinity":10,"approve_lover":true,"select_image":"neutral"}', "crush").approveLover === true);
+  check("approve_lover read at crush", parse('{"affinity":10,"approve_lover":true,"select_image":"neutral.jpg"}', "crush").approveLover === true);
   check("missing approve_lover at crush warns and means false", (() => {
-    const r = parse('{"affinity":10,"select_image":"neutral"}', "crush");
+    const r = parse('{"affinity":10,"select_image":"neutral.jpg"}', "crush");
     return r.approveLover === false && r.warnings.some((w: string) => w.includes("missing approve_lover"));
-  })(), parse('{"affinity":10,"select_image":"neutral"}', "crush").warnings);
+  })(), parse('{"affinity":10,"select_image":"neutral.jpg"}', "crush").warnings);
   check("approve_soulmate only required at lover", (() => {
-    const missing = parse('{"affinity":10,"select_image":"neutral"}', "lover");
+    const missing = parse('{"affinity":10,"select_image":"neutral.jpg"}', "lover");
     return missing.approveSoulmate === false && missing.warnings.some((w: string) => w.includes("missing approve_soulmate"));
-  })(), parse('{"affinity":10,"select_image":"neutral"}', "lover").warnings);
+  })(), parse('{"affinity":10,"select_image":"neutral.jpg"}', "lover").warnings);
   check("approve_lover at stranger is not demanded", (() => {
-    const r = parse('{"affinity":10,"select_image":"neutral"}', "stranger");
+    const r = parse('{"affinity":10,"select_image":"neutral.jpg"}', "stranger");
     return r.approveLover === undefined && !r.warnings.some((w: string) => w.includes("approve_lover"));
-  })(), parse('{"affinity":10,"select_image":"neutral"}', "stranger").warnings);
-  check("a volunteered yes outside its rung is still recorded", parse('{"affinity":10,"approve_family":true,"select_image":"neutral"}', "friend").approveFamily === true);
+  })(), parse('{"affinity":10,"select_image":"neutral.jpg"}', "stranger").warnings);
+  check("a volunteered yes outside its rung is still recorded", parse('{"affinity":10,"approve_family":true,"select_image":"neutral.jpg"}', "friend").approveFamily === true);
 
   // select_image
   check("unknown image dropped with a warning", (() => {
@@ -429,21 +460,33 @@ console.log("=== J. parseIslaState — Gemini 2's JSON reply ===");
     const r = parse('{"affinity":10}');
     return r.parsed && r.selectImage === "" && r.warnings.some((w: string) => w.includes("no select_image"));
   })(), parse('{"affinity":10}').warnings);
-  check("image name trimmed", parse('{"affinity":10,"select_image":"  shy_smile  "}').selectImage === "shy_smile");
-  check("every offered image is accepted", st.IMAGES.every((name) => parse(`{"affinity":10,"select_image":"${name}"}`).selectImage === name));
+  check("image name trimmed", parse('{"affinity":10,"select_image":"  shy_smile.jpg  "}').selectImage === "shy_smile.jpg");
+  check("a path prefix is tolerated", parse('{"affinity":10,"select_image":"images/happy.jpg"}').selectImage === "happy.jpg");
+  check("`none` is a clean answer, not a warning", (() => {
+    const r = parse('{"affinity":10,"select_image":"none"}');
+    return r.selectImage === "" && !r.warnings.some((w: string) => w.includes("select_image"));
+  })(), parse('{"affinity":10,"select_image":"none"}').warnings);
+  check("a manifest entry with no file behind it is refused", (() => {
+    const r = parse('{"affinity":10,"select_image":"notes.jpg"}');
+    return r.selectImage === "" && r.warnings.some((w: string) => w.includes("unknown select_image"));
+  })(), parse('{"affinity":10,"select_image":"notes.jpg"}').warnings);
+  check("path traversal is refused", parse('{"affinity":10,"select_image":"../../etc/passwd"}').selectImage === "");
+  check("nicknames read as a list", parse(`{"affinity":10,"select_image":"${IMG}","add_nicknames":["คนโปรด","คนขี้แกล้ง"]}`).addNicknames.join(",") === "คนโปรด,คนขี้แกล้ง");
+  check("nickname alias `nicknames` accepted", parse(`{"affinity":10,"select_image":"${IMG}","nicknames":["ยู"]}`).addNicknames.join() === "ยู");
+  check("absent nicknames are an empty list", parse(`{"affinity":10,"select_image":"${IMG}"}`).addNicknames.length === 0);
 
   // facts / memory
-  check("a bare string becomes one fact", parse('{"affinity":10,"select_image":"neutral","add_facts":"ชื่อเล่นคือยู"}').addFacts.length === 1);
-  check("junk fact entries dropped", parse('{"affinity":10,"select_image":"neutral","add_facts":[null,7,"  ","จริง"]}', "stranger").addFacts.join() === "จริง");
-  check("object facts read their text", parse('{"affinity":10,"select_image":"neutral","add_facts":[{"text":"ชอบชา"}]}').addFacts.join() === "ชอบชา");
-  check("memory alias `memory` accepted", parse('{"affinity":10,"select_image":"neutral","memory":"งานวันเกิด"}').ingestMemory === "งานวันเกิด");
+  check("a bare string becomes one fact", parse('{"affinity":10,"select_image":"neutral.jpg","add_facts":"ชื่อเล่นคือยู"}').addFacts.length === 1);
+  check("junk fact entries dropped", parse('{"affinity":10,"select_image":"neutral.jpg","add_facts":[null,7,"  ","จริง"]}', "stranger").addFacts.join() === "จริง");
+  check("object facts read their text", parse('{"affinity":10,"select_image":"neutral.jpg","add_facts":[{"text":"ชอบชา"}]}').addFacts.join() === "ชอบชา");
+  check("memory alias `memory` accepted", parse('{"affinity":10,"select_image":"neutral.jpg","memory":"งานวันเกิด"}').ingestMemory === "งานวันเกิด");
 
   // total failures must not throw
   for (const junk of ["", "   ", "no json here", "{", "{not json}", "[1,2]", "null", "[]"]) {
     const r = parse(junk, "crush");
     check(`junk reply "${junk.slice(0, 10)}" degrades to a no-op state`, r.parsed === false && r.affinity === 0 && r.selectImage === "" && r.addFacts.length === 0 && r.isFlirt === undefined, r);
   }
-  check("the image list is the same one the pipeline offers", st.IMAGES.length === 11 && st.IMAGES.includes("neutral"));
+  check("IMAGES is the directory listing plus `none`", st.IMAGES.length === imageNames().length + 1 && st.IMAGES.includes(IMG) && st.IMAGES.includes("none"), st.IMAGES);
 }
 
 // ---------------------------------------------------------------- K. prompt blocks
@@ -512,6 +555,7 @@ console.log("=== L. applyState writes the JSON state ===");
     affinity: 10,
     selectImage: "",
     addFacts: [],
+    addNicknames: [],
     ingestMemory: "",
     parsed: true,
     warnings: [],
@@ -521,8 +565,37 @@ console.log("=== L. applyState writes the JSON state ===");
   blocks.upsertUserProfile({ userId: "e1", userName: "Eunan", bond: "friend", xp: 100, facts: ["ของเดิม"] });
   check("affinity moves xp", (await pipe.applyState(s({ affinity: 20 }), "e1", "2026-03-03T00:00:00Z", "Eunan"), blocks.getUserProfile("e1")!.xp) === 120, blocks.getUserProfile("e1")!.xp);
   check("xp write never touches facts", blocks.getUserProfile("e1")!.facts[0].text === "ของเดิม");
-  check("select_image returned", (await pipe.applyState(s({ selectImage: "happy" }), "e1", "t", "Eunan")) === "happy");
-  check("empty image means no image", (await pipe.applyState(s({}), "e1", "t", "Eunan")) === undefined);
+  check("select_image returned", (await pipe.applyState(s({ selectImage: "happy.jpg" }), "e1", "t", "Eunan")).image === "happy.jpg");
+  check("empty image means no image", (await pipe.applyState(s({}), "e1", "t", "Eunan")).image === undefined);
+  check("the card carries the post-turn bond and xp", await (async () => {
+    blocks.upsertUserProfile({ userId: "card1", userName: "Card", bond: "friend", xp: 120 });
+    const applied = await pipe.applyState(s({ affinity: 30 }), "card1", "t", "Card");
+    return applied.status.bond === "friend" && applied.status.xp === 150 && applied.status.xpDelta === 30
+      && applied.status.userName === "Card";
+  })(), true);
+  check("the card carries the name and nicknames", await (async () => {
+    blocks.upsertUserProfile({ userId: "e2", userName: "Farris", nickname: ["คนโปรด", "คนขี้แกล้ง"], bond: "lover", xp: 187 });
+    const applied = await pipe.applyState(s({ affinity: 12 }), "e2", "t", "Farris");
+    return applied.status.userName === "Farris"
+      && applied.status.bond === "lover"
+      && applied.status.xp === 199
+      && applied.status.xpDelta === 12
+      && (applied.status.nickname ?? []).join(",") === "คนโปรด,คนขี้แกล้ง";
+  })(), true);
+  check("a nickname from this turn is in the card", await (async () => {
+    blocks.upsertUserProfile({ userId: "e3", userName: "Nico", bond: "friend", xp: 200 });
+    const applied = await pipe.applyState(s({ addNicknames: ["คนเก่ง"] }), "e3", "t", "Nico");
+    return (applied.status.nickname ?? []).join() === "คนเก่ง" && blocks.getUserProfile("e3")!.nickname.join() === "คนเก่ง";
+  })(), true);
+  check("duplicate nicknames are not re-added", await (async () => {
+    await pipe.applyState(s({ addNicknames: ["คนเก่ง"] }), "e3", "t", "Nico");
+    return blocks.getUserProfile("e3")!.nickname.length === 1;
+  })(), true);
+  check("a failed parse still returns a card with no change", await (async () => {
+    const before = blocks.getUserProfile("e3")!;
+    const applied = await pipe.applyState({ ...s({}), parsed: false, affinity: 0 }, "e3", "t", "Nico");
+    return applied.status.xp === before.xp && applied.status.bond === before.bond && applied.image === undefined;
+  })(), true);
   check("facts appended", (await pipe.applyState(s({ addFacts: ["ชอบกาแฟ", "ชอบชาเขียว"] }), "e1", "t", "Eunan"), blocks.getUserProfile("e1")!.facts.length) === 3, blocks.getUserProfile("e1")!.facts.map((f: { text: string }) => f.text));
   check("duplicate facts not re-added", (await pipe.applyState(s({ addFacts: ["ชอบกาแฟ"] }), "e1", "t", "Eunan"), blocks.getUserProfile("e1")!.facts.length) === 3);
   check("a flirt counts once per turn", (await pipe.applyState(s({ isFlirt: true }), "e1", "t", "Eunan"), blocks.getUserProfile("e1")!.flirtCount) === 1);
@@ -569,6 +642,33 @@ console.log("=== M. the wiring and the retired paths ===");
   check("the reply path never reads the relationships table", !/FROM relationships/.test(src));
   check("only the migration reads it, and only to fold it in", (profile.match(/FROM relationships/g) ?? []).length === 2);
   check("the profile block reaches Gemini 1's instruction", /systemInstruction: `\$\{systemPrompt\}\\n\\n\$\{identityBlock\}/.test(src));
+
+  // --- the image catalog is the directory, not a copied list ---
+  const images = readFileSync("src/bot/images.ts", "utf8");
+  const state = readFileSync("src/gemini/state-format.ts", "utf8");
+  check("the enum comes from the images directory", images.includes("readdirSync") && state.includes("imageNames(dir)") && state.includes("imageChoices()"));
+  check("the schema enum is read live, so it cannot drift from the prompt list", /get enum\(\) \{\s*return imageChoices\(\);/.test(state));
+  check("Gemini 2's instruction is a function so a new picture needs no restart", /export function gemini2SystemPrompt\(\): string/.test(src) && src.includes("systemInstruction: gemini2SystemPrompt()"));
+  check("no invented image names survived", !/["'](neutral|shy_smile|soft_smile|playful|laugh)["']/.test(state));
+  check("Gemini 2 is shown the catalog", src.includes("imageListForPrompt()") && src.includes("<expression_images>"));
+  check("the catalog sits in the cached system prompt, not the per-turn message", src.indexOf("imageListForPrompt()") < src.indexOf("export function profileBlock"));
+  // Quoted literals only: the module's doc comment names a real file as an example, and that is
+  // documentation, not a list that can drift.
+  check("images.ts no longer hardcodes a filename list", !/["']isla_[a-z_]+\.(jpg|png)["']/.test(images) && !images.includes("IMAGE_FILES"));
+  check("fetching an image allowlists through the catalog", images.includes("isKnownImage(normalized"));
+
+  // --- the footer is built from the turn's card, and the timestamp is not hardcoded ---
+  const handler = readFileSync("src/bot/message-handler.ts", "utf8");
+  const footer = readFileSync("src/bot/embed-footer.ts", "utf8");
+  check("the flush hands the card to the payload", handler.includes("status: result.status"));
+  check("the payload renders the footer through embed-footer", handler.includes("buildFooterText(") && handler.includes("setFooter({ text: buildFooterText"));
+  check("the old single-line footer is gone", !handler.includes("ไอล่า ·"));
+  check("setTimestamp is called with a value, not a literal date", /embed\.setTimestamp\(stamp\)/.test(handler) && !/new Date\("20\d\d/.test(handler));
+  check("the timestamp defaults to now", handler.includes("options.timestamp === undefined ? new Date()"));
+  check("the footer clips the name to 12", footer.includes("MAX_NAME_CHARS = 12"));
+  check("the footer has the mood line", footer.includes("อารมณ์: "));
+  check("an unknown bond renders no status", footer.includes("if (isBond(input.bond))"));
+  check("the card is read after the nickname write", /const after = getUserProfile\(userId\)/.test(src));
 }
 
 rmSync(dir, { recursive: true, force: true });

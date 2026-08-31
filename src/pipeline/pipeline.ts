@@ -3,11 +3,14 @@ import { prepareMedia, type MediaSource } from "../bot/media.js";
 import { ISLA_REPLY_SCHEMA, parseIslaReply } from "../gemini/reply-format.js";
 import { ISLA_STATE_SCHEMA, parseIslaState, requiredFieldsFor, romanticallyAvailable, type IslaState } from "../gemini/state-format.js";
 import { currentTimeBlock, thaiTimestamp } from "../gemini/time.js";
+import { imageListForPrompt } from "../bot/images.js";
+import type { UserStatus } from "../bot/embed-footer.js";
 import { embed } from "../memory/embedding.js";
 import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
 import {
   addFacts,
+  addNicknames,
   applyTurnState,
   APPROVAL_NAMES,
   bondDescription,
@@ -40,12 +43,19 @@ export type IncomingMessage = {
 };
 export type ProcessMessageResult = {
   text: string;
+  /** Expression image filename chosen by Gemini 2, already validated against `images/`. */
   image?: string;
   /** Isla's mood in Thai, from Gemini 1 -- rendered in the embed footer. */
   mood?: string;
   /** That mood as a 24-bit RGB integer -- the embed's accent colour. Undefined when she sent no
    * usable colour, which must not cost us the reply. */
   color?: number;
+  /**
+   * The relationship card the embed footer is built from: who this user is to her right now, after
+   * this turn's xp landed. Read off the row `applyState()` just wrote, so the footer can never
+   * disagree with the database.
+   */
+  status: UserStatus;
 };
 const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
 
@@ -57,32 +67,45 @@ const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemP
  * needed a synthetic `thought` signature to be legal, and its `args` schema had to be spelled out
  * field-by-field or the model sent `{}` every time and silently lost the turn.
  *
- * Still deliberately free of anything that changes per turn (the user's current numbers): a stable
- * string is what keeps the prompt cache warm, so the per-turn state travels in the message — see
- * `runGemini2()`.
+ * Still deliberately free of anything that changes per *user or turn* (their current numbers): a
+ * stable string is what keeps the prompt cache warm, so the per-turn state travels in the message —
+ * see `runGemini2()`. The image catalog is in here because it changes only when somebody adds a
+ * picture to `images/`, never between turns.
+ *
+ * A function rather than a module-level const so that adding a picture takes effect on the next
+ * message without a restart. While the directory is unchanged the returned string is byte-identical
+ * across calls, so prompt caching is unaffected by the liveness.
  */
-const gemini2SystemPrompt = [
-  "วิเคราะห์บทสนทนาระหว่าง Isla และผู้ใช้ในเทิร์นนี้ แล้วตอบเป็น JSON ตาม schema ที่กำหนดเท่านั้น",
-  "",
-  "สิ่งที่ต้องรายงาน:",
-  "- affinity: คะแนนความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (-100..100) — ค่านี้คือ xp ของระบบ แต่ให้คิดเป็น 'ความใกล้ชิด'",
-  `  การคุยกันปกติ/ไม่ใช่ด้านลบ ต้องได้อย่างน้อย +${10}; หยาบคาย/ทำร้ายความรู้สึกติดลบ; ด่าซ้ำ ๆ หรือดูถูกแรง ๆ ติดลบลึก`,
-  "- is_flirt: true เมื่อผู้ใช้จีบ/พูดหวาน/เข้าหาเชิงชู้สาว และ Isla ไม่ได้ปฏิเสธ — จำเป็นเมื่อผู้ใช้ยังพัฒนาเป็นแฟนได้",
-  "- approve_lover: true เมื่อผู้ใช้ขอเป็นแฟน **และ Isla ตอบตกลงในข้อความของเธอเอง** — จำเป็นเมื่อระดับคือ crush",
-  "- approve_soulmate: true เมื่อผู้ใช้ขอแต่งงาน **และ Isla ตอบตกลง** — จำเป็นเมื่อระดับคือ lover",
-  "- approve_sibling / approve_family: เช่นเดียวกัน เมื่อผู้ใช้ขอเป็นพี่น้อง/ครอบครัว และ Isla ตอบตกลง",
-  "- select_image: รูปอารมณ์ของ Isla ที่ตรงกับคำตอบของเธอที่สุดในเทิร์นนี้",
-  "- add_facts: ข้อเท็จจริงเกี่ยวกับผู้ใช้โดยตรง (ไม่จำเป็น, ไม่เกิน 3 ข้อ, ไม่มีก็ส่ง [])",
-  "- ingest_memory: ความทรงจำที่ควรเก็บระยะยาว (ไม่จำเป็น, ไม่มีก็ส่ง \"\")",
-  "",
-  "กฎสำคัญ:",
-  "1. ห้ามเลือกระดับความสัมพันธ์เอง — ไม่มีฟิลด์ bond ในคำตอบ ระบบจะคำนวณระดับจาก affinity, จำนวนครั้งที่ถูกจีบ และการตอบตกลงของเธอ",
-  "2. approve_* คือการรายงานสิ่งที่ Isla ตอบไปในข้อความของเธอแล้ว ไม่ใช่การตัดสินใจใหม่ — ถ้าเธอไม่ตกลง ต้องส่ง false",
-  "3. ส่งเฉพาะสิ่งที่เทิร์นนี้ทำให้เปลี่ยนจริง ๆ แต่ affinity และ select_image ต้องมีเสมอ",
-  "",
-  bondRulesBlock(),
-].join("\n");
-
+export function gemini2SystemPrompt(): string {
+    return [
+    "วิเคราะห์บทสนทนาระหว่าง Isla และผู้ใช้ในเทิร์นนี้ แล้วตอบเป็น JSON ตาม schema ที่กำหนดเท่านั้น",
+    "",
+    "สิ่งที่ต้องรายงาน:",
+    "- affinity: คะแนนความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (-100..100) — ค่านี้คือ xp ของระบบ แต่ให้คิดเป็น 'ความใกล้ชิด'",
+    `  การคุยกันปกติ/ไม่ใช่ด้านลบ ต้องได้อย่างน้อย +${10}; หยาบคาย/ทำร้ายความรู้สึกติดลบ; ด่าซ้ำ ๆ หรือดูถูกแรง ๆ ติดลบลึก`,
+    "- is_flirt: true เมื่อผู้ใช้จีบ/พูดหวาน/เข้าหาเชิงชู้สาว และ Isla ไม่ได้ปฏิเสธ — จำเป็นเมื่อผู้ใช้ยังพัฒนาเป็นแฟนได้",
+    "- approve_lover: true เมื่อผู้ใช้ขอเป็นแฟน **และ Isla ตอบตกลงในข้อความของเธอเอง** — จำเป็นเมื่อระดับคือ crush",
+    "- approve_soulmate: true เมื่อผู้ใช้ขอแต่งงาน **และ Isla ตอบตกลง** — จำเป็นเมื่อระดับคือ lover",
+    "- approve_sibling / approve_family: เช่นเดียวกัน เมื่อผู้ใช้ขอเป็นพี่น้อง/ครอบครัว และ Isla ตอบตกลง",
+    `- select_image: ชื่อไฟล์รูปของไอล่าที่ตรงกับอารมณ์ในข้อความของเธอที่สุดในเทิร์นนี้ ` +
+    `ต้องเลือกจากรายการใน <expression_images> เท่านั้น (หรือส่ง "none" เมื่อไม่มีรูปไหนตรงจริง)`,
+    "- add_facts: ข้อเท็จจริงเกี่ยวกับผู้ใช้โดยตรง (ไม่จำเป็น, ไม่เกิน 3 ข้อ, ไม่มีก็ส่ง [])",
+    "- add_nicknames: ฉายาที่ไอล่าเพิ่งตั้งให้ผู้ใช้ในข้อความของเธอ (ไม่จำเป็น, ไม่มีก็ส่ง [])",
+    "- ingest_memory: ความทรงจำที่ควรเก็บระยะยาว (ไม่จำเป็น, ไม่มีก็ส่ง \"\")",
+    "",
+    "กฎสำคัญ:",
+    "1. ห้ามเลือกระดับความสัมพันธ์เอง — ไม่มีฟิลด์ bond ในคำตอบ ระบบจะคำนวณระดับจาก affinity, จำนวนครั้งที่ถูกจีบ และการตอบตกลงของเธอ",
+    "2. approve_* คือการรายงานสิ่งที่ Isla ตอบไปในข้อความของเธอแล้ว ไม่ใช่การตัดสินใจใหม่ — ถ้าเธอไม่ตกลง ต้องส่ง false",
+    "3. ส่งเฉพาะสิ่งที่เทิร์นนี้ทำให้เปลี่ยนจริง ๆ แต่ affinity และ select_image ต้องมีเสมอ",
+    "",
+    bondRulesBlock(),
+    "",
+    "<expression_images>",
+    "ไฟล์รูปที่มีอยู่ในโฟลเดอร์ images — select_image ต้องเป็นชื่อไฟล์หนึ่งในนี้:",
+    imageListForPrompt(),
+    "</expression_images>",
+    ].join("\n");
+}
 
 /**
  * What Gemini 1 is told about the person it is talking to.
@@ -159,15 +182,28 @@ export function bondRulesBlock(): string {
   ].join("\n");
 }
 
+/** What one turn's state changed, in the shape the reply path needs. */
+export type TurnApplyResult = {
+  /** The image to attach, or undefined when the model sent `none` / an unusable name. */
+  image?: string;
+  /** The relationship card *after* this turn — bond, xp and this turn's delta. */
+  status: UserStatus;
+};
+
 /**
  * Apply one turn's JSON state.
  *
  * Replaces `applyExecute()`. Order matters: the ladder move (`applyTurnState`) happens first so a
  * fact or memory written later sees the same bond the user was just promoted to.
  *
+ * It also returns the resulting card, because the footer must show the numbers *after* this turn's
+ * xp landed — reading them separately would race with the write and could show the pre-turn value.
+ * Nicknames come from the same row. Nothing writes them yet (she has no tool for it), so the footer
+ * simply has no `#tags` until that exists — see the note in `sql/profile.ts`.
+ *
  * Exported so the contract can be tested without a Gemini round-trip.
  */
-export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string): Promise<string | undefined> {
+export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string): Promise<TurnApplyResult> {
   const result = applyTurnState({
     userId,
     userName,
@@ -192,6 +228,13 @@ export async function applyState(state: IslaState, userId: string, timestamp: st
     if (added) console.log(`[PIPELINE] ${userId}: +${added} fact(s)`);
   }
 
+  // Nicknames are read out of her own reply — she has no tool for it, and the footer's `#tag` slot
+  // was dead until this existed (the column had no writer since the first schema).
+  if (state.addNicknames.length) {
+    const added = addNicknames(userId, state.addNicknames, userName);
+    if (added) console.log(`[PIPELINE] ${userId}: +${added} nickname(s)`);
+  }
+
   if (state.ingestMemory) {
     await saveMemoryVector(
       { id: crypto.randomUUID(), text: state.ingestMemory, userId, timestamp },
@@ -199,7 +242,19 @@ export async function applyState(state: IslaState, userId: string, timestamp: st
     );
   }
 
-  return state.selectImage || undefined;
+  // Read the row last: the card must show the nicknames written above, not the ones from before
+  // this turn. `result.profile` is the pre-nickname snapshot, so it is only the fallback.
+  const after = getUserProfile(userId) ?? result.profile;
+  return {
+    ...(state.selectImage ? { image: state.selectImage } : {}),
+    status: {
+      userName: after?.userName ?? userName,
+      bond: after?.bond ?? result.after,
+      xp: after?.xp ?? result.xp,
+      xpDelta: state.affinity,
+      nickname: after?.nickname ?? [],
+    },
+  };
 }
 
 /**
@@ -232,7 +287,7 @@ async function runGemini2(
     // Answers as JSON like Gemini 1, so the stage must be stated: `responseMode` no longer tells
     // client.ts which key pool or model this call belongs to.
     stage: "gemini2",
-    systemInstruction: gemini2SystemPrompt,
+    systemInstruction: gemini2SystemPrompt(),
     responseFormat: { type: "text", mime_type: "application/json", schema: ISLA_STATE_SCHEMA },
     debug: { userId: message.userId, userName: message.user },
   });
@@ -337,13 +392,14 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
 
   const state = await runGemini2(message, responseText, reply.summery, profile, media.parts);
   const gemini2Ms = lap();
-  const image = await applyState(state, message.userId, message.timestamp, message.user);
+  const applied = await applyState(state, message.userId, message.timestamp, message.user);
   const applyMs = lap();
   console.log(`[PIPELINE] ${message.user}: total=${prepMs + embedMs + chromaMs + buildMs + gemini1Ms + gemini2Ms + applyMs}ms prep=${prepMs} embed=${embedMs} chroma=${chromaMs} build=${buildMs} gemini1=${gemini1Ms} gemini2=${gemini2Ms} apply=${applyMs}`);
   return {
     text: responseText,
-    image,
+    ...(applied.image ? { image: applied.image } : {}),
     ...(reply.mood && { mood: reply.mood }),
     ...(reply.color !== undefined && { color: reply.color }),
+    status: applied.status,
   };
 }

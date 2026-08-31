@@ -56,6 +56,12 @@ export type UserProfilePatch = Partial<Omit<UserProfile, "userId" | "bond" | "ap
 /** Facts are kept newest-first and capped, because the whole list goes into a prompt every turn. */
 export const MAX_FACTS = 40;
 
+/**
+ * Nicknames she has given this user. Capped well below the facts: they are shown in the embed
+ * footer, and a card with ten tags stops being a card.
+ */
+export const MAX_NICKNAMES = 8;
+
 const path = process.env.SQLITE_PATH ?? "./.aira/aira.db";
 mkdirSync(dirname(path), { recursive: true });
 const db = new Database(path, { create: true });
@@ -518,6 +524,53 @@ export function addFacts(userId: string, facts: string[], timestamp = new Date()
     facts: [...fresh, ...(current?.facts ?? [])].slice(0, MAX_FACTS),
   });
   return fresh.length;
+}
+
+/**
+ * Append nicknames Isla gave the user, newest first, dropping duplicates.
+ *
+ * `nickname_json` existed since the first schema but had **no writer at all** — the column was
+ * always `[]`, so the footer's `#tag` slot could never fill. This is that writer; it is called from
+ * `applyState()` with whatever Gemini 2 detected in her reply.
+ *
+ * Returns how many were actually added.
+ */
+export function addNicknames(userId: string, nicknames: string[], userName?: string): number {
+  const incoming = nicknames.map((n) => (typeof n === "string" ? n.trim() : "")).filter(Boolean);
+  if (!incoming.length) return 0;
+  const current = getUserProfile(userId);
+  const existing = new Set((current?.nickname ?? []).map((n) => n.toLowerCase()));
+  const fresh: string[] = [];
+  for (const nickname of incoming) {
+    if (existing.has(nickname.toLowerCase())) continue;
+    existing.add(nickname.toLowerCase());
+    fresh.push(nickname);
+  }
+  if (!fresh.length) return 0;
+  upsertUserProfile({
+    userId,
+    ...(userName ? { userName } : {}),
+    nickname: [...fresh, ...(current?.nickname ?? [])].slice(0, MAX_NICKNAMES),
+  });
+  return fresh.length;
+}
+
+/** Replace the whole nickname list. */
+export function setNicknames(userId: string, nicknames: unknown): string[] {
+  const normalized = normalizeStringArray(JSON.stringify(Array.isArray(nicknames) ? nicknames : []));
+  upsertUserProfile({ userId, nickname: normalized.slice(0, MAX_NICKNAMES) });
+  return getUserProfile(userId)?.nickname ?? [];
+}
+
+/** Remove one nickname by exact (case-insensitive) text. Returns how many were removed. */
+export function removeNickname(userId: string, nickname: string): number {
+  const current = getUserProfile(userId);
+  if (!current) return 0;
+  const needle = nickname.trim().toLowerCase();
+  const kept = current.nickname.filter((n) => n.toLowerCase() !== needle);
+  const removed = current.nickname.length - kept.length;
+  if (removed) upsertUserProfile({ userId, nickname: kept });
+  return removed;
 }
 
 /** Replace the whole fact list. Entries may be strings or `{text, timestamp}`. */

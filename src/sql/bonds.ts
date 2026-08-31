@@ -24,6 +24,13 @@ export type BondInfo = {
   level: number;
   /** Thai label shown to the model. */
   label: string;
+  /**
+   * One mark per rung, for the Discord embed footer (`Farris (คนรัก) ❤️ 199`).
+   *
+   * Kept next to `label` rather than in a display module so a rung cannot be added without one,
+   * and so the footer never invents a symbol the ladder does not recognise.
+   */
+  emoji: string;
   /** Highest rung this bond can develop to. Omitted means "as high as it goes". */
   maxLevel?: number;
   /**
@@ -35,18 +42,18 @@ export type BondInfo = {
 };
 
 export const BOND_LEVELS: Record<BondLevel, BondInfo> = {
-  stranger: { level: 0, label: "คนแปลกหน้า" },
-  friend: { level: 1, label: "เพื่อน" },
-  close_friend: { level: 2, label: "เพื่อนสนิท" },
-  crush: { level: 3, label: "แอบชอบ" },
-  lover: { level: 4, label: "คนรัก" },
-  soulmate: { level: 5, label: "คู่แท้" },
+  stranger: { level: 0, label: "คนแปลกหน้า", emoji: "👋" },
+  friend: { level: 1, label: "เพื่อน", emoji: "🙂" },
+  close_friend: { level: 2, label: "เพื่อนสนิท", emoji: "🤗" },
+  crush: { level: 3, label: "แอบชอบ", emoji: "💗" },
+  lover: { level: 4, label: "คนรัก", emoji: "❤️" },
+  soulmate: { level: 5, label: "คู่แท้", emoji: "💞" },
   // Falling out with her does not walk down the ladder, it lands here — and climbing back out
   // lands on `friend` (level 1), never on `stranger`.
-  enemy: { level: -1, label: "ศัตรู", jumpTo: "friend" },
+  enemy: { level: -1, label: "ศัตรู", emoji: "💢", jumpTo: "friend" },
   // Family is fixed at level 3 and can never become romantic: the ladder stops at level 3.
-  sibling: { level: 3, label: "พี่น้อง", maxLevel: 3 },
-  family: { level: 3, label: "ครอบครัว", maxLevel: 3 },
+  sibling: { level: 3, label: "พี่น้อง", emoji: "🌱", maxLevel: 3 },
+  family: { level: 3, label: "ครอบครัว", emoji: "🏠", maxLevel: 3 },
 };
 
 export const BOND_NAMES = Object.keys(BOND_LEVELS) as BondLevel[];
@@ -68,6 +75,16 @@ export function bondLevel(bond: string | null | undefined): number | null {
 /** Thai label for a bond, or the raw value when it is not a known rung. */
 export function bondLabel(bond: string | null | undefined): string {
   return isBond(bond) ? BOND_LEVELS[bond].label : String(bond ?? "");
+}
+
+/**
+ * The bond's mark, or "" for an unknown rung.
+ *
+ * Empty rather than a placeholder: a footer with no symbol is legible, one with the *wrong*
+ * symbol claims a relationship the ladder never granted.
+ */
+export function bondEmoji(bond: string | null | undefined): string {
+  return isBond(bond) ? BOND_LEVELS[bond].emoji : "";
 }
 
 /**

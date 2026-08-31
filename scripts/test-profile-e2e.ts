@@ -55,6 +55,8 @@ const { countMemories, deleteMemories } = await import("../src/memory/chroma.js"
 const { readDebugDump } = await import("../src/gemini/debug-dump.js");
 const bonds = await import("../src/sql/bonds.js");
 const { parseIslaState, IMAGES } = await import("../src/gemini/state-format.js");
+const { imageNames, isKnownImage, fetchEmotionImage } = await import("../src/bot/images.js");
+const { buildFooterText } = await import("../src/bot/embed-footer.js");
 
 const USER = "e2e-profile-user-1";
 const nowIso = () => new Date().toISOString();
@@ -132,14 +134,24 @@ check("turn-2 block shows the current name", g1sys2.includes("Noknoi"));
 console.log("=== 5. whatever gemini2 decided landed in the ONE table ===");
 const g2resp = [...dump].reverse().find((r) => r.stage === "gemini2" && r.event === "response");
 const g2text = JSON.stringify(g2resp?.response ?? "");
-const factsNow = (p2?.facts.length ?? 0) > 0;
 // The owner's floor: any turn that is not negative is worth at least +10. Two friendly turns
 // therefore cannot leave xp at 0 — that is the assertion, not "something moved somewhere".
 const xpMoved = (p2?.xp ?? 0) >= 20;
 const memCount = await countMemories({ userId: USER });
 console.log(`  (state seen: facts=${p2?.facts.length} xp=${p2?.xp} flirts=${p2?.flirtCount} bond=${p2?.bond} memories=${memCount})`);
 check("xp moved by at least the +10 floor twice over", xpMoved, `xp=${p2?.xp} g2resp=${g2text.slice(0, 160)}`);
-check("facts were learned from the live turn", factsNow, `facts=${p2?.facts.length}`);
+// Whether she LEARNS a fact is the model's call (add_facts is optional by design), so the honest
+// assertion is the CONTRACT: if the live reply carried add_facts, every one of them is in the DB.
+// A turn where the model sent none is reported as skipped, never as a failure.
+const g2outForFacts = (g2resp?.response as { output_text?: string } | undefined)?.output_text ?? "";
+const offeredFacts = parseIslaState(g2outForFacts, p2?.bond ?? "stranger").addFacts;
+if (offeredFacts.length > 0) {
+  const stored = (p2?.facts ?? []).map((f: { text: string }) => f.text);
+  const missing = offeredFacts.filter((f: string) => !stored.includes(f));
+  check(`every add_facts the model sent was stored (${offeredFacts.length})`, missing.length === 0, `missing=${JSON.stringify(missing)} stored=${JSON.stringify(stored)}`);
+} else {
+  console.log(`  ⚪ skipped: model sent no add_facts this run (facts=${p2?.facts.length}) — optional by design`);
+}
 check("bond is still a rung the ladder allows", bonds.BOND_NAMES.includes(p2?.bond ?? "stranger"), p2?.bond);
 // Re-parse the model's *actual* reply text with the same parser the bot uses, so this is proof of
 // the contract and not just the absence of a warning.
@@ -149,6 +161,32 @@ check("gemini2's live reply parses as state JSON", liveState.parsed, JSON.string
 check("its affinity is inside -100..100", liveState.affinity >= -100 && liveState.affinity <= 100, String(liveState.affinity));
 check("its image is one of the offered names", liveState.selectImage === "" || (IMAGES as readonly string[]).includes(liveState.selectImage), liveState.selectImage);
 check("no parser warnings about an unreadable reply", !liveState.warnings.some((w: string) => w.includes("reply was not JSON")), liveState.warnings.join("; "));
+
+console.log("=== 5b. the image the model picked is a file that exists ===");
+{
+  // The bug this proves gone: the enum used to hold invented names (`happy`, `neutral`) with no
+  // file behind them, so every choice failed to load and the embed lost its picture silently.
+  check("Gemini 2 was shown the real catalog", g2sys.includes("<expression_images>") && g2sys.includes("isla_"), g2sys.slice(g2sys.indexOf("<expression_images>"), g2sys.indexOf("<expression_images>") + 120));
+  check("every name in the prompt is a file on disk", imageNames().every((n: string) => g2sys.includes(n)));
+  check("the prompt lists no file that is missing", (g2sys.match(/isla_[a-z0-9_]+\.(?:jpg|png|webp|gif)/g) ?? []).every((n: string) => isKnownImage(n)));
+  const picked = liveState.selectImage;
+  check(`the live choice "${picked || "none"}" resolves to bytes`, picked === "" || (await fetchEmotionImage(picked)) !== undefined, picked);
+  check("no 'unknown select_image' warning from the live reply", !liveState.warnings.some((w: string) => w.includes("unknown select_image")), liveState.warnings.join("; "));
+}
+
+console.log("=== 5c. the footer card is real data, not a placeholder ===");
+{
+  const card = t2.status;
+  check("card names the user", card.userName === "Noknoi", JSON.stringify(card.userName));
+  check("card carries the ladder's rung", (bonds.BOND_NAMES as string[]).includes(card.bond ?? ""), card.bond ?? "");
+  check("card xp matches the row", card.xp === p2?.xp, `${card.xp} vs ${p2?.xp}`);
+  check("card carries this turn's delta", typeof card.xpDelta === "number", String(card.xpDelta));
+  const line = buildFooterText({ ...card, mood: "สงบ" }).split("\n");
+  check("footer line 1 starts with the name", line[0].startsWith("Noknoi"), line[0]);
+  check("footer line 1 shows the status in brackets", /\((?:[^)]+)\)/.test(line[0]), line[0]);
+  check("footer line 2 is the mood", line[1] === "อารมณ์: สงบ", line[1]);
+  check("the name is capped at 12 characters", line[0].split(" ")[0].length <= 12, line[0]);
+}
 
 console.log("=== 6. real stores untouched ===");
 if (realBefore) {

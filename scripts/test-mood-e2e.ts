@@ -14,7 +14,7 @@
  *   1. processMessage() returns a Thai mood and a 24-bit colour.
  *   2. The dumped Gemini 1 request really carries the mood/color instructions.
  *   3. The dumped response carries both keys in JSON.
- *   4. buildReplyPayload() turns them into footer text + embed colour.
+ *   4. buildReplyPayload() turns them into the footer's mood line + embed colour + timestamp.
  *   5. mood is NOT written into the reply text (footer only) and the real DB is untouched.
  */
 import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
@@ -43,6 +43,7 @@ process.env.GEMINI_DEBUG_PAYLOAD_FILE = join(dir, "payload.json");
 
 const { processMessage } = await import("../src/pipeline/pipeline.js");
 const { buildReplyPayload } = await import("../src/bot/message-handler.js");
+const footer = await import("../src/bot/embed-footer.js");
 const { readDebugDump } = await import("../src/gemini/debug-dump.js");
 const { deleteMemories } = await import("../src/memory/chroma.js");
 
@@ -95,10 +96,19 @@ const payload = buildReplyPayload({
   text: last.text,
   ...(last.mood ? { mood: last.mood } : {}),
   ...(last.color !== undefined ? { color: last.color } : {}),
+  status: last.status,
 });
 const embed = (payload.embeds?.[0] as { data?: Record<string, unknown> }).data ?? {};
+const footerText = (embed.footer as { text?: string }).text ?? "";
+const [statusLine = "", moodLine = ""] = footerText.split("\n");
 check(`embed colour = ${last.color}`, embed.color === last.color);
-check(`footer = "ไอล่า · ${last.mood}"`, (embed.footer as { text?: string }).text === `ไอล่า · ${last.mood}`);
+check(`footer บรรทัดสอง = "อารมณ์: ${last.mood}"`, moodLine === `อารมณ์: ${last.mood}`, footerText);
+check("footer บรรทัดแรก = การ์ดความสัมพันธ์ (ชื่อ + สถานะ + xp)",
+  statusLine.startsWith(last.status.userName?.slice(0, footer.MAX_NAME_CHARS) ?? "")
+    && /\(.*\)/.test(statusLine) && String(last.status.xp).length > 0, statusLine);
+check("การ์ดแสดงค่าที่เปลี่ยนในเทิร์นนี้ด้วย", statusLine.includes(`[${footer.xpDeltaText(last.status.xpDelta)}]`), statusLine);
+check("ชื่อใน footer ไม่เกิน 12 ตัวอักษร", (statusLine.split(" ")[0] ?? "").length <= footer.MAX_NAME_CHARS, statusLine);
+check("embed มี timestamp (ไม่ใช่ค่าคงที่ในโค้ด)", typeof embed.timestamp === "string" && Date.parse(String(embed.timestamp)) > 0, String(embed.timestamp));
 check("description is still her reply", embed.description === last.text);
 
 console.log("=== the real database was not touched ===");

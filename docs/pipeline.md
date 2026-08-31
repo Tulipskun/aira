@@ -14,9 +14,13 @@
 8. Put relevant Chroma results into the temporary fake `search_memory(username)` call/result for Gemini 1.
 9. Send the context to Gemini 1 and wait for its text response.
 10. Send the completed Gemini 1 context/response to Gemini 2 and wait for Gemini 2.
-11. Gemini 2 returns the forced `execute` operations.
-12. Parse and apply relationship/stat operations to SQLite.
-13. Resolve `select_image(filename)` against the bundled local `images/` registry.
+11. Gemini 2 returns one flat JSON object (`affinity`, the approval flags, `select_image`,
+    `add_facts`, `add_nicknames`, `ingest_memory`) — never a relationship rung.
+12. Parse that object and apply it to SQLite/Chroma; the bond itself is derived in code
+    (`deriveBond()`), so the ladder cannot be bypassed by a model.
+13. Resolve `select_image(filename)` against the `images/` directory listing (the registry is the
+    directory itself, read at request time), and read back the post-turn profile — bond, xp, this
+    turn's delta, nicknames — as the card the embed footer is built from.
 14. Return the final text and selected image to the Discord handler.
 15. Send the Discord response.
 
@@ -29,7 +33,8 @@ The dynamic profile is appended after that prompt:
 ```xml
 <user_profile>
 ชื่อ: Yuuta
-ความสัมพันธ์กับ Isla: คนรัก
+ความสัมพันธ์กับ Isla: คนรัก (lover, ระดับ 4)
+ความใกล้ชิดสะสม (xp): 640
 ฉายาที่ Isla ตั้งให้: คนโปรด, คนขี้แกล้ง
 fact:
 - ชอบให้ไอล่าเรียกว่าที่รัก
@@ -38,7 +43,13 @@ fact:
 </user_profile>
 ```
 
-Only profile information is placed in this block: name, relationship label, Isla-assigned nicknames and facts. Internal Discord user IDs, XP and affinity are never included.
+Only profile information is placed in this block: name, relationship label, accumulated xp,
+Isla-assigned nicknames and facts. Internal Discord user IDs and the separate `affinity` figure are
+never included.
+
+xp is the one number in here, and deliberately so: it is the ladder's fuel, so Gemini 1 needs it to
+know how far she is from the next rung. It is shown as a count, never as a permission — the rung
+itself is still computed in code and Gemini 1 cannot change it.
 
 ## After response
 

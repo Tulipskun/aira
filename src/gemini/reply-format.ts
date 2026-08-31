@@ -116,10 +116,22 @@ export const MAX_MOOD_CHARS = 60;
 // of these orphans it, so clipping trims them off the end.
 const TRAILING_THAI_MARKS = /[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]+$/;
 
-/** Clip to the footer budget without splitting a Thai consonant from its vowel or tone mark. */
+/**
+ * Clip to `max` characters without splitting a Thai consonant from its vowel or tone mark.
+ *
+ * Exported because the embed footer clips names and nicknames with the same rule — a naive slice
+ * there would orphan a mai-ek the same way it orphans a sara here, and two copies of the regex is
+ * how the two clip paths would start disagreeing about what fits.
+ */
+export function clipThai(text: string, max: number): string {
+  if (max <= 0) return "";
+  if (text.length <= max) return text;
+  return text.slice(0, max).replace(TRAILING_THAI_MARKS, "");
+}
+
+/** Clip a mood to the footer budget. */
 function clipMood(mood: string): string {
-  if (mood.length <= MAX_MOOD_CHARS) return mood;
-  return mood.slice(0, MAX_MOOD_CHARS).replace(TRAILING_THAI_MARKS, "");
+  return clipThai(mood, MAX_MOOD_CHARS);
 }
 
 // The model is asked for `#rrggbb`, but it has been seen to answer `rrggbb`, `0xrrggbb`,

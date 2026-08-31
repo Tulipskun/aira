@@ -13,7 +13,7 @@ Discord
   -> SQLite history + relationship + profile (src/sql/)
   -> Gemini 1 (src/gemini/client.ts)
   -> Gemini 2 (must wait for Gemini 1)
-  -> execute
+  -> one flat JSON state object (no tool call)
   -> SQLite relationship/profile + Chroma memory
   -> select_image(filename)
   -> local images/<filename>
@@ -66,7 +66,11 @@ The scheduler batches messages per Discord `userId`. Discord IDs remain internal
 
 ## Image flow
 
-`select_image` returns a filename, not a URL. The bundled image registry validates the filename before resolving the local image.
+`select_image` returns a filename, not a URL. The registry is the `images/` directory itself: its
+listing (plus `manifest.json` descriptions) is what Gemini 2 is offered as the enum, and the same
+listing is what a returned filename is validated against before the local file is read. Nothing is
+hardcoded, so adding a picture needs no code change. `none` is a legal answer meaning "no picture
+this turn".
 
 ## Commands and channel lock
 

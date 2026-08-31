@@ -37,7 +37,7 @@ The memory search is performed before Gemini 1 so the dialogue model receives re
 
 ## Ingestion
 
-Gemini 2 may return `ingest_memory(...)` as part of its forced execute operations.
+Gemini 2 may return a non-empty `ingest_memory` string as part of its JSON state object.
 
 ```text
 Gemini 2

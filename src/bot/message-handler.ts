@@ -8,6 +8,7 @@ import {
 import { processMessage, type ProcessMessageResult } from "../pipeline/pipeline.js";
 import type { ScheduledMessage } from "../pipeline/scheduler.js";
 import { fetchEmotionImage } from "./images.js";
+import { buildFooterText, type UserStatus } from "./embed-footer.js";
 import { mediaSourcesOf } from "./media.js";
 import { getResponseChannelId } from "./discord-config.js";
 
@@ -117,6 +118,11 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
       if (!channel || !channel.isTextBased() || !("send" in channel)) return;
 
       const imageBuffer = await fetchEmotionImage(result.image);
+      if (result.image && !imageBuffer) {
+        // Gemini 2 named a picture we could not attach. The reply still goes out — but say so,
+        // because a missing image is otherwise indistinguishable from her choosing none.
+        console.warn(`[DISCORD] ${first.user}: select_image "${result.image}" produced no bytes -- embed sent without a picture`);
+      }
 
       try {
         const sent = await channel.send(
@@ -125,6 +131,7 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
             ...(imageBuffer && result.image ? { image: { buffer: imageBuffer, name: result.image } } : {}),
             ...(result.mood ? { mood: result.mood } : {}),
             ...(result.color !== undefined ? { color: result.color } : {}),
+            status: result.status,
             replyTo: anchor,
           }),
         );
@@ -136,8 +143,13 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
         // `mood`/`color` are what she actually painted the embed with. `color=none` means she sent
         // no usable hex (see the [PIPELINE] warn) and the bar stayed Discord grey.
         const embedColor = result.color === undefined ? "none" : `#${result.color.toString(16).padStart(6, "0")}`;
+        // `image=` is what the model picked vs what actually shipped — a name on the left with no
+        // attachment is a catalog mismatch, not her opting out. `footer=` is the rendered card, so
+        // "the footer looks wrong in Discord" is answerable from the log without re-running a turn.
+        // It is a debug aid only: no test asserts this line, and the footer itself is covered by
+        // test-profile.ts §11 and test-mood-e2e.ts.
         console.log(
-          `[DISCORD] ${first.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}, mood=${result.mood ?? "none"}, color=${embedColor}`,
+          `[DISCORD] ${first.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}, mood=${result.mood ?? "none"}, color=${embedColor}, image=${result.image ?? "none"}, footer=${JSON.stringify(buildFooterText({ ...result.status, mood: result.mood }))}`,
         );
       } catch (error) {
         console.error(`[DISCORD] Failed to send reply: ${String((error as Error)?.message ?? error)}`);
@@ -156,17 +168,33 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
 export function buildReplyPayload(options: {
   text: string;
   image?: { buffer: Buffer; name: string };
-  /** Isla's mood in Thai -- shown in the embed footer. */
+  /** Isla's mood in Thai -- second line of the embed footer. */
   mood?: string;
   /** 24-bit RGB accent colour for the embed bar. */
   color?: number;
+  /** The relationship card -- first line of the footer. Absent (a turn with no profile) leaves the
+   * footer as mood-only, or the plain fallback when there is no mood either. */
+  status?: UserStatus;
   replyTo?: string;
+  /**
+   * The moment this reply refers to. Defaults to *now* — deliberately not the incoming message's
+   * timestamp: the pipeline runs for tens of seconds, and Discord draws `timestamp` as "today at
+   * HH:MM" on the reply itself, so an old timestamp would claim the answer arrived before it did.
+   */
+  timestamp?: Date | string | number;
 }): MessageCreateOptions {
   // Discord rejects an embed whose description is empty (it surfaced as "Missing
   // Permissions" in the log). A media-only turn can legitimately produce a text-free reply.
   const embed = new EmbedBuilder()
     .setDescription(options.text || "…")
-    .setFooter({ text: options.mood ? `ไอล่า · ${options.mood}` : "Isla" });
+    .setFooter({ text: buildFooterText({ ...options.status, mood: options.mood }) });
+
+  // setTimestamp() takes a Date or an epoch number only (a *string* is rejected by the builder's
+  // validator even when it is a valid ISO date), so normalise here. Anything unparseable — and
+  // epoch 0, which is what a missing/legacy timestamp decays to — is dropped rather than costing
+  // the reply or stamping it with 1970.
+  const stamp = options.timestamp === undefined ? new Date() : new Date(options.timestamp);
+  if (stamp.getTime() > 0) embed.setTimestamp(stamp);
 
   // setColor() takes a 24-bit integer only (a hex *string* is rejected by the builder's
   // validator), and an absent colour falls back to Discord's default grey.
