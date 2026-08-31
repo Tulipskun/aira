@@ -44,6 +44,7 @@ const {
   prepareMedia,
   gifToVideo,
   resolveFfmpegPath,
+  isDiscordMediaUrl,
 } = await import("../src/bot/media.js");
 const { messageStep, ctxWindowCreate } = await import("../src/gemini/client.js");
 const { toScheduledMessage, MEDIA_ONLY_TEXT } = await import("../src/bot/message-handler.js");
@@ -65,6 +66,22 @@ async function makeGif(seconds: number): Promise<Buffer | null> {
       "-hide_banner", "-loglevel", "error", "-y",
       "-f", "lavfi", "-i", `testsrc=size=64x64:rate=10:duration=${seconds}`,
       "-vf", "fps=10", out,
+    ]);
+    return readFileSync(out);
+  } catch {
+    return null;
+  }
+}
+
+/** A real MP4 (h264) so classification can be tested against actual video bytes. */
+async function makeMp4(seconds: number): Promise<Buffer | null> {
+  if (!ffmpeg) return null;
+  const out = join(dir, `in-${seconds}s.mp4`);
+  try {
+    await run(ffmpeg, [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-f", "lavfi", "-i", `testsrc=size=64x64:rate=10:duration=${seconds}`,
+      "-pix_fmt", "yuv420p", "-f", "mp4", out,
     ]);
     return readFileSync(out);
   } catch {
@@ -143,6 +160,37 @@ check("unknown format falls back to png", stickerOf(99, "u.png")?.mimeType === "
 check("plain text yields no sources", mediaSourcesOf({ content: "hello" }).length === 0);
 check("missing collections are tolerated", mediaSourcesOf({}).length === 0);
 
+console.log("--- link unfurls (message.embeds) ---");
+const embedSources = mediaSourcesOf({
+  content: "https://klipy.com/gifs/love-114",
+  embeds: {
+    values: () => [
+      // A gifv-style provider: Discord exposes a proxied mp4 `video`, no `image`.
+      { url: "https://klipy.com/gifs/love-114", video: { url: "https://cdn.discordapp.com/embed/attachments/1/2.gif", proxyURL: "https://media.discordapp.net/embed/attachments/1/2.gif" } },
+      // An image-only unfurl.
+      { url: "https://example.com/cat.png", image: { url: "https://cdn.discordapp.com/proxy/3/cat.png", proxyURL: null } },
+      // Thumbnail only (no image/video) — still worth one source.
+      { thumbnail: { url: "https://cdn.discordapp.com/proxy/4/thumb.jpg" } },
+      // Nothing media-shaped, and a non-Direct proxy that must never be fetched.
+      { url: "https://example.com/article" },
+      { image: { url: "https://evil.test/x.png", proxyURL: "https://evil.test/x.png" } },
+    ],
+  },
+});
+check("one source per usable embed, not image+thumbnail", embedSources.length === 3, JSON.stringify(embedSources));
+check("video preferred and named by origin host", embedSources[0]?.name === "klipy.com/2.gif" && embedSources[0]?.mimeType === "video/mp4", JSON.stringify(embedSources[0]));
+check("proxyURL preferred for embeds too", embedSources[0]?.url.startsWith("https://media.discordapp.net/"), embedSources[0]?.url);
+check("image-only embed is an image", embedSources[1]?.name === "example.com/cat.png" && embedSources[1]?.mimeType === "image/png", JSON.stringify(embedSources[1]));
+check("thumbnail-only embed still counts", embedSources[2]?.mimeType === "image/jpeg", JSON.stringify(embedSources[2]));
+check("non-Discord embed URL is refused at the source", embedSources.every((s) => isDiscordMediaUrl(s.url)), JSON.stringify(embedSources));
+
+const dup = mediaSourcesOf({
+  content: "x",
+  attachments: { values: () => [{ name: "a.png", contentType: "image/png", url: "https://cdn.discordapp.com/attachments/1/2/a.png", proxyURL: "https://media.discordapp.net/attachments/1/2/a.png" }] },
+  embeds: { values: () => [{ image: { url: "https://cdn.discordapp.com/attachments/1/2/a.png", proxyURL: "https://media.discordapp.net/attachments/1/2/a.png" } }] },
+});
+check("attachment and its own embed are not billed twice", dup.length === 1, JSON.stringify(dup));
+
 // ============================================================ 4. classification
 
 console.log("=== 4. classifyMedia: what the model can actually read ===");
@@ -196,6 +244,17 @@ if (ffmpeg && gif2 && gif6) {
     check("6s GIF at 2fps → 12 frames", roomyProbe.frames === 12 && roomyProbe.seconds === 6, JSON.stringify(roomyProbe));
   }
 
+  // Discord's gifv proxies serve MP4 bytes from a URL ending in `.gif`. The name must not drag
+  // real video through the GIF transcoder.
+  const mp4 = await makeMp4(2);
+  if (mp4) {
+    const mislabelled = await classifyMedia({ name: "clip.gif", mimeType: "image/gif", data: mp4 });
+    check("MP4 bytes with a .gif name are video, not re-transcoded", mislabelled.kind === "video" && mislabelled.mimeType === "video/mp4", JSON.stringify({ kind: mislabelled.kind, mime: (mislabelled as { mimeType?: string }).mimeType }));
+    check("sniffMime reads the container", (mislabelled.kind === "video" ? "video/mp4" : "") === "video/mp4");
+  } else {
+    skip("MP4 bytes with a .gif name", "no ffmpeg to build the fixture");
+  }
+
   check("gifToVideo returns bytes", (await gifToVideo(gif2, 2)) !== null);
   check("gifToVideo refuses garbage", (await gifToVideo(Buffer.from("not a gif at all"), 2)) === null);
 } else if (gif2) {
@@ -238,16 +297,27 @@ check("no media → empty summary", mediaSummary([]) === "");
 const nothing = await prepareMedia([]);
 check("prepareMedia([]) is inert", nothing.parts.length === 0 && nothing.summary === "" && nothing.hasVisual === false);
 
-// A closed port fails fast without touching the public internet.
-const dead = await prepareMedia([{ name: "gone.png", mimeType: "image/png", url: "http://127.0.0.1:9/gone.png" }]);
+// A closed port fails fast without touching the public internet. allowUrl is widened here only
+// because the point of this case is the *download* failure path; production stays Discord-only.
+const LOCAL = { allowUrl: () => true };
+const dead = await prepareMedia([{ name: "gone.png", mimeType: "image/png", url: "http://127.0.0.1:9/gone.png" }], LOCAL);
 check("undownloadable media is reported, not thrown", dead.parts.length === 1 && dead.parts[0]?.type === "text", JSON.stringify(dead.parts));
 check("hasVisual is false when nothing arrived", dead.hasVisual === false);
 check("summary names the file", dead.summary.includes("gone.png"), dead.summary);
 
 console.log("=== 7. collectMedia caps the batch ===");
 const many = Array.from({ length: 6 }, (_, i) => ({ name: `p${i}.png`, mimeType: "image/png", url: "http://127.0.0.1:9/x.png" }));
-check("default cap is 4 items", (await collectMedia(many)).length === 4);
-check("cap is configurable", (await collectMedia(many, { maxItems: 2 })).length === 2);
+check("default cap is 4 items", (await collectMedia(many, LOCAL)).length === 4);
+check("cap is configurable", (await collectMedia(many, { ...LOCAL, maxItems: 2 })).length === 2);
+
+console.log("=== 7b. only Discord-hosted bytes are fetched ===");
+check("CDN and proxies allowed", ["https://cdn.discordapp.com/attachments/1/2/a.png", "https://media.discordapp.net/attachments/1/2/a.png", "https://cdn.discordapp.com/emojis/3.gif"]
+  .every((u) => isDiscordMediaUrl(u)));
+check("lookalike hosts rejected", ["https://cdn.discordapp.com.evil.test/a.png", "https://evil.test/?u=https://cdn.discordapp.com/a", "https://cdn.discordapp.co/a.png", "https://169.254.169.254/latest/meta-data/"]
+  .every((u) => !isDiscordMediaUrl(u)));
+check("non-https and junk rejected", !isDiscordMediaUrl("file:///etc/passwd") && !isDiscordMediaUrl("not a url"));
+const blocked = await collectMedia([{ name: "x.png", mimeType: "image/png", url: "http://127.0.0.1:9/x.png" }]);
+check("foreign host is refused before any request", blocked.length === 1 && blocked[0]?.kind === "unsupported" && /host not allowed/.test((blocked[0] as { reason?: string }).reason ?? ""), JSON.stringify(blocked));
 
 // ============================================================ 8. wiring into the request
 

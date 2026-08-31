@@ -34,6 +34,11 @@ export type MediaOptions = {
   gifFps?: number;
   /** Ceiling on sampled frames per GIF, so a long GIF cannot blow the token budget. */
   gifMaxFrames?: number;
+  /**
+   * Gate on which URLs may be fetched. Defaults to Discord's own CDN/proxies only. Injectable
+   * so tests can point at a loopback fixture without weakening the production rule.
+   */
+  allowUrl?: (url: string) => boolean;
 };
 
 const DEFAULTS: Required<MediaOptions> = {
@@ -41,6 +46,7 @@ const DEFAULTS: Required<MediaOptions> = {
   maxBytes: 8 * 1024 * 1024,
   gifFps: 2,
   gifMaxFrames: 24,
+  allowUrl: allowedUrl,
 };
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "image/bmp"]);
@@ -162,16 +168,98 @@ export async function gifToVideo(data: Buffer, fps: number, maxFrames?: number, 
   });
 }
 
+/**
+ * What the bytes actually are, from their magic numbers. The declared mime type cannot be
+ * trusted for link-embed media: Discord's proxy serves an unfurl's `image` as whatever the
+ * provider advertised, and GIFs that Discord already transcoded to MP4 come back labelled
+ * `image/png` from a `.gif`-looking path. Getting this wrong silently costs the animation
+ * (see the header note: image/gif is decoded as one still frame).
+ */
+export function sniffMime(data: Buffer): string | null {
+  if (data.length < 12) return null;
+  const head = data.subarray(0, 12);
+  const ascii = (o: number, n: number): string => data.subarray(o, o + n).toString("latin1");
+  if (ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a") return "image/gif";
+  if (head[0] === 0x89 && ascii(1, 3) === "PNG") return "image/png";
+  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return "image/jpeg";
+  if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") {
+    const fourcc = ascii(12, 4);
+    if (fourcc === "VP8X") {
+      // Only a VP8X chunk with the animation flag set is an animated WebP.
+      const flags = data.length > 20 ? data[20] : 0;
+      return flags & 0x02 ? "image/gif" : "image/webp";
+    }
+    return "image/webp";
+  }
+  if (ascii(4, 4) === "ftyp") {
+    const brand = ascii(8, 3);
+    if (brand === "qt ") return "video/quicktime";
+    return "video/mp4";
+  }
+  if (ascii(0, 4) === "OggS") return "audio/ogg";
+  if (ascii(0, 4) === "%PDF") return "application/pdf";
+  return null;
+}
+
+/**
+ * Hosts we are willing to download media from. Deliberately only Discord's own CDN and its
+ * external-content proxies: a user must never be able to make this process fetch an arbitrary
+ * URL (internal services, localhost, cloud metadata). Discord has already fetched and proxied
+ * anything reachable from a link embed, so `proxyURL` is both safe and cache-friendly.
+ */
+const ALLOWED_MEDIA_HOSTS = /(^\.|\.)(discordapp\.com|discordapp\.net|discord\.media)$/i;
+
+export function isDiscordMediaUrl(url: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(url);
+    return (protocol === "https:" || protocol === "http:") && ALLOWED_MEDIA_HOSTS.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Escape hatch for tests and self-hosted fixtures: `ISLA_MEDIA_EXTRA_HOSTS` is a comma-separated
+ * hostname list added to the allowlist. Read per call (not cached at module load) so a test can
+ * set it after import. Never set this to a wildcard on a public host — it is exactly the SSRF
+ * door the allowlist exists to close.
+ */
+function allowedUrl(url: string): boolean {
+  if (isDiscordMediaUrl(url)) return true;
+  const extra = (process.env.ISLA_MEDIA_EXTRA_HOSTS ?? "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+  if (!extra.length) return false;
+  try {
+    const { protocol, hostname } = new URL(url);
+    return (protocol === "https:" || protocol === "http:") && extra.includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** Decide how to present one downloaded buffer, transcoding GIFs to video. */
 export async function classifyMedia(
   raw: { name: string; mimeType: string; data: Buffer },
   options: MediaOptions = {},
 ): Promise<MediaItem> {
   const opts = { ...DEFAULTS, ...options };
-  const { name, mimeType, data } = raw;
+  const { name, data } = raw;
+  // The declared mime is the primary signal; the bytes only override it where a wrong label is
+  // actually harmful: a Discord `gifv` proxy path ends in `.gif` while carrying MP4 (feeding that
+  // to the transcoder loses the animation), and a generic `application/octet-stream` tells us
+  // nothing. Anything else keeps its declared type, so a caller that says "video" is believed.
+  const sniffed = sniffMime(data);
+  const declaredIsGif = isGif(raw.mimeType, name);
+  const declaredIsVague = !raw.mimeType || raw.mimeType === "application/octet-stream" || raw.mimeType === "application/unknown";
+  const mimeType = sniffed && (declaredIsGif ? sniffed !== "image/gif" : declaredIsVague) ? sniffed : raw.mimeType;
   const label = name || mimeType;
 
-  if (isGif(mimeType, name)) {
+  // When the bytes identified themselves, ignore the filename: a Discord `gifv` proxy path ends
+  // in `.gif` while carrying MP4, and treating that as a GIF would feed video bytes to the
+  // transcoder.
+  if (isGif(mimeType, sniffed ? "" : name)) {
     const seconds = await gifDuration(data);
     // Sample the whole clip but never bill more than gifMaxFrames: a 2s GIF at 2fps is 4 frames
     // (cheap), a 30s one is cut short rather than charged at 60 x 258 tokens. fps alone cannot do
@@ -207,6 +295,18 @@ export type MediaBearing = {
   content?: string | null;
   attachments?: { values(): Iterable<{ name?: string | null; contentType?: string | null; url: string; proxyURL?: string | null }> };
   stickers?: { values(): Iterable<{ name?: string | null; format: number; url: string }> };
+  /**
+   * Link unfurls. Discord has already fetched, proxied and (for `gifv`) transcoded the external
+   * content, so reading these URLs is safe and adds no third-party request from this host.
+   */
+  embeds?: {
+    values(): Iterable<{
+      image?: { url: string; proxyURL?: string | null } | null;
+      video?: { url: string; proxyURL?: string | null } | null;
+      thumbnail?: { url: string; proxyURL?: string | null } | null;
+      url?: string | null;
+    }>;
+  };
 };
 
 /**
@@ -275,7 +375,34 @@ export function mediaSourcesOf(message: MediaBearing): MediaSource[] {
     });
   }
 
-  return sources;
+  // Link unfurls: a klipy/tenor/giphy GIF link is not an attachment, but Discord has already
+  // fetched it and exposes a proxied `video` (mp4, for gifv providers) or `image`. One source per
+  // embed, best first — taking image *and* thumbnail would double-bill the same clip.
+  for (const embed of message.embeds?.values() ?? []) {
+    const picked = embed.video ?? embed.image ?? embed.thumbnail;
+    if (!picked) continue;
+    const url = picked.proxyURL ?? picked.url;
+    if (!url || !isDiscordMediaUrl(url)) continue;
+    const base = url.split("/").pop() ?? "embed";
+    sources.push({
+      name: embed.url ? `${new URL(embed.url).hostname}/${base}` : base,
+      mimeType: embed.video ? "video/mp4" : effectiveMime(null, base),
+      url,
+    });
+  }
+
+  return dedupeSources(sources);
+}
+
+/** Same bytes reached twice (attachment + its embed, or a repeated emoji) — keep the first. */
+function dedupeSources(sources: MediaSource[]): MediaSource[] {
+  const seen = new Set<string>();
+  return sources.filter((source) => {
+    const key = source.url.split("?")[0];
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -286,6 +413,10 @@ export async function collectMedia(sources: MediaSource[], options: MediaOptions
   const opts = { ...DEFAULTS, ...options };
   const items: MediaItem[] = [];
   for (const candidate of sources.slice(0, opts.maxItems)) {
+    if (!opts.allowUrl(candidate.url)) {
+      items.push({ kind: "unsupported", label: candidate.name, reason: "host not allowed" });
+      continue;
+    }
     const data = await fetchBytes(candidate.url, opts.maxBytes);
     if (!data) {
       items.push({ kind: "unsupported", label: candidate.name, reason: "could not be downloaded" });
@@ -352,9 +483,9 @@ export type PreparedMedia = {
  * One call site for the pipeline: fetch, classify, convert, and serialise everything a
  * message carries. Failures are already folded into `unsupported` items, so this never throws.
  */
-export async function prepareMedia(sources: MediaSource[]): Promise<PreparedMedia> {
+export async function prepareMedia(sources: MediaSource[], options: MediaOptions = {}): Promise<PreparedMedia> {
   if (!sources.length) return { parts: [], summary: "", hasVisual: false };
-  const items = await collectMedia(sources);
+  const items = await collectMedia(sources, options);
   return {
     parts: mediaToContent(items),
     summary: mediaSummary(items),
