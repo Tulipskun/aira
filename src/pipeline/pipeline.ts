@@ -1,7 +1,7 @@
 import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
 import { prepareMedia, type MediaSource } from "../bot/media.js";
 import { ISLA_REPLY_SCHEMA, parseIslaReply } from "../gemini/reply-format.js";
-import { thaiTimestamp } from "../gemini/time.js";
+import { currentTimeBlock, thaiTimestamp } from "../gemini/time.js";
 import { embed } from "../memory/embedding.js";
 import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
@@ -159,7 +159,12 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, fileName, temporaryMemory, message.userId, media.parts);
   const buildMs = lap();
   const response1 = await sendRequestGemini(request1, {
-    systemInstruction: `${systemPrompt}\n\n${profileBlock}`,
+    // `currentTimeBlock()` is recomputed per turn on purpose: history and memory only carry the
+    // timestamps of *past* rows, so without a server-side "now" the model has nothing to weigh a
+    // user's false time claim against (real case: "ยังไม่เที่ยงเลย" typed at 12:46:39+07:00, and
+    // Isla agreed with the user over her own context). Gemini 2 deliberately does NOT get it —
+    // it only picks tools, and a per-turn instruction string would break its prompt caching.
+    systemInstruction: `${systemPrompt}\n\n${profileBlock}\n\n${currentTimeBlock()}`,
     responseFormat: { type: "text", mime_type: "application/json", schema: ISLA_REPLY_SCHEMA },
     debug: { userId: message.userId, userName: message.user },
   });

@@ -3,7 +3,7 @@
 // No network. The zone is read from ISLA_TIMEZONE at module load, so the alternate-zone cases
 // import the module again with a cache-busting query string.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -84,6 +84,32 @@ const stored = "2026-08-30T20:01:47.957Z";
 saveMessage({ role: "user", userId: "u1", user: "Yuuta", text: "hi", timestamp: stored });
 const row = getHistory(5)[0];
 check("DB still stores UTC, untouched by the display conversion", row.timestamp === stored, row.timestamp);
+
+console.log("=== 8. currentTimeBlock(): the per-turn <current_time> anchor ===");
+const { currentTimeBlock, thaiNow } = await import("../src/gemini/time.js");
+// The real bug this guards against: Yuuta typed "ยังไม่เที่ยงเลย" at 12:46:39+07:00 — 46 seconds
+// past noon — and Isla believed him, because nothing in the prompt ranked the timestamp above a
+// user's claim. The block must therefore carry the *exact* wall clock the rule in isla.md cites.
+const noonPlus46 = currentTimeBlock(new Date("2026-08-31T05:46:39.000Z")); // 12:46:39 ICT
+check("wrapped in <current_time> tags", noonPlus46 === "<current_time>2026-08-31T12:46:39+07:00</current_time>", noonPlus46);
+check("same renderer as every other prompt timestamp", noonPlus46.includes(thaiTimestamp("2026-08-31T05:46:39.000Z")));
+check("no milliseconds — matches the format the prompt teaches", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+07:00$/.test(noonPlus46.slice(14, -15)), noonPlus46);
+check("defaults to the real clock", currentTimeBlock() === `<current_time>${thaiNow()}</current_time>`, currentTimeBlock());
+check("thaiNow is parseable as an instant", !Number.isNaN(new Date(thaiNow()).getTime()));
+// A forged claim must not be able to look like this block: the value comes from the server clock,
+// so assert the block is a *single* line the model cannot extend from message text.
+check("one line, no nested tags a message could imitate", !/\n/.test(noonPlus46) && (noonPlus46.match(/</g) ?? []).length === 2);
+
+console.log("=== 9. wiring: Gemini 1 gets the block, Gemini 2 does not ===");
+const pipelineSrc = readFileSync("src/pipeline/pipeline.ts", "utf8");
+const gemini1Call = /const response1 = await sendRequestGemini\(request1, \{[\s\S]*?\n  \}\);/.exec(pipelineSrc)?.[0] ?? "";
+check("Gemini 1 systemInstruction ends with currentTimeBlock()", gemini1Call.includes("${currentTimeBlock()}"), gemini1Call.slice(0, 160));
+const gemini2Call = /const result = await sendRequestGemini\(request,[\s\S]*?\n  \}\);/.exec(pipelineSrc)?.[0] ?? "";
+check("Gemini 2 systemInstruction is unchanged (cacheable, no per-turn clock)", gemini2Call.includes("systemInstruction: gemini2SystemPrompt") && !gemini2Call.includes("currentTimeBlock"), gemini2Call.slice(0, 160));
+const promptSrc = readFileSync("src/gemini/prompts/isla.md", "utf8");
+check("the prompt actually tells her the precedence rule", promptSrc.includes("เชื่อถือได้มากกว่า") && promptSrc.includes("<current_time>"));
+check("and gives the noon example verbatim", promptSrc.includes("ยังไม่เที่ยงเลย") && promptSrc.includes("12:46+07:00"));
+check("still forbids breaking character to say so", promptSrc.includes("ห้ามบอกว่ากำลังตรวจข้อมูล"));
 
 console.log("");
 if (fail) { console.log(`❌ ${fail} FAILED, ${pass} passed`); process.exit(1); }

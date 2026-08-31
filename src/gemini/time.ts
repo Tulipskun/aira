@@ -68,3 +68,23 @@ function offsetOf(timeZoneName: string | undefined): string {
 
 /** Render a stored (UTC) timestamp as Thailand local time, ready to put in front of the model. */
 export const thaiTimestamp = createTimestampFormatter(TIMEZONE_LABEL);
+
+/** Thai-time view of "now", in the same format as every other prompt timestamp. */
+export function thaiNow(): string {
+  return thaiTimestamp(new Date().toISOString());
+}
+
+/**
+ * The `<current_time>` block appended to Gemini 1's system instruction on every turn.
+ *
+ * History and memory only carry the timestamps of *past* rows, so without this the model has no
+ * server-side anchor for "now". Real failure that motivated it: Yuuta typed "ยังไม่เที่ยงเลย" at
+ * `2026-08-31T12:46:39+07:00` — 46 seconds *past* noon — and Isla abandoned the timestamp in her
+ * own context and agreed with him, because nothing told her which of the two claims outranks the
+ * other. A value rendered here cannot be forged by a user typing a time into a message.
+ *
+ * `now` is injectable for tests; callers pass nothing and get the real clock.
+ */
+export function currentTimeBlock(now: Date = new Date()): string {
+  return `<current_time>${thaiTimestamp(now.toISOString())}</current_time>`;
+}
