@@ -53,6 +53,10 @@ if (ffmpeg) {
 
 const files: Record<string, { type: string; body: Buffer }> = {
   "/red.png": { type: "image/png", body: RED },
+  // The reported bug: a plain-text log Discord labels application/octet-stream. The answer to
+  // the question asked below exists ONLY inside this file, so a correct reply proves the bytes
+  // were decoded and sent as text rather than base64'd as an unreadable attachment.
+  "/note.txt": { type: "text/plain", body: Buffer.from("บันทึกประจำวัน\nรหัสลับในไฟล์นี้คือ 4217\nลงชื่อ ไอล่า", "utf8") },
   ...(gif ? { "/anim.gif": { type: "image/gif", body: gif } } : {}),
 };
 const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (request) => {
@@ -137,6 +141,29 @@ try {
     const videoInput = JSON.stringify((videoReq?.payload as { input?: unknown })?.input ?? "");
     check("request sent it as video with processing.fps", /"type":"video"/.test(videoInput) && /"fps":/.test(videoInput), videoInput.slice(0, 200));
   }
+  console.log("=== 6. a plain-text attachment must be READ, not reported as undeliverable ===");
+  // Regression guard for the reported bug: Discord sends .txt uploads as
+  // application/octet-stream, which used to be classified unsupported, so a question whose
+  // answer lived in the file was answered from the filename alone.
+  const textTurn = {
+    userId: "e2e-user",
+    user: "Tulip",
+    text: "ในไฟล์ note.txt ที่แนบมา มีรหัสลับเป็นตัวเลขอะไร? ตอบสั้น ๆ",
+    timestamp: new Date().toISOString(),
+    // octet-stream on purpose: that is what Discord actually reports for a .txt upload.
+    mediaSources: [{ name: "note.txt", mimeType: "application/octet-stream", url: `${base}/note.txt` }],
+  };
+  const textPrepared = await prepareMedia(textTurn.mediaSources);
+  check("the text file produced a part", textPrepared.parts.length === 1, JSON.stringify(textPrepared.parts));
+  check("as a text part, not image bytes", textPrepared.parts[0]?.type === "text", textPrepared.parts[0]?.type);
+  check("the file is labelled [text]", /\[text\]/.test(textPrepared.summary), textPrepared.summary);
+  const textAnswer = await processMessage(textTurn);
+  console.log(`  reply: ${JSON.stringify(textAnswer.text)}`);
+  check("she answers with the number from inside the file", /4217/.test(textAnswer.text), textAnswer.text);
+  const textReq = readDebugDump(process.env.GEMINI_DEBUG_PAYLOAD_FILE).filter((r) => r.stage === "gemini1" && r.event === "request").pop();
+  const textInput = JSON.stringify((textReq?.payload as { input?: unknown })?.input ?? "");
+  check("the request carried the decoded words, not base64", /บันทึกประจำวัน/.test(textInput), textInput.slice(0, 200));
+  check("and no image part was invented for it", !/"type":"image"/.test(textInput), textInput.slice(0, 200));
 } finally {
   server.stop(true);
   try { await clearMemories(); } catch { /* best effort: leave the throwaway collection */ }

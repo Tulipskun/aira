@@ -25,11 +25,20 @@ export type MediaItem =
   | { kind: "video"; data: Buffer; mimeType: string; label: string; fps?: number }
   | { kind: "audio"; data: Buffer; mimeType: string; label: string }
   | { kind: "document"; data: Buffer; mimeType: string; label: string }
+  /**
+   * Source/markup/data file sent as readable text. Distinct from `document` because the bytes
+   * never leave this process as an upload: the model sees the characters. Only the label reaches
+   * the stored history row (via `mediaSummary`), never the file's contents — see `Message.media`,
+   * which is appended to the current turn only.
+   */
+  | { kind: "text"; mimeType: string; label: string; text: string; truncated: boolean }
   | { kind: "unsupported"; label: string; reason: string };
 
 export type MediaOptions = {
   maxItems?: number;
   maxBytes?: number;
+  /** Character ceiling for a `text` item; the rest is cut with an explicit marker. */
+  maxTextChars?: number;
   /** Frames per second to sample out of a transcoded GIF. */
   gifFps?: number;
   /** Ceiling on sampled frames per GIF, so a long GIF cannot blow the token budget. */
@@ -44,21 +53,48 @@ export type MediaOptions = {
 const DEFAULTS: Required<MediaOptions> = {
   maxItems: 4,
   maxBytes: 8 * 1024 * 1024,
+  maxTextChars: 24_000,
   gifFps: 2,
   gifMaxFrames: 24,
   allowUrl: allowedUrl,
 };
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "image/bmp"]);
-const VIDEO_TYPES = new Set(["video/mp4", "video/mpeg", "video/mpg", "video/mov", "video/avi", "video/x-flv", "video/webm", "video/wmv", "video/3gpp"]);
-const AUDIO_TYPES = new Set(["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/aac", "audio/ogg", "audio/flac"]);
+// Every string here is one this code can actually produce (from Discord's contentType, from
+// effectiveMime's extension table, or from sniffMime) and was sent to the live API: .mov, .mkv and
+// .webm all decoded correctly. video/quicktime and video/x-matroska were previously missing even
+// though sniffMime/effectiveMime emit them, so those uploads were thrown away as unreadable.
+const VIDEO_TYPES = new Set(["video/mp4", "video/mpeg", "video/mpg", "video/quicktime", "video/x-matroska", "video/webm", "video/x-flv", "video/avi", "video/wmv", "video/3gpp"]);
+// audio/mp4 is what a .m4a upload resolves to; audio/webm is what a voice-message attachment can
+// carry. Both verified. audio/mp4 was missing, so .m4a fell through to "unsupported".
+const AUDIO_TYPES = new Set(["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/aac", "audio/mp4", "audio/ogg", "audio/flac", "audio/webm", "audio/vnd.wave"]);
+// Binary documents the API parses for us. Verified: a valid one-page PDF reads back its text.
 const DOCUMENT_TYPES = new Set(["application/pdf", "text/csv"]);
+/**
+ * Source, markup and data files. These are decoded and sent as a **text part** rather than a
+ * `document` part because we can cap and label the content ourselves: a 10MB log survives as the
+ * first `maxTextChars` with an explicit `truncated` marker, where a document part would either
+ * fail the size limit outright or bill the whole file. (Both kinds are equally current-turn only
+ * in history — `Message.media` is never replayed — so that is *not* the reason.) The API does
+ * accept html/js/json/md/css as documents; verified reading them correctly.
+ */
+const TEXT_TYPES = new Set([
+  "text/plain", "text/markdown", "text/html", "text/css", "text/javascript", "text/xml", "text/yaml", "text/csv",
+  "application/json", "application/xml", "application/javascript", "application/x-yaml", "application/sql", "application/x-sh",
+]);
 
 /** discord.js StickerFormatType: PNG=1, APNG=2, Lottie=3, GIF=4. */
 // APNG is a PNG container, so reading it as a static PNG (first frame) is honest. Lottie is
 // served as .json — claiming image/png for it would ship non-image bytes as if they were a
-// picture, so it is labelled by its real type and classifyMedia reports it as unreadable.
-const STICKER_MIME: Record<number, string> = { 1: "image/png", 2: "image/png", 3: "application/json", 4: "image/gif" };
+// picture. It gets its own label rather than application/json because a Lottie file *is* JSON and
+// would otherwise be sent as a text attachment: vector path data is not something she can look
+// at, and tens of kilobytes of it is pure token cost with no understanding gained.
+const STICKER_MIME: Record<number, string> = { 1: "image/png", 2: "image/png", 3: "application/lottie", 4: "image/gif" };
+
+/** Friendlier wording for the refusal the model and the history row see. */
+const UNSUPPORTED_HINTS: Record<string, string> = {
+  "application/lottie": "an animated (Lottie) sticker, which cannot be displayed",
+};
 
 /** `<:name:id>` static, `<a:name:id>` animated (served as GIF). */
 const CUSTOM_EMOJI_PATTERN = /<a?:[a-zA-Z0-9_]+:\d+>/g;
@@ -103,6 +139,14 @@ export function effectiveMime(contentType: string | null | undefined, name: stri
     mp4: "video/mp4", mov: "video/quicktime", mkv: "video/x-matroska", webm: "video/webm", avi: "video/avi",
     m4a: "audio/mp4", mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", flac: "audio/flac", aac: "audio/aac",
     pdf: "application/pdf", csv: "text/csv",
+    // Text and source files. Discord reports `application/octet-stream` for nearly all of these,
+    // so without a mapping they would be discarded even though the model reads them. Only mimes
+    // that classifyMedia actually handles are listed here.
+    txt: "text/plain", log: "text/plain", md: "text/markdown", html: "text/html", htm: "text/html",
+    css: "text/css", js: "text/javascript", mjs: "text/javascript", cjs: "text/javascript",
+    ts: "text/javascript", tsx: "text/javascript", jsx: "text/javascript",
+    json: "application/json", xml: "text/xml", yaml: "text/yaml", yml: "text/yaml",
+    sql: "application/sql", sh: "application/x-sh", bash: "application/x-sh",
   };
   return guess[extensionOf(name)] ?? mime ?? "application/octet-stream";
 }
@@ -253,7 +297,11 @@ export async function classifyMedia(
   const sniffed = sniffMime(data);
   const declaredIsGif = isGif(raw.mimeType, name);
   const declaredIsVague = !raw.mimeType || raw.mimeType === "application/octet-stream" || raw.mimeType === "application/unknown";
-  const mimeType = sniffed && (declaredIsGif ? sniffed !== "image/gif" : declaredIsVague) ? sniffed : raw.mimeType;
+  // Bytes beat the name; the name beats a vague declared type. Resolving the extension *here*
+  // rather than trusting the caller matters: mediaSourcesOf() pre-resolves it, but classifyMedia
+  // is also called directly (tests, future callers), and an unresolved octet-stream would silently
+  // discard a perfectly readable .txt.
+  const mimeType = sniffed && (declaredIsGif ? sniffed !== "image/gif" : declaredIsVague) ? sniffed : effectiveMime(raw.mimeType, name);
   const label = name || mimeType;
 
   // When the bytes identified themselves, ignore the filename: a Discord `gifv` proxy path ends
@@ -287,7 +335,38 @@ export async function classifyMedia(
   if (VIDEO_TYPES.has(mimeType)) return { kind: "video", data, mimeType, label };
   if (AUDIO_TYPES.has(mimeType)) return { kind: "audio", data, mimeType, label };
   if (DOCUMENT_TYPES.has(mimeType)) return { kind: "document", data, mimeType, label };
-  return { kind: "unsupported", label, reason: `${mimeType || "unknown type"} is not readable by the model` };
+  if (TEXT_TYPES.has(mimeType)) {
+    // A file that claims to be text but is mostly opaque bytes (a mislabelled upload, a UTF-16
+    // dump, a binary pretending to be a .txt) would reach the model as mojibake. Refuse honestly
+    // instead — the same rule that keeps a Lottie sticker out of the image path.
+    if (looksBinary(data)) {
+      return { kind: "unsupported", label, reason: `${mimeType} but the bytes are not readable text` };
+    }
+    const full = data.toString("utf8").replace(/\r\n/g, "\n");
+    const truncated = full.length > opts.maxTextChars;
+    return {
+      kind: "text",
+      mimeType,
+      label,
+      text: truncated ? full.slice(0, opts.maxTextChars) : full,
+      truncated,
+    };
+  }
+  const hint = UNSUPPORTED_HINTS[mimeType];
+  return {
+    kind: "unsupported",
+    label,
+    reason: hint ? `${label} is ${hint}` : `${mimeType || "unknown type"} is not readable by the model`,
+  };
+}
+
+/**
+ * NUL bytes are the reliable signal: every text encoding we accept, including UTF-8/UTF-16 with a
+ * BOM, has none in its first kilobyte, while almost every binary format does.
+ */
+export function looksBinary(data: Buffer): boolean {
+  const window = data.subarray(0, 1024);
+  return window.includes(0);
 }
 
 /** discord.js Message surface this module needs — kept structural so tests can fake it. */
@@ -336,13 +415,16 @@ export function parseCustomEmojis(content: string): MediaSource[] {
   return found;
 }
 
-async function fetchBytes(url: string, maxBytes: number): Promise<Buffer | null> {
+async function fetchBytes(url: string, maxBytes: number): Promise<{ data: Buffer } | { tooLarge: true } | null> {
   try {
     const response = await fetch(url);
     if (!response.ok) return null;
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) return null;
-    return Buffer.from(bytes);
+    if (bytes.byteLength === 0) return null;
+    // Separate from "unreachable": a 20MB video and a dead link need different words, and for a
+    // text file this is the one case where the content was fine and only the size was not.
+    if (bytes.byteLength > maxBytes) return { tooLarge: true };
+    return { data: Buffer.from(bytes) };
   } catch {
     return null;
   }
@@ -417,12 +499,16 @@ export async function collectMedia(sources: MediaSource[], options: MediaOptions
       items.push({ kind: "unsupported", label: candidate.name, reason: "host not allowed" });
       continue;
     }
-    const data = await fetchBytes(candidate.url, opts.maxBytes);
-    if (!data) {
+    const fetched = await fetchBytes(candidate.url, opts.maxBytes);
+    if (!fetched) {
       items.push({ kind: "unsupported", label: candidate.name, reason: "could not be downloaded" });
       continue;
     }
-    items.push(await classifyMedia({ name: candidate.name, mimeType: candidate.mimeType, data }, opts));
+    if ("tooLarge" in fetched) {
+      items.push({ kind: "unsupported", label: candidate.name, reason: "file is too large to read" });
+      continue;
+    }
+    items.push(await classifyMedia({ name: candidate.name, mimeType: candidate.mimeType, data: fetched.data }, opts));
   }
   return items;
 }
@@ -452,6 +538,18 @@ export function mediaToContent(items: MediaItem[]): Interactions.Content[] {
         break;
       case "document":
         parts.push({ type: "document", data: item.data.toString("base64"), mime_type: item.mimeType });
+        break;
+      case "text":
+        // Delimiters rather than a markdown fence: file content can itself contain ```, and the
+        // model must not mistake the closing marker for part of the source.
+        parts.push({
+          type: "text",
+          text: [
+            `--- attached file: ${item.label} (${item.mimeType}, ${item.text.length} characters${item.truncated ? ", truncated" : ""}) ---`,
+            item.text,
+            "--- end of file ---",
+          ].join("\n"),
+        });
         break;
       case "unsupported":
         // Tell the model the file existed instead of silently dropping it.

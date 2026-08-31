@@ -45,6 +45,7 @@ const {
   gifToVideo,
   resolveFfmpegPath,
   isDiscordMediaUrl,
+  looksBinary,
 } = await import("../src/bot/media.js");
 const { messageStep, ctxWindowCreate } = await import("../src/gemini/client.js");
 const { toScheduledMessage, MEDIA_ONLY_TEXT } = await import("../src/bot/message-handler.js");
@@ -153,7 +154,7 @@ const stickerOf = (format: number, url: string) =>
 console.log("--- stickers by format (discord.js StickerFormatType) ---");
 check("PNG sticker → image/png", stickerOf(1, "u.png")?.mimeType === "image/png");
 check("APNG sticker → image/png", stickerOf(2, "u.png")?.mimeType === "image/png");
-check("Lottie sticker is not faked as an image", stickerOf(3, "u.json")?.mimeType === "application/json", JSON.stringify(stickerOf(3, "u.json")));
+check("Lottie sticker is not faked as an image", stickerOf(3, "u.json")?.mimeType === "application/lottie", JSON.stringify(stickerOf(3, "u.json")));
 check("GIF sticker → image/gif", stickerOf(4, "u.gif")?.mimeType === "image/gif");
 check("unknown format falls back to png", stickerOf(99, "u.png")?.mimeType === "image/png");
 
@@ -206,7 +207,12 @@ const zip = await kindOf("a.zip", "application/zip");
 check("zip → unsupported", zip.kind === "unsupported", JSON.stringify(zip));
 check("unsupported carries a reason", zip.kind === "unsupported" && /not readable/.test(zip.reason), JSON.stringify(zip));
 check("label falls back to the mime when nameless", (await kindOf("", "application/zip")).label === "application/zip");
-check("lottie bytes are refused, not sent as a picture", (await kindOf("s.json", "application/json", Buffer.from("{}"))).kind === "unsupported");
+// A Lottie sticker is JSON bytes, but must not be read as a picture — and must not be smuggled
+// into the turn as a text attachment either (vector path data is token cost, not understanding).
+check("lottie bytes are refused, not sent as a picture", (await kindOf("s.json", "application/lottie", Buffer.from("{}"))).kind === "unsupported");
+check("lottie refusal explains it is a sticker", (await kindOf("wave", "application/lottie", Buffer.from("{}"))).kind === "unsupported" && /Lottie/.test(((await kindOf("wave", "application/lottie", Buffer.from("{}"))) as { reason?: string }).reason ?? ""), JSON.stringify(await kindOf("wave", "application/lottie", Buffer.from("{}"))));
+// Real JSON text, by contrast, IS readable now.
+check("application/json is readable as text", (await kindOf("data.json", "application/json", Buffer.from('{"a":1}'))).kind === "text");
 
 console.log("--- GIF: transcoded to video, or degraded honestly ---");
 const gif2 = await makeGif(2);
@@ -379,6 +385,90 @@ const botSource = readFileSync(new URL("../src/bot/bot.ts", import.meta.url), "u
 check("no early return on empty content", !/if\s*\(\s*!?text\s*\)\s*return/.test(botSource), "bot.ts still drops messages with no text");
 check("toScheduledMessage decides what is ignorable", /toScheduledMessage\(message\)/.test(botSource));
 check("its null result is what gets dropped", /if\s*\(\s*!scheduled\s*\)\s*return/.test(botSource));
+
+// ============================================================ 11. text attachments
+
+console.log("=== 11. text files are read as text ===");
+const utf8 = (s: string) => Buffer.from(s, "utf8");
+// effectiveMime(contentType, name) — Discord reports octet-stream for nearly every text upload,
+// so the extension table is what rescues them.
+check("txt → text/plain", effectiveMime("application/octet-stream", "a.txt") === "text/plain", effectiveMime("application/octet-stream", "a.txt"));
+check("log → text/plain", effectiveMime("application/octet-stream", "a.log") === "text/plain");
+check("md → text/markdown", effectiveMime("application/octet-stream", "a.md") === "text/markdown");
+check("py → refused (no extensionless guessing)", effectiveMime("application/octet-stream", "a.py") === "application/octet-stream");
+check("a declared mime is believed", effectiveMime("text/markdown", "a.md") === "text/markdown");
+check("a .png keeps its image type", effectiveMime("application/octet-stream", "a.png") === "image/png");
+check("octet-stream with no known extension stays vague", effectiveMime("application/octet-stream", "notes") === "application/octet-stream");
+
+check("looksBinary refuses NUL bytes", looksBinary(Buffer.from("a\0b")) === true);
+check("looksBinary accepts utf8", looksBinary(utf8("สวัสดีครับ")) === false);
+check("looksBinary accepts a BOM", looksBinary(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), utf8("hi")])) === false);
+check("looksBinary flags raw utf-16 (no BOM)", looksBinary(Buffer.from("hi", "utf16le")) === true);
+
+const txt = await kindOf("notes.txt", "text/plain", utf8("สวัสดีครับ"));
+check("text/plain → text item", txt.kind === "text", JSON.stringify({ kind: txt.kind }));
+check("text is decoded, not base64'd", txt.kind === "text" && txt.text === "สวัสดีครับ", JSON.stringify(txt));
+check("text item label is the bare name", txt.label === "notes.txt", txt.label);
+check("summary tags it [text]", mediaSummary([txt]) === "notes.txt [text]", mediaSummary([txt]));
+const jsonItem = await kindOf("data.json", "application/json", utf8('{"a":1}'));
+check("json → text item, not a picture", jsonItem.kind === "text", JSON.stringify({ kind: jsonItem.kind }));
+// classifyMedia must resolve the extension itself. mediaSourcesOf() pre-resolves it, but this is
+// also called directly, and trusting a vague declared type silently discarded a readable .txt —
+// found by the e2e, which passes Discord's raw octet-stream.
+const rawOctet = await kindOf("note.txt", "application/octet-stream", utf8("hello"));
+check("octet-stream + .txt name is still read as text", rawOctet.kind === "text", JSON.stringify(rawOctet));
+const binTxt = await kindOf("bad.txt", "text/plain", Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05]));
+check("a binary pretending to be .txt is refused", binTxt.kind === "unsupported" && /not readable text/.test((binTxt as { reason?: string }).reason ?? ""), JSON.stringify(binTxt));
+const crlf = await kindOf("win.txt", "text/plain", utf8("a\r\nb"));
+check("CRLF is normalised", crlf.kind === "text" && (crlf as { text: string }).text === "a\nb", JSON.stringify(crlf));
+
+const textParts = mediaToContent([
+  { kind: "text", mimeType: "text/plain", label: "a.txt", text: "hello", truncated: false },
+  { kind: "unsupported", label: "b.zip", reason: "application/zip is not readable by the model" },
+]);
+check("text item is a text part, not a media part", textParts[0]?.type === "text");
+check("the part names the file and its size", /--- attached file: a\.txt \(text\/plain, 5 characters\) ---/.test((textParts[0] as { text?: string }).text ?? ""), JSON.stringify(textParts[0]));
+check("the content is inlined verbatim", (textParts[0] as { text?: string }).text === "--- attached file: a.txt (text/plain, 5 characters) ---\nhello\n--- end of file ---", JSON.stringify((textParts[0] as { text?: string }).text));
+check("unsupported still renders as a note", (textParts[1] as { text?: string }).text === "[b.zip — application/zip is not readable by the model]");
+const fence = await kindOf("fence.md", "text/markdown", utf8("```\ncode\n```"));
+check("file content containing ``` cannot escape the delimiters", fence.kind === "text" && !(fence as { text: string }).text.includes("--- end of file ---"), JSON.stringify(fence));
+const txtMedia = await prepareMedia([{ name: "note.txt", mimeType: "text/plain", url: "http://127.0.0.1:9/note.txt" }], LOCAL);
+check("a failed text download degrades to the old note", txtMedia.parts[0]?.type === "text" && /could not be downloaded/.test((txtMedia.parts[0] as { text?: string }).text ?? ""), JSON.stringify(txtMedia.parts));
+
+console.log("--- oversized files ---");
+// A loopback server (no internet, no quota) so the *read* cap runs against real bytes.
+const srv = Bun.serve({ port: 0, fetch(req) {
+  const path = new URL(req.url).pathname;
+  if (path === "/big.zip") return new Response(new Uint8Array(200));
+  if (path === "/note.txt") return new Response("สวัสดีครับ", { headers: { "content-type": "text/plain" } });
+  return new Response("nope", { status: 404 });
+}});
+const base = `http://127.0.0.1:${srv.port}`;
+const bigBinary = await collectMedia([{ name: "big.zip", mimeType: "application/zip", url: `${base}/big.zip` }], { ...LOCAL, maxBytes: 64 });
+check("oversized binary is refused as too large, not unreachable", bigBinary[0]?.kind === "unsupported" && /too large/.test((bigBinary[0] as { reason?: string }).reason ?? ""), JSON.stringify(bigBinary));
+const fitsBinary = await collectMedia([{ name: "big.zip", mimeType: "application/zip", url: `${base}/big.zip` }], { ...LOCAL, maxBytes: 1024 });
+check("the same file under budget is classified normally", fitsBinary[0]?.kind === "unsupported" && /not readable/.test((fitsBinary[0] as { reason?: string }).reason ?? ""), JSON.stringify(fitsBinary));
+const realText = await collectMedia([{ name: "note.txt", mimeType: "text/plain", url: `${base}/note.txt` }], LOCAL);
+check("a served text file arrives as text", realText[0]?.kind === "text" && (realText[0] as { text?: string }).text === "สวัสดีครับ", JSON.stringify(realText));
+srv.stop();
+const bigText = await classifyMedia({ name: "huge.txt", mimeType: "text/plain", data: utf8("x".repeat(5000)) }, { maxTextChars: 1000 });
+check("oversized text is truncated, not dropped", bigText.kind === "text" && (bigText as { text: string }).text.length === 1000, JSON.stringify({ kind: bigText.kind, len: (bigText as { text?: string }).text?.length }));
+check("truncation is flagged on the item", bigText.kind === "text" && (bigText as { truncated: boolean }).truncated === true);
+check("truncation is admitted to the model", /truncated/.test((mediaToContent([bigText])[0] as { text?: string }).text ?? ""), JSON.stringify(mediaToContent([bigText])[0]));
+const smallText = await classifyMedia({ name: "ok.txt", mimeType: "text/plain", data: utf8("short") }, { maxTextChars: 1000 });
+check("a file within budget is not marked truncated", smallText.kind === "text" && (smallText as { truncated: boolean }).truncated === false);
+check("truncation cannot split a Thai character", bigText.kind === "text" && !/[\uD800-\uDBFF]$/.test((bigText as { text: string }).text));
+const thaiCut = await classifyMedia({ name: "thai.txt", mimeType: "text/plain", data: utf8("ก".repeat(100)) }, { maxTextChars: 150 });
+check("a Thai file under the char ceiling is intact", thaiCut.kind === "text" && (thaiCut as { text: string }).text === "ก".repeat(100) && (thaiCut as { truncated: boolean }).truncated === false);
+
+console.log("--- the receive path must not discard a text file it can read ---");
+// bot.ts cannot be imported without logging in, so the wiring is asserted against source, as in
+// section 10. The bug this guards: an unreadable type used to be reported as "0 parts attached".
+const mediaSource = readFileSync(new URL("../src/bot/media.ts", import.meta.url), "utf8");
+check("hasVisual is derived from the item kind, not from bytes", /hasVisual: items\.some\(\(item\) => item\.kind !== "unsupported"\)/.test(mediaSource));
+check("a too-large download is distinguished from a dead link", /tooLarge: true/.test(mediaSource) && /too large to read/.test(mediaSource));
+check("text/plain is in the readable set", /"text\/plain"/.test(mediaSource));
+check("the byte cap is the documented 8MB default", /maxBytes: 8 \* 1024 \* 1024/.test(mediaSource));
 
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed${skipped ? `, ${skipped} skipped` : ""}`);
