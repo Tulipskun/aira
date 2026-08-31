@@ -46,7 +46,6 @@ client.on("messageCreate", async (message: Message) => {
   if (message.author.bot) return;
 
   const text = message.content.trim();
-  if (!text) return;
 
   if (text.startsWith("!")) {
     if (isKnownCommand(text)) await handleCommand(message, ownerId);

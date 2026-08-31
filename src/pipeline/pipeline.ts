@@ -1,4 +1,5 @@
 import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
+import { prepareMedia, type MediaSource } from "../bot/media.js";
 import { ISLA_REPLY_SCHEMA, parseIslaReply } from "../gemini/reply-format.js";
 import { thaiTimestamp } from "../gemini/time.js";
 import { embed } from "../memory/embedding.js";
@@ -12,7 +13,15 @@ import { config } from "../config.js";
 import type { Interactions } from "@google/genai";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..");
-export type IncomingMessage = { userId: string; user: string; text: string; timestamp: string; fileName?: string };
+export type IncomingMessage = {
+  userId: string;
+  user: string;
+  text: string;
+  timestamp: string;
+  fileName?: string;
+  /** Media URLs to fetch and attach to this turn. Fetched once, used by both stages. */
+  mediaSources?: MediaSource[];
+};
 type ExecuteItem = { name?: string; args?: Record<string, unknown> };
 export type ProcessMessageResult = { text: string; image?: string };
 const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
@@ -78,10 +87,12 @@ function relationshipBlock(relationship: Relationship | null): string {
   return `<relationship>\nstate: ${RELATIONSHIP_LABELS[relationship.state] ?? relationship.state}\nxp: ${relationship.xp}\naffinity: ${relationship.affinity}\nfamiliarity: ${relationship.familiarity}\ntrust: ${relationship.trust}\nromanticApproachCount: ${relationship.romanticApproachCount}\nsevereConflictCount: ${relationship.severeConflictCount}\n</relationship>`;
 }
 
-async function runGemini2(message: IncomingMessage, responseText: string, relationship: Relationship | null): Promise<ExecuteItem[]> {
+async function runGemini2(message: IncomingMessage, responseText: string, relationship: Relationship | null, media: Interactions.Content[]): Promise<ExecuteItem[]> {
   const analysisInput = `${message.user}: ${message.text}\nIsla: ${responseText}\n\n${relationshipBlock(relationship)}`;
   const request: GeminiRequest = {
-    messages: [{ role: "user", userId: message.userId, user: message.user, text: analysisInput, timestamp: new Date().toISOString() }],
+    // Gemini 2 sees the same media as Gemini 1, otherwise it would be asked to write a memory
+    // about a photo it never looked at.
+    messages: [{ role: "user", userId: message.userId, user: message.user, text: analysisInput, timestamp: new Date().toISOString(), ...(media.length && { media }) }],
   };
   const result = await sendRequestGemini(request, {
     responseMode: "tool",
@@ -121,9 +132,22 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   };
 
   const history = restateHistory(getHistory(50), message.userId, message.user);
-  saveMessage({ role: "user", userId: message.userId, user: message.user, text: message.text, timestamp: message.timestamp, fileName: message.fileName });
+  // Media is fetched here, once, and shared by both stages. It lands inside the `prep` lap
+  // of the timing line, so a slow 20 MB download is attributable instead of mysterious.
+  const media = await prepareMedia(message.mediaSources ?? []);
+  // mediaSummary already names every attachment, so message.fileName (the *first* attachment's
+  // name only) would duplicate it: "image0.png, image0.png [image]". Keep fileName as the fallback
+  // for turns where media produced no summary at all.
+  const fileName = media.summary || message.fileName;
+  if (media.parts.length) {
+    console.log(`[MEDIA] ${message.user}: ${media.parts.length} part(s) attached — ${media.summary}`);
+  }
+  saveMessage({ role: "user", userId: message.userId, user: message.user, text: message.text, timestamp: message.timestamp, fileName });
   const prepMs = lap();
-  const vector = await embed(message.text);
+  // An empty string is rejected outright by the embedding endpoint (verified: "content contains
+  // an empty Part"), and media-only messages are common. Embed what the turn actually is instead.
+  const embedText = message.text || media.summary || "(no text)";
+  const vector = await embed(embedText);
   const embedMs = lap();
   const memories = await searchMemoriesByVector(vector, 8);
   const chromaMs = lap();
@@ -132,7 +156,7 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const profileBlock = userProfileBlock(profile, relationship, message.user);
   // Chroma stores UTC; the model reads Thai local time, same rule as messageStep().
   const temporaryMemory = fakeToolCallResult("search_memory", { user: message.user }, { memories: memories.map((memory) => ({ text: memory.text, timestamp: thaiTimestamp(memory.timestamp) })) });
-  const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, message.fileName, temporaryMemory, message.userId);
+  const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, fileName, temporaryMemory, message.userId, media.parts);
   const buildMs = lap();
   const response1 = await sendRequestGemini(request1, {
     systemInstruction: `${systemPrompt}\n\n${profileBlock}`,
@@ -149,7 +173,7 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const responseTimestamp = new Date().toISOString();
   saveMessage({ role: "model", text: responseText, summary: reply.summery || null, timestamp: responseTimestamp });
 
-  const executeItems = await runGemini2(message, responseText, relationship);
+  const executeItems = await runGemini2(message, responseText, relationship, media.parts);
   const gemini2Ms = lap();
   const image = await applyExecute(executeItems, message.userId, message.timestamp, message.user);
   const applyMs = lap();

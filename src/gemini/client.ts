@@ -13,6 +13,12 @@ export type Message = {
   text: string;
   timestamp: string;
   fileName?: string;
+  /**
+   * Pre-fetched media parts (image/video/audio/document) appended after the JSON text part.
+   * Only the *current* turn carries these: history rows store text plus a `file:` note, so a
+   * past attachment is not re-uploaded on every turn.
+   */
+  media?: Interactions.Content[];
 };
 export type GeminiRequest = { messages: Message[]; temporary?: Interactions.Step[] };
 export type FunctionCall = { id: string; name: string; args: Record<string, unknown> };
@@ -71,7 +77,7 @@ function isBadThoughtSignature(error: unknown): boolean {
 function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function backoffDelay(retry: number): number { return BASE_BACKOFF_MS * 2 ** retry + Math.floor(Math.random() * 100); }
 
-function messageStep(message: Message): Interactions.Step {
+export function messageStep(message: Message): Interactions.Step {
   const metadata = {
     ...(message.role === "user" && message.user && { user: message.user }),
     text: message.text,
@@ -80,9 +86,13 @@ function messageStep(message: Message): Interactions.Step {
     timestamp: thaiTimestamp(message.timestamp),
     ...(message.fileName && { file: message.fileName }),
   };
+  const content: Interactions.Content[] = [{ type: "text", text: JSON.stringify(metadata) }];
+  // Media follows its own description: the model reads "user attached X" first, then looks
+  // at the bytes. History turns carry none of this (see Message.media).
+  if (message.media?.length) content.push(...message.media);
   return {
     type: message.role === "model" ? "model_output" : "user_input",
-    content: [{ type: "text", text: JSON.stringify(metadata) }],
+    content,
   };
 }
 
@@ -119,8 +129,24 @@ function rotateThoughtSignatures(temporary: Interactions.Step[]): Interactions.S
   return fresh.some((signature, index) => signature !== used[index]) ? rotated : null;
 }
 
-export function ctxWindowCreate(messages: Message[], message: string, user: string, timestamp: string, fileName?: string, temporary: Interactions.Step[] = [], userId?: string): GeminiRequest {
-  return { messages: [...messages, { role: "user", userId, user, text: message, timestamp, ...(fileName && { fileName }) }], temporary };
+/**
+ * `media` carries the already-fetched parts for the *current* turn only (see Message.media).
+ * Everything before it is positional history, which never re-uploads its attachments.
+ */
+export function ctxWindowCreate(
+  messages: Message[],
+  message: string,
+  user: string,
+  timestamp: string,
+  fileName?: string,
+  temporary: Interactions.Step[] = [],
+  userId?: string,
+  media?: Interactions.Content[],
+): GeminiRequest {
+  return {
+    messages: [...messages, { role: "user", userId, user, text: message, timestamp, ...(fileName && { fileName }), ...(media?.length && { media }) }],
+    temporary,
+  };
 }
 
 export async function sendRequestGemini(requestBody: GeminiRequest, options: GeminiRequestOptions = {}): Promise<string | FunctionCall[]> {

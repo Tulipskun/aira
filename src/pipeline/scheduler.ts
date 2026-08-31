@@ -1,3 +1,5 @@
+import type { MediaSource } from "../bot/media.js";
+
 export type ScheduledMessage = {
   userId: string;
   user: string;
@@ -5,6 +7,11 @@ export type ScheduledMessage = {
   timestamp: string;
   fileName?: string;
   channelId: string;
+  /**
+   * Media URLs referenced by the message (attachments, custom emojis, stickers), captured
+   * without touching the network. The bytes are fetched when the batch flushes.
+   */
+  media?: MediaSource[];
 };
 
 export type MessageSchedulerOptions = {
