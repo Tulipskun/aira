@@ -11,6 +11,11 @@ export const config = {
     // Zone used to *render* timestamps for the model. Storage stays UTC regardless.
     timezone: process.env.ISLA_TIMEZONE ?? "Asia/Bangkok",
   },
+  health: {
+    // Loopback port scripts/supervisor.ts polls to decide whether to restart the bot. Namespaced
+    // ISLA_* because this host exports unrelated env vars into every shell (see DISCORD_TOKEN).
+    port: Number(process.env.ISLA_HEALTH_PORT ?? 8091),
+  },
   paths: {
     geminiKeyState: process.env.GEMINI_KEY_STATE_FILE ?? ".aira/gemini-key-state.json",
     geminiThoughtSignatures: process.env.GEMINI_THOUGHT_SIGNATURE_FILE ?? ".aira/gemini-thought-signatures.json",

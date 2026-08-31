@@ -5,8 +5,11 @@ import { handleCommand, isKnownCommand } from "./commands.js";
 import { handleIslaCommand, ISLA_COMMAND_NAME } from "./interactions.js";
 import { createOnFlush, toScheduledMessage } from "./message-handler.js";
 import { startTypingLoop, type TypingIndicator } from "./typing.js";
+import { createLiveness } from "./liveness.js";
+import { shardReadiness, startHealthServer } from "./health.js";
 import { warmNetwork } from "./warmup.js";
 import { getResponseChannelId } from "./discord-config.js";
+import { config } from "../config.js";
 
 const token = process.env.ISLA_TOKEN;
 const ownerId = process.env.DISCORD_OWNER_ID;
@@ -42,22 +45,42 @@ typing = startTypingLoop(client, {
   isActive: () => inFlight > 0 || scheduler.hasPending(),
 });
 
+// The receive path used to log nothing at all, so a quiet bot was undiagnosable: "nobody typed"
+// and "the gateway stopped delivering events" produced identical logs. This counts every place an
+// incoming message can stop and prints the tally when the channel has been silent for 5 minutes.
+const liveness = createLiveness({
+  // One probe for both the log line and /health, so a diagnosis and an auto-heal can never
+  // disagree about whether she is listening.
+  shards: () => shardReadiness(client),
+  channel: () => getResponseChannelId(),
+});
+
 client.on("messageCreate", async (message: Message) => {
+  liveness.note("seen");
   if (message.author.bot) return;
+  liveness.note("nonBot");
 
   const text = message.content.trim();
 
   if (text.startsWith("!")) {
+    liveness.note("command");
     if (isKnownCommand(text)) await handleCommand(message, ownerId);
     return;
   }
 
   const responseChannelId = getResponseChannelId();
-  if (!responseChannelId || message.channelId !== responseChannelId) return;
+  if (!responseChannelId || message.channelId !== responseChannelId) {
+    liveness.note("offChannel");
+    return;
+  }
 
   const scheduled = toScheduledMessage(message);
-  if (!scheduled) return;
+  if (!scheduled) {
+    liveness.note("dropped");
+    return;
+  }
 
+  liveness.note("queued");
   scheduler.interruptByOtherUser(scheduled.userId);
   scheduler.push(scheduled);
   // Poke so the indicator shows immediately instead of waiting for the next 8s tick;
@@ -76,13 +99,32 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-process.once("SIGINT", () => { typing?.stop(); scheduler.flushAll(); });
-process.once("SIGTERM", () => { typing?.stop(); scheduler.flushAll(); });
+// Boot time, used for uptime and by the watchdog to tell a fresh process from a long-broken one.
+const startedAt = Date.now();
+
+// Started here rather than in `ready` on purpose: the supervisor must be able to reach this port
+// while the gateway is still connecting, so "process alive, gateway down" stays distinguishable
+// from "process gone". Until `ready` it honestly answers gatewayReady=false, and the watchdog's
+// grace period is what keeps that from triggering a restart during boot.
+const health = startHealthServer({
+  client,
+  liveness,
+  channel: () => getResponseChannelId(),
+  startedAt,
+  port: config.health.port,
+});
+console.log(`[HEALTH] listening on ${health.url}`);
+
+process.once("SIGINT", () => { typing?.stop(); liveness.stop(); health.stop(); scheduler.flushAll(); });
+process.once("SIGTERM", () => { typing?.stop(); liveness.stop(); health.stop(); scheduler.flushAll(); });
 
 client.once("ready", () => {
   console.log(`[DISCORD] Logged in as ${client.user?.tag ?? "unknown"}`);
   const channelId = getResponseChannelId();
   console.log(`[DISCORD] Response channel: ${channelId ?? "not set"}`);
+  // Start after `ready`: before the gateway connects, `fetchStatus()` legitimately reports no
+  // shards, and a startup line reading NOT-READY(0/0) would be a false alarm on every boot.
+  liveness.start();
 });
 
 // Absorb this host's cold getaddrinfo stalls (see warmup.ts) before logging in, so the

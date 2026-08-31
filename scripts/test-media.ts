@@ -384,7 +384,9 @@ console.log("=== 10. the receive path must not drop empty-content messages befor
 const botSource = readFileSync(new URL("../src/bot/bot.ts", import.meta.url), "utf8");
 check("no early return on empty content", !/if\s*\(\s*!?text\s*\)\s*return/.test(botSource), "bot.ts still drops messages with no text");
 check("toScheduledMessage decides what is ignorable", /toScheduledMessage\(message\)/.test(botSource));
-check("its null result is what gets dropped", /if\s*\(\s*!scheduled\s*\)\s*return/.test(botSource));
+check("its null result is what gets dropped -- and the drop is counted",
+  /if\s*\(\s*!scheduled\s*\)\s*\{\s*liveness\.note\("dropped"\);\s*return;\s*\}/.test(botSource),
+  "bot.ts no longer returns (counted) when toScheduledMessage says nothing is there");
 
 // ============================================================ 11. text attachments
 
