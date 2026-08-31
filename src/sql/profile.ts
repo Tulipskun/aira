@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { bondLabel, bondLevel, isBond, resolveBondChange, type BondLevel } from "./bonds.js";
+import { bondLabel, bondLevel, deriveBond, isBond, type ApprovalName, type BondDerivation, type BondLevel } from "./bonds.js";
 
 /**
  * One user, one row.
@@ -10,6 +10,14 @@ import { bondLabel, bondLevel, isBond, resolveBondChange, type BondLevel } from 
  * (state, xp, affinity). They were keyed by the same `user_id` and always read together, so they
  * are merged here. `migrateUserProfiles()` moves the old data across and then removes the
  * leftovers; see the notes on each column for what came from where.
+ *
+ * The numeric stats `trust`, `affection` and `familiarity` are **gone**. They were three numbers the
+ * model was asked to move every turn, none of them fed a rule, and `familiarity` never had a writer
+ * at all. What remains is the two things the ladder actually consumes: `xp` (how close) and
+ * `flirt_count` (how many times the user came on to her and she took it), plus four one-way flags
+ * recording proposals she has accepted but the xp gate has not granted yet.
+ *
+ * `bond` is **derived**, never written directly from a model's request — see `deriveAndSetBond()`.
  */
 export type UserFact = {
   text: string;
@@ -22,21 +30,27 @@ export type UserProfile = {
   userName: string;
   /** Nicknames Isla gave this user. Was `nicknames_json` / `nicknames: string[]`. */
   nickname: string[];
-  /** Rung on the ladder in `bonds.ts`. Was `relationships.state`. */
+  /** Rung on the ladder in `bonds.ts`. Was `relationships.state`. Derived, never model-set. */
   bond: BondLevel;
+  /** Relationship points — what Gemini 2 calls `affinity`. Was `relationships.xp`. */
   xp: number;
-  trust: number;
-  /** Was `relationships.affinity`. */
-  affection: number;
-  familiarity: number;
+  /** Accepted flirtatious approaches, all-time. Gates the `crush` rung. */
+  flirtCount: number;
+  /**
+   * Proposals Isla accepted that are waiting on xp. Cleared when the rung is granted.
+   * `lover` only matters at `crush`, `soulmate` only at `lover`; `sibling`/`family` are open doors.
+   */
+  approvals: Record<ApprovalName, boolean>;
   /** Many facts per user. Was a flat `string[]`. */
   facts: UserFact[];
 };
 
 /** Fields a caller may write. `userId` always identifies the row. */
-export type UserProfilePatch = Partial<Omit<UserProfile, "userId" | "bond">> & {
+export type UserProfilePatch = Partial<Omit<UserProfile, "userId" | "bond" | "approvals">> & {
   userId: string;
+  /** Only `deriveAndSetBond()` should pass this; a model cannot reach it. */
   bond?: BondLevel | string;
+  approvals?: Partial<Record<ApprovalName, boolean>>;
 };
 
 /** Facts are kept newest-first and capped, because the whole list goes into a prompt every turn. */
@@ -55,11 +69,22 @@ const DESIRED_COLUMNS: [name: string, ddl: string][] = [
   ["nickname_json", "TEXT NOT NULL DEFAULT '[]'"],
   ["bond", "TEXT NOT NULL DEFAULT 'stranger'"],
   ["xp", "INTEGER NOT NULL DEFAULT 0"],
-  ["trust", "REAL NOT NULL DEFAULT 0"],
-  ["affection", "REAL NOT NULL DEFAULT 0"],
-  ["familiarity", "REAL NOT NULL DEFAULT 0"],
+  ["flirt_count", "INTEGER NOT NULL DEFAULT 0"],
+  ["approved_lover", "INTEGER NOT NULL DEFAULT 0"],
+  ["approved_soulmate", "INTEGER NOT NULL DEFAULT 0"],
+  ["approved_sibling", "INTEGER NOT NULL DEFAULT 0"],
+  ["approved_family", "INTEGER NOT NULL DEFAULT 0"],
   ["facts_json", "TEXT NOT NULL DEFAULT '[]'"],
 ];
+
+/** Columns the simplified model no longer uses. Copied or dropped by the migration. */
+const RETIRED_COLUMNS = ["trust", "affection", "familiarity"];
+
+/** The approval flags, in the order the ladder consults them. */
+export const APPROVAL_NAMES: ApprovalName[] = ["family", "sibling", "soulmate", "lover"];
+
+/** A fresh row has accepted nothing. */
+const NO_APPROVALS: Record<ApprovalName, boolean> = { family: false, sibling: false, soulmate: false, lover: false };
 
 function columnsOf(table: string): Set<string> {
   if (!db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)) return new Set();
@@ -168,7 +193,9 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
     }
   }
 
-  // ---- legacy relationships: state -> bond, affinity -> affection ----
+  // ---- legacy relationships: state -> bond, xp -> xp ----
+  // `affinity` is NOT carried over: it was a second, differently-scaled copy of the same idea as
+  // xp, and the simplified model keeps only xp. See the note on `RETIRED_COLUMNS`.
   if (columnsOf("relationships").size > 0) {
     const rel = columnsOf("relationships");
     const select = [
@@ -176,26 +203,23 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
       rel.has("user_name") ? `user_name` : `'' AS user_name`,
       rel.has("state") ? `state` : `'stranger' AS state`,
       rel.has("xp") ? `xp` : `0 AS xp`,
-      rel.has("affinity") ? `affinity AS affection` : rel.has("affection") ? `affection` : `0 AS affection`,
     ].join(", ");
     const rows = db.query(`SELECT ${select} FROM relationships`).all() as {
       user_id: string;
       user_name: string | null;
       state: string | null;
       xp: number | null;
-      affection: number | null;
     }[];
 
     // Fill any legacy NOT NULL column the INSERT cannot skip (see legacyRequiredColumns).
     const fillers = legacyRequiredColumns();
     const merge = db.query(`
-      INSERT INTO user_profiles (user_id, user_name, bond, xp, affection${fillers.length ? ", " + fillers.map((f) => f.column).join(", ") : ""})
-      VALUES (?, ?, ?, ?, ?${fillers.length ? ", " + fillers.map(() => "?").join(", ") : ""})
+      INSERT INTO user_profiles (user_id, user_name, bond, xp${fillers.length ? ", " + fillers.map((f) => f.column).join(", ") : ""})
+      VALUES (?, ?, ?, ?${fillers.length ? ", " + fillers.map(() => "?").join(", ") : ""})
       ON CONFLICT(user_id) DO UPDATE SET
         user_name = COALESCE(NULLIF(user_profiles.user_name, ''), excluded.user_name),
         bond      = CASE WHEN user_profiles.bond = 'stranger' THEN excluded.bond ELSE user_profiles.bond END,
-        xp        = CASE WHEN user_profiles.xp = 0 THEN excluded.xp ELSE user_profiles.xp END,
-        affection = CASE WHEN user_profiles.affection = 0 THEN excluded.affection ELSE user_profiles.affection END
+        xp        = CASE WHEN user_profiles.xp = 0 THEN excluded.xp ELSE user_profiles.xp END
     `);
 
     for (const row of rows) {
@@ -206,7 +230,6 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
         userName,
         bond,
         Number.isFinite(row.xp) ? Number(row.xp) : 0,
-        Number.isFinite(row.affection) ? Number(row.affection) : 0,
         ...fillers.map((f) => f.value(userName)),
       );
       mergedRelationships++;
@@ -230,14 +253,12 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
     }
   }
 
-  // ---- drop the columns that were copied across ----
+  // ---- drop columns the simplified schema no longer uses ----
   if (!keepLegacySchema()) {
-    for (const legacy of ["name", "nicknames_json", "affinity"]) {
+    // `affinity`/`affection` are listed too: they were the same idea as xp on a different scale, and
+    // keeping one number per relationship is the whole point of the simplification.
+    for (const legacy of ["name", "nicknames_json", "affinity", ...RETIRED_COLUMNS]) {
       if (!had.has(legacy) || !now.has(legacy)) continue;
-      // `affinity` may hold data if a database had it on user_profiles instead of `affection`.
-      if (legacy === "affinity" && now.has("affection")) {
-        db.run(`UPDATE user_profiles SET affection = affinity WHERE affection = 0 AND affinity IS NOT NULL`);
-      }
       try {
         db.run(`ALTER TABLE user_profiles DROP COLUMN ${legacy}`);
       } catch (error) {
@@ -255,14 +276,17 @@ migrateUserProfiles();
 legacyFillers = legacyRequiredColumns();
 
 const SELECT = `SELECT user_id AS userId, user_name AS userName, nickname_json AS nicknameJson,
-  bond, xp, trust, affection, familiarity, facts_json AS factsJson FROM user_profiles`;
+  bond, xp, flirt_count AS flirtCount, approved_lover AS approvedLover, approved_soulmate AS approvedSoulmate,
+  approved_sibling AS approvedSibling, approved_family AS approvedFamily,
+  facts_json AS factsJson FROM user_profiles`;
 
 /**
  * Read a row defensively.
  *
- * `bond` has no CHECK constraint (so a level can be added without ALTER TABLE), and facts were
- * once a flat string array. Anything unrecognisable degrades to the default rather than throwing
- * in the middle of a reply.
+ * `bond` has no CHECK constraint (so a level can be added without ALTER TABLE), facts were once a
+ * flat string array, and the approval flags are 0/1 integers that a half-migrated database may not
+ * have at all (they read back as `undefined`). Anything unrecognisable degrades to the default
+ * rather than throwing in the middle of a reply.
  */
 function hydrate(row: {
   userId: string;
@@ -270,9 +294,11 @@ function hydrate(row: {
   nicknameJson: string | null;
   bond: string | null;
   xp: number | null;
-  trust: number | null;
-  affection: number | null;
-  familiarity: number | null;
+  flirtCount: number | null | undefined;
+  approvedLover: number | null | undefined;
+  approvedSoulmate: number | null | undefined;
+  approvedSibling: number | null | undefined;
+  approvedFamily: number | null | undefined;
   factsJson: string | null;
 }): UserProfile {
   return {
@@ -281,11 +307,20 @@ function hydrate(row: {
     nickname: normalizeStringArray(row.nicknameJson),
     bond: isBond(row.bond) ? row.bond : "stranger",
     xp: Number.isFinite(row.xp) ? Number(row.xp) : 0,
-    trust: Number.isFinite(row.trust) ? Number(row.trust) : 0,
-    affection: Number.isFinite(row.affection) ? Number(row.affection) : 0,
-    familiarity: Number.isFinite(row.familiarity) ? Number(row.familiarity) : 0,
+    flirtCount: Number.isFinite(row.flirtCount) ? Number(row.flirtCount) : 0,
+    approvals: {
+      lover: truthyFlag(row.approvedLover),
+      soulmate: truthyFlag(row.approvedSoulmate),
+      sibling: truthyFlag(row.approvedSibling),
+      family: truthyFlag(row.approvedFamily),
+    },
     facts: normalizeFacts(row.factsJson).facts,
   };
+}
+
+/** 0/1 (or missing) column to boolean. Anything non-zero counts, so a legacy REAL 1.0 works too. */
+function truthyFlag(value: number | null | undefined): boolean {
+  return Number.isFinite(value) ? Number(value) !== 0 : false;
 }
 
 function normalizeStringArray(raw: string | null | undefined): string[] {
@@ -363,9 +398,12 @@ export function upsertUserProfile(patch: UserProfilePatch): UserProfile | null {
   if (patch.nickname !== undefined) add("nickname_json", JSON.stringify(patch.nickname));
   if (patch.bond !== undefined) add("bond", isBond(patch.bond) ? patch.bond : "stranger");
   if (patch.xp !== undefined) add("xp", Math.trunc(Number(patch.xp) || 0));
-  if (patch.trust !== undefined) add("trust", Number(patch.trust) || 0);
-  if (patch.affection !== undefined) add("affection", Number(patch.affection) || 0);
-  if (patch.familiarity !== undefined) add("familiarity", Number(patch.familiarity) || 0);
+  if (patch.flirtCount !== undefined) add("flirt_count", Math.max(0, Math.trunc(Number(patch.flirtCount) || 0)));
+  if (patch.approvals !== undefined) {
+    for (const name of APPROVAL_NAMES) {
+      add(`approved_${name}`, patch.approvals[name] ? 1 : 0);
+    }
+  }
   if (patch.facts !== undefined) add("facts_json", JSON.stringify(normalizeFacts(JSON.stringify(patch.facts)).facts));
 
   // A brand-new row must also satisfy any legacy NOT NULL column still in the table.
@@ -385,69 +423,77 @@ export function upsertUserProfile(patch: UserProfilePatch): UserProfile | null {
 }
 
 /**
- * Add to a user's numeric stats, creating the row on first contact.
+ * Apply one turn's state — the only writer of `xp`, `flirt_count`, the approval flags and `bond`.
  *
- * Numbers are clamped to 0..100 for the percentage-like stats (trust, affection, familiarity);
- * `xp` is open-ended because it is a running total.
+ * Replaces `adjustProfileStats()` + `setBond()`, which let a caller name a rung directly. Now the
+ * model reports what happened and `deriveBond()` decides the rung, so there is exactly one path onto
+ * the ladder and it cannot be talked around.
+ *
+ * Every approval Isla accepted is recorded, even when the xp gate cannot grant the rung yet: she said
+ * yes out loud, and forgetting that would contradict her own earlier message. `deriveBond()` clears a
+ * flag only when it actually moved the rung (see `consumed`).
  */
-export const STAT_LIMITS: Record<string, number> = { trust: 100, affection: 100, familiarity: 100 };
+export type TurnStateChange = {
+  userId: string;
+  userName?: string;
+  /** Relationship points for this turn, already clamped by the parser (-100..100). */
+  affinity: number;
+  /** The user flirted and she took it. */
+  isFlirt?: boolean;
+  approvals?: Partial<Record<ApprovalName, boolean>>;
+};
 
-export function adjustProfileStats(
-  userId: string,
-  delta: { xp?: number; trust?: number; affection?: number; familiarity?: number; userName?: string },
-): UserProfile | null {
-  const current = getUserProfile(userId) ?? {
+export type TurnStateResult = {
+  profile: UserProfile | null;
+  before: BondLevel;
+  after: BondLevel;
+  xp: number;
+  flirtCount: number;
+  derivation: BondDerivation;
+};
+
+export function applyTurnState(change: TurnStateChange): TurnStateResult {
+  const userId = change.userId;
+  const current = getUserProfile(userId);
+  const before = current?.bond ?? "stranger";
+  const userName = change.userName ?? current?.userName ?? userId;
+
+  const xp = (current?.xp ?? 0) + (Number.isFinite(change.affinity) ? Math.trunc(change.affinity) : 0);
+  const flirted = change.isFlirt === true;
+  const flirtCount = (current?.flirtCount ?? 0) + (flirted ? 1 : 0);
+
+  // Merge this turn's yeses into the pending ones; nothing is cleared here, only on consumption.
+  const approvals: Record<ApprovalName, boolean> = { ...(current?.approvals ?? NO_APPROVALS) };
+  for (const name of APPROVAL_NAMES) {
+    if (change.approvals?.[name]) approvals[name] = true;
+  }
+
+  const derivation = deriveBond(before, xp, { flirtCount, approvals });
+
+  // A granted proposal is no longer pending — otherwise the flag would keep re-firing the rule.
+  for (const name of derivation.consumed) approvals[name] = false;
+
+  const profile = upsertUserProfile({
     userId,
-    userName: delta.userName ?? userId,
-    nickname: [],
-    bond: "stranger" as BondLevel,
-    xp: 0,
-    trust: 0,
-    affection: 0,
-    familiarity: 0,
-    facts: [],
-  };
-  const clamp = (key: "trust" | "affection" | "familiarity") => {
-    const limit = STAT_LIMITS[key];
-    return Math.max(0, Math.min(limit, current[key] + (delta[key] ?? 0)));
-  };
-  return upsertUserProfile({
-    userId,
-    userName: delta.userName ?? current.userName,
-    xp: current.xp + (Number.isFinite(delta.xp) ? Math.trunc(delta.xp as number) : 0),
-    trust: clamp("trust"),
-    affection: clamp("affection"),
-    familiarity: clamp("familiarity"),
+    userName,
+    xp,
+    flirtCount,
+    approvals,
+    bond: derivation.bond,
   });
+
+  return { profile, before, after: derivation.bond, xp, flirtCount, derivation };
 }
 
 /**
- * Move a user to another bond rung, applying the ladder rules from `bonds.ts`.
+ * Set the bond without going through the ladder.
  *
- * Refuses an unknown rung and a rung above the user's ceiling (a sibling or family member cannot
- * become `lover`). Returns the stored bond either way, plus why a request was refused.
+ * Only the owner-facing CLI should call this (and nothing in the reply path does); it exists so a
+ * human can fix a relationship without editing SQL.
  */
-export function setBond(
-  userId: string,
-  to: string,
-  userName?: string,
-): { ok: boolean; profile: UserProfile | null; bond: BondLevel; reason?: string } {
-  const current = getUserProfile(userId);
-  const from = current?.bond ?? "stranger";
-  const resolved = resolveBondChange(from, to);
-  if (!resolved) {
-    const reason = !isBond(to)
-      ? `unknown bond "${to}"`
-      : `cannot go from ${from} (level ${bondLevel(from)}) to ${to} (level ${bondLevel(to)})`;
-    return { ok: false, profile: current, bond: from, reason };
-  }
-  if (resolved === from) {
-    if (userName && userName !== current?.userName) {
-      return { ok: true, profile: upsertUserProfile({ userId, userName }), bond: from };
-    }
-    return { ok: true, profile: current, bond: from };
-  }
-  return { ok: true, profile: upsertUserProfile({ userId, bond: resolved, ...(userName ? { userName } : {}) }), bond: resolved };
+export function forceBond(userId: string, bond: BondLevel, userName?: string): UserProfile | null {
+  if (!isBond(bond)) return null;
+  return upsertUserProfile({ userId, bond, ...(userName ? { userName } : {}) });
 }
 
 /**

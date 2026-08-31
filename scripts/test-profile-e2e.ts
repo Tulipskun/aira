@@ -9,12 +9,14 @@
  *
  * What it asserts, in order:
  *   1. Turn 1 answers, and the row is created in the ONE table (no relationships involved).
- *   2. Gemini 1's dumped request carries the merged <user_profile> block (bond line + stats).
- *   3. Gemini 2's dumped request carries <bond_levels> + <current_state> but NOT
- *      <current_time> (per-turn string would break its prompt cache) and NOT the facts.
- *   4. Turn 2 with a renamed user: the same row follows the new name, and the block shows
- *      the old name as an alias instead of losing it.
- *   5. Whatever Gemini 2 decided (facts/xp/bond/memory) landed in user_profiles — one read.
+ *   2. Gemini 1's dumped request carries the merged <user_profile> block, and none of the retired
+ *      stats (trust/affection/familiarity) any more.
+ *   3. Gemini 2 is asked for **JSON, not a tool call**: response_format carries the state schema,
+ *      no tools are sent, and its reply parses into an IslaState.
+ *   4. Gemini 2's request carries <bond_levels> + <current_state> but NOT <current_time>
+ *      (a per-turn string would break its prompt cache) and NOT the facts.
+ *   5. Turn 2 with a renamed user: the same row follows the new name, one row only.
+ *   6. The turn actually moved state: xp >= the +10 floor, facts stored, memory optional.
  *   6. The real DB and the real Chroma collection are byte-identical to before the run.
  */
 import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
@@ -51,6 +53,8 @@ const { processMessage } = await import("../src/pipeline/pipeline.js");
 const { getUserProfile } = await import("../src/sql/profile.js");
 const { countMemories, deleteMemories } = await import("../src/memory/chroma.js");
 const { readDebugDump } = await import("../src/gemini/debug-dump.js");
+const bonds = await import("../src/sql/bonds.js");
+const { parseIslaState, IMAGES } = await import("../src/gemini/state-format.js");
 
 const USER = "e2e-profile-user-1";
 const nowIso = () => new Date().toISOString();
@@ -82,7 +86,8 @@ const g1sys = sysOf(g1req);
 check("gemini1 request dumped", !!g1req);
 check("has <user_profile>", g1sys.includes("<user_profile>"));
 check("has bond line (merged, not the old relationship block)", g1sys.includes("ความสัมพันธ์กับ Isla:"), g1sys.slice(0, 200));
-check("has stats incl. familiarity", g1sys.includes("familiarity:") && g1sys.includes("affection:") && g1sys.includes("trust:"));
+check("shows accumulated closeness", /ความใกล้ชิดสะสม \(xp\): 0/.test(g1sys), g1sys.slice(0, 400));
+check("retired stats are gone from Gemini 1's block", !g1sys.includes("trust:") && !g1sys.includes("affection:") && !g1sys.includes("familiarity:"), g1sys.slice(0, 400));
 check("has facts list", g1sys.includes("fact:"));
 check("has <current_time> for gemini1", g1sys.includes("<current_time>"));
 
@@ -97,7 +102,11 @@ check("has <bond_levels>", g2sys.includes("<bond_levels>"));
 check("has <current_state> in the message", g2input.includes("<current_state>") || g2sys.includes("<current_state>"), g2input.slice(0, 200));
 check("NO <current_time> (prompt-cache invariant)", !g2sys.includes("<current_time>"));
 check("NO facts material (that is gemini1's job)", !g2sys.includes("fact:"));
-check("advertises the single `execute` tool contract", g2sys.includes("execute") && g2sys.includes("adjust_affection") && g2sys.includes("set_bond") && g2sys.includes("add_facts"), g2sys.slice(0, 200));
+check("asks for JSON, not a tool call", JSON.stringify((g2req?.payload as { response_format?: unknown })?.response_format ?? "").includes("affinity") && JSON.stringify((g2req?.payload as { response_format?: unknown })?.response_format ?? "").includes("select_image"), JSON.stringify((g2req?.payload as { response_format?: unknown })?.response_format ?? "").slice(0, 200));
+check("sends no tools", ((g2req?.payload as { tools?: unknown[] })?.tools ?? []).length === 0, JSON.stringify((g2req?.payload as { tools?: unknown[] })?.tools ?? []));
+check("instruction lists the JSON fields", g2sys.includes("affinity") && g2sys.includes("is_flirt") && g2sys.includes("approve_lover") && g2sys.includes("approve_soulmate"), g2sys.slice(0, 200));
+check("instruction forbids choosing a bond", g2sys.includes("ห้ามเลือกระดับความสัมพันธ์เอง"));
+check("no execute-tool vocabulary left in the prompt", !g2sys.includes("adjust_affection") && !g2sys.includes("set_bond") && !g2sys.includes("add_xp"));
 
 console.log("=== 4. turn 2: rename follows the SAME row (one identity, no duplicate) ===");
 const t2 = await processMessage({
@@ -124,11 +133,22 @@ console.log("=== 5. whatever gemini2 decided landed in the ONE table ===");
 const g2resp = [...dump].reverse().find((r) => r.stage === "gemini2" && r.event === "response");
 const g2text = JSON.stringify(g2resp?.response ?? "");
 const factsNow = (p2?.facts.length ?? 0) > 0;
-const xpMoved = (p2?.xp ?? 0) !== 0 || (p2?.affection ?? 0) !== 0 || (p2?.familiarity ?? 0) !== 0;
-const bondMoved = p2?.bond !== "stranger";
+// The owner's floor: any turn that is not negative is worth at least +10. Two friendly turns
+// therefore cannot leave xp at 0 — that is the assertion, not "something moved somewhere".
+const xpMoved = (p2?.xp ?? 0) >= 20;
 const memCount = await countMemories({ userId: USER });
-console.log(`  (model ops seen: facts=${p2?.facts.length} xp=${p2?.xp} aff=${p2?.affection} fam=${p2?.familiarity} bond=${p2?.bond} memories=${memCount})`);
-check("at least one channel of state actually moved (facts/xp/bond/memory)", factsNow || xpMoved || bondMoved || memCount > 0, `g2resp=${g2text.slice(0, 160)}`);
+console.log(`  (state seen: facts=${p2?.facts.length} xp=${p2?.xp} flirts=${p2?.flirtCount} bond=${p2?.bond} memories=${memCount})`);
+check("xp moved by at least the +10 floor twice over", xpMoved, `xp=${p2?.xp} g2resp=${g2text.slice(0, 160)}`);
+check("facts were learned from the live turn", factsNow, `facts=${p2?.facts.length}`);
+check("bond is still a rung the ladder allows", bonds.BOND_NAMES.includes(p2?.bond ?? "stranger"), p2?.bond);
+// Re-parse the model's *actual* reply text with the same parser the bot uses, so this is proof of
+// the contract and not just the absence of a warning.
+const g2out = (g2resp?.response as { output_text?: string } | undefined)?.output_text ?? "";
+const liveState = parseIslaState(g2out, p2?.bond ?? "stranger");
+check("gemini2's live reply parses as state JSON", liveState.parsed, JSON.stringify(g2out).slice(0, 200));
+check("its affinity is inside -100..100", liveState.affinity >= -100 && liveState.affinity <= 100, String(liveState.affinity));
+check("its image is one of the offered names", liveState.selectImage === "" || (IMAGES as readonly string[]).includes(liveState.selectImage), liveState.selectImage);
+check("no parser warnings about an unreadable reply", !liveState.warnings.some((w: string) => w.includes("reply was not JSON")), liveState.warnings.join("; "));
 
 console.log("=== 6. real stores untouched ===");
 if (realBefore) {

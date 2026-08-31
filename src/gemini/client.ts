@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "../config.js";
 import { addThoughtSignature, invalidateThoughtSignature, nextThoughtSignature } from "./thought-signatures.js";
-import { debugDump, type DebugContext, type DebugStage } from "./debug-dump.js";
+import { debugDump, type DebugContext } from "./debug-dump.js";
 import { thaiTimestamp } from "./time.js";
 
 export type Message = {
@@ -29,6 +29,15 @@ export interface GeminiRequestOptions {
   apiKey?: string;
   tools?: Interactions.Tool[];
   responseMode?: "text" | "tool";
+  /**
+   * Which pipeline stage this call belongs to. Decides the API-key pool, the default model and the
+   * rotation state — so it must NOT be inferred from `responseMode` any more: Gemini 2 answers as
+   * JSON like Gemini 1 does, and a stage derived from the response mode would silently send it
+   * through Gemini 1's keys and model.
+   *
+   * Defaults from `responseMode` ("tool" -> gemini2) so existing tool-path callers keep working.
+   */
+  stage?: "gemini1" | "gemini2";
   systemInstruction?: string;
   /**
    * Sent as the top-level `response_format` of the Interactions request -- the SDK's
@@ -151,12 +160,14 @@ export function ctxWindowCreate(
 
 export async function sendRequestGemini(requestBody: GeminiRequest, options: GeminiRequestOptions = {}): Promise<string | FunctionCall[]> {
   const mode = options.responseMode ?? "text";
-  const keys = envKeys(mode === "tool" ? "GEMINI2_API_KEYS" : "GEMINI1_API_KEYS");
+  // The stage owns the key pool, model and rotation counter. Deriving it from `responseMode` broke
+  // the moment Gemini 2 stopped using tools: it would have borrowed Gemini 1's keys and model.
+  const stage = options.stage ?? (mode === "tool" ? "gemini2" : "gemini1");
+  const keys = envKeys(stage === "gemini2" ? "GEMINI2_API_KEYS" : "GEMINI1_API_KEYS");
   const fallbackKey = options.apiKey ?? process.env.GEMINI_API_KEY;
-  if (!keys.length && !fallbackKey) throw new Error(`No API key configured for ${mode}`);
-  const model = options.model ?? (mode === "tool" ? config.models.gemini2 : config.models.gemini1);
-  const stateKey = mode === "tool" ? "gemini2" : "gemini1";
-  const stage: DebugStage = stateKey;
+  if (!keys.length && !fallbackKey) throw new Error(`No API key configured for ${stage}`);
+  const model = options.model ?? (stage === "gemini2" ? config.models.gemini2 : config.models.gemini1);
+  const stateKey = stage;
   let lastError: unknown;
   let serverRetries = 0;
   let keyAttempts = 0;
@@ -179,10 +190,13 @@ export async function sendRequestGemini(requestBody: GeminiRequest, options: Gem
       };
       debugDump({ ts: new Date().toISOString(), stage, event: "request", model, attempt, ...options.debug, payload });
       const response = await ai.interactions.create(payload);
+      // Harvest thought signatures from *every* stage, not just tool calls. Gemini 1's synthetic
+      // `search_memory` step needs one, and the pool used to be refilled only by Gemini 2's tool
+      // responses — which stopped existing the moment Gemini 2 began answering as JSON.
+      for (const step of response.steps ?? []) {
+        if (step.type === "thought") addThoughtSignature((step as { signature?: string }).signature);
+      }
       if (mode === "tool") {
-        for (const step of response.steps) {
-          if (step.type === "thought") addThoughtSignature((step as { signature?: string }).signature);
-        }
         const calls = response.steps.filter((step) => step.type === "function_call").map((step) => ({ id: step.id, name: step.name, args: step.arguments as Record<string, unknown> }));
         debugDump({ ts: new Date().toISOString(), stage, event: "response", model, attempt, ...options.debug, response: { steps: response.steps, calls } });
         return calls;

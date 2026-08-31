@@ -1,20 +1,28 @@
 import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
 import { prepareMedia, type MediaSource } from "../bot/media.js";
 import { ISLA_REPLY_SCHEMA, parseIslaReply } from "../gemini/reply-format.js";
+import { ISLA_STATE_SCHEMA, parseIslaState, requiredFieldsFor, romanticallyAvailable, type IslaState } from "../gemini/state-format.js";
 import { currentTimeBlock, thaiTimestamp } from "../gemini/time.js";
 import { embed } from "../memory/embedding.js";
 import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
 import {
   addFacts,
-  adjustProfileStats,
+  applyTurnState,
+  APPROVAL_NAMES,
   bondDescription,
   getUserProfile,
-  setBond,
   upsertUserProfile,
   type UserProfile,
 } from "../sql/profile.js";
-import { bondLabel, bondLadderText, bondLevel } from "../sql/bonds.js";
+import {
+  bondLabel,
+  bondLadderWithThresholds,
+  bondLevel,
+  FLIRT_REQUIREMENT,
+  PROPOSAL_XP,
+  XP_THRESHOLDS,
+} from "../sql/bonds.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
@@ -30,7 +38,6 @@ export type IncomingMessage = {
   /** Media URLs to fetch and attach to this turn. Fetched once, used by both stages. */
   mediaSources?: MediaSource[];
 };
-type ExecuteItem = { name?: string; args?: Record<string, unknown> };
 export type ProcessMessageResult = {
   text: string;
   image?: string;
@@ -41,120 +48,47 @@ export type ProcessMessageResult = {
   color?: number;
 };
 const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
+
 /**
- * Gemini 2's instruction.
+ * Gemini 2's instruction — the relationship analyst.
  *
- * Deliberately free of anything that changes per turn (the user's current numbers): it only picks
- * operations, and a stable string is what keeps its prompt cache warm. The per-turn state travels
- * in the message instead — see `runGemini2()`.
+ * It used to answer with an `execute` tool call carrying an `operations` array. It now answers with
+ * one flat JSON object like Gemini 1 does, which removes a whole class of failure: the tool path
+ * needed a synthetic `thought` signature to be legal, and its `args` schema had to be spelled out
+ * field-by-field or the model sent `{}` every time and silently lost the turn.
+ *
+ * Still deliberately free of anything that changes per turn (the user's current numbers): a stable
+ * string is what keeps the prompt cache warm, so the per-turn state travels in the message — see
+ * `runGemini2()`.
  */
 const gemini2SystemPrompt = [
-  "วิเคราะห์บทสนทนาระหว่าง Isla และผู้ใช้ที่ส่งมา ว่า Isla รู้สึกอย่างไร และควรแสดงอารมณ์อย่างไร โดยใช้ tools ที่เกี่ยวข้อง",
+  "วิเคราะห์บทสนทนาระหว่าง Isla และผู้ใช้ในเทิร์นนี้ แล้วตอบเป็น JSON ตาม schema ที่กำหนดเท่านั้น",
   "",
-  "เครื่องมือเดียวที่มีคือ execute ซึ่งรับ operations:",
-  "- adjust_affection (args: {delta:number}) — ความรู้สึกที่ Isla มีต่อผู้ใช้ เพิ่ม/ลดทีละน้อย (ปกติ -5..5)",
-  "- adjust_trust (args: {delta:number}) — ความเชื่อใจ",
-  "- add_xp (args: {delta:number}) — คะแนนสะสมของความสัมพันธ์",
-  "- set_bond (args: {bond:string}) — เลื่อน/เปลี่ยนระดับความสัมพันธ์ ต้องเป็นไปตามกฎใน <bond_levels> เท่านั้น",
-  "- add_facts (args: {facts:string[]}) — ข้อเท็จจริงใหม่เกี่ยวกับผู้ใช้ที่ควรจำได้",
-  "- ingest_memory (args: {text:string}) — บันทึกเหตุการณ์สำคัญเป็นความทรงจำระยะยาว",
-  "- select_image (args: {image:string}) — เลือกชื่อรูปอารมณ์ที่เข้ากับคำตอบของ Isla",
+  "สิ่งที่ต้องรายงาน:",
+  "- affinity: คะแนนความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (-100..100) — ค่านี้คือ xp ของระบบ แต่ให้คิดเป็น 'ความใกล้ชิด'",
+  `  การคุยกันปกติ/ไม่ใช่ด้านลบ ต้องได้อย่างน้อย +${10}; หยาบคาย/ทำร้ายความรู้สึกติดลบ; ด่าซ้ำ ๆ หรือดูถูกแรง ๆ ติดลบลึก`,
+  "- is_flirt: true เมื่อผู้ใช้จีบ/พูดหวาน/เข้าหาเชิงชู้สาว และ Isla ไม่ได้ปฏิเสธ — จำเป็นเมื่อผู้ใช้ยังพัฒนาเป็นแฟนได้",
+  "- approve_lover: true เมื่อผู้ใช้ขอเป็นแฟน **และ Isla ตอบตกลงในข้อความของเธอเอง** — จำเป็นเมื่อระดับคือ crush",
+  "- approve_soulmate: true เมื่อผู้ใช้ขอแต่งงาน **และ Isla ตอบตกลง** — จำเป็นเมื่อระดับคือ lover",
+  "- approve_sibling / approve_family: เช่นเดียวกัน เมื่อผู้ใช้ขอเป็นพี่น้อง/ครอบครัว และ Isla ตอบตกลง",
+  "- select_image: รูปอารมณ์ของ Isla ที่ตรงกับคำตอบของเธอที่สุดในเทิร์นนี้",
+  "- add_facts: ข้อเท็จจริงเกี่ยวกับผู้ใช้โดยตรง (ไม่จำเป็น, ไม่เกิน 3 ข้อ, ไม่มีก็ส่ง [])",
+  "- ingest_memory: ความทรงจำที่ควรเก็บระยะยาว (ไม่จำเป็น, ไม่มีก็ส่ง \"\")",
   "",
-  "ส่งเฉพาะ operation ที่บทสนทนานี้ทำให้เปลี่ยนจริง ๆ ถ้าไม่มีอะไรเปลี่ยน ส่ง operations ว่างได้",
+  "กฎสำคัญ:",
+  "1. ห้ามเลือกระดับความสัมพันธ์เอง — ไม่มีฟิลด์ bond ในคำตอบ ระบบจะคำนวณระดับจาก affinity, จำนวนครั้งที่ถูกจีบ และการตอบตกลงของเธอ",
+  "2. approve_* คือการรายงานสิ่งที่ Isla ตอบไปในข้อความของเธอแล้ว ไม่ใช่การตัดสินใจใหม่ — ถ้าเธอไม่ตกลง ต้องส่ง false",
+  "3. ส่งเฉพาะสิ่งที่เทิร์นนี้ทำให้เปลี่ยนจริง ๆ แต่ affinity และ select_image ต้องมีเสมอ",
   "",
   bondRulesBlock(),
 ].join("\n");
 
-/**
- * `execute` is the only tool Gemini 2 gets, and this list is the whole contract.
- *
- * Each operation has one canonical spelling plus the aliases the model already learned from the
- * old prompts and from history rows. `applyExecute()` accepts both, so a turn that says
- * `adjust_affinity` still lands on `affection` instead of being silently dropped.
- */
-const EXECUTE_OPERATIONS = [
-  "adjust_affection",
-  "adjust_affinity",
-  "adjust_trust",
-  "add_xp",
-  "set_bond",
-  "set_relationship",
-  "add_facts",
-  "ingest_memory",
-  "select_image",
-];
-
-/**
- * The fields `args` may carry.
- *
- * `args` used to be a bare `{type:"object"}`, and the model answered by sending five operations with
- * `"args":{}` every time — the names arrived, the values did not, so nothing was ever written and the
- * turn looked like a success. The old code never hit this because each operation was its own tool
- * with its own schema. Merging them into `execute` moved that description burden onto the schema,
- * where the prompt's `(args: {delta:number})` prose is not read as strictly as a `properties` block.
- *
- * One flat object with every field, rather than a per-operation `oneOf`: the API's schema support for
- * unions is untested here, and a description that names which operation uses which field is enough.
- */
-const OPERATION_ARGS_SCHEMA = {
-  type: "object",
-  description: [
-    "ค่าของ operation นี้ ใส่เฉพาะฟิลด์ที่ operation นั้นใช้:",
-    "adjust_affection/adjust_affinity/adjust_trust/add_xp = {delta};",
-    "set_bond/set_relationship = {bond};",
-    "add_facts = {facts};",
-    "ingest_memory = {text};",
-    "select_image = {image}.",
-    "ห้ามส่ง args ว่างเปล่าถ้า operation นั้นต้องการค่า",
-  ].join(" "),
-  properties: {
-    delta: {
-      type: "number",
-      description: "ค่าที่เปลี่ยน (adjust_affection/adjust_trust/add_xp) ปกติ -5..5 สำหรับความรู้สึก, 1..3 สำหรับ xp",
-    },
-    bond: {
-      type: "string",
-      description: "ชื่อระดับความสัมพันธ์ใหม่ ต้องเป็นไปตาม <bond_levels> เท่านั้น (set_bond)",
-    },
-    facts: {
-      type: "array",
-      description: "ข้อเท็จจริงใหม่เกี่ยวกับผู้ใช้ (add_facts) เป็นข้อความสั้น ๆ หนึ่งเรื่องต่อรายการ",
-      items: { type: "string" },
-    },
-    text: { type: "string", description: "ข้อความความทรงจำระยะยาวที่จะบันทึก (ingest_memory)" },
-    image: { type: "string", description: "ชื่อรูปอารมณ์ที่เลือก (select_image)" },
-  },
-};
-
-const EXECUTE_TOOL: Interactions.Tool = {
-  type: "function",
-  name: "execute",
-  description: "Apply bond, feeling, fact, memory, and image operations decided from the current turn.",
-  parameters: {
-    type: "object",
-    properties: {
-      operations: {
-        type: "array",
-        description: "Operations to apply.",
-        items: {
-          type: "object",
-          properties: {
-            name: { type: "string", enum: EXECUTE_OPERATIONS },
-            args: OPERATION_ARGS_SCHEMA,
-          },
-          required: ["name", "args"],
-        },
-      },
-    },
-    required: ["operations"],
-  },
-};
 
 /**
  * What Gemini 1 is told about the person it is talking to.
  *
- * One block from one table: it used to be two (`user_profiles` for identity/facts and
- * `relationships` for state/xp/affinity), read on two round-trips and rendered by two functions.
+ * One block from one table. The numbers here are internal state, not conversation topics — that is
+ * why xp is the only one shown: it is the ladder's fuel, and Gemini 1 has no rule that consumes it.
  */
 export function profileBlock(profile: UserProfile | null, currentName?: string): string {
   const name = profile?.userName || currentName || "ไม่ทราบชื่อ";
@@ -166,148 +100,126 @@ export function profileBlock(profile: UserProfile | null, currentName?: string):
     "<user_profile>",
     `ชื่อ: ${name}`,
     `ความสัมพันธ์กับ Isla: ${bondDescription(profile)}`,
-    `xp: ${profile?.xp ?? 0}`,
-    `trust: ${profile?.trust ?? 0}`,
-    `affection: ${profile?.affection ?? 0}`,
-    `familiarity: ${profile?.familiarity ?? 0}`,
+    `ความใกล้ชิดสะสม (xp): ${profile?.xp ?? 0}`,
     `ฉายาที่ Isla ตั้งให้: ${nicknames}`,
     `fact:`,
     facts,
-    `หมายเหตุ: trust/affection/familiarity เป็นตัวเลขภายใน อย่านำไปพูดกับผู้ใช้และอย่าแปลงเป็นคำพูดตรงตัว`,
+    `หมายเหตุ: ตัวเลขความสัมพันธ์เป็นข้อมูลภายใน อย่านำไปพูดกับผู้ใช้และอย่าแปลงเป็นคำพูดตรงตัว`,
     `</user_profile>`,
   ].join("\n");
 }
 
 /**
- * What Gemini 2 is told about the current state, and the ladder rules it must obey.
+ * What Gemini 2 is told about the current state.
  *
- * Gemini 2 only picks operations, so it gets the numbers and the rungs — not the facts and
- * nicknames, which are Gemini 1's material and would only add tokens to the analysis call.
+ * This is the per-turn part, sent in the *message* rather than the system prompt so the cached
+ * prefix stays stable. It carries exactly the numbers the ladder consumes — bond, xp, flirt count,
+ * pending approvals — plus the fields this user must answer, because requiredness depends on the
+ * rung and the JSON schema cannot express that.
  */
 export function stateBlock(profile: UserProfile | null): string {
-  if (!profile) {
-    return `<current_state>\nยังไม่มีข้อมูลผู้ใช้คนนี้: bond=stranger (ระดับ 0), xp=0, trust=0, affection=0, familiarity=0\n</current_state>`;
-  }
-  return [
+  const bond = profile?.bond ?? "stranger";
+  const pending = APPROVAL_NAMES.filter((name) => profile?.approvals[name]);
+  const lines = [
     "<current_state>",
-    `bond: ${profile.bond} (${bondLabel(profile.bond)}, ระดับ ${bondLevel(profile.bond)})`,
-    `xp: ${profile.xp}`,
-    `trust: ${profile.trust}`,
-    `affection: ${profile.affection}`,
-    `familiarity: ${profile.familiarity}`,
+    `bond: ${bond} (${bondLabel(bond)}, ระดับ ${bondLevel(bond)})`,
+    `xp: ${profile?.xp ?? 0}`,
+    `flirt_count: ${profile?.flirtCount ?? 0} (ต้องได้อย่างน้อย ${FLIRT_REQUIREMENT} ครั้งจึงจะเป็น crush ได้)`,
+    `approved_pending: ${pending.length ? pending.join(", ") : "-"}`,
+    `xp ที่ต้องมีก่อนเลื่อนระดับจากการตอบตกลง: ${PROPOSAL_XP}`,
+    `ขอบเขต xp: enemy <= ${XP_THRESHOLDS[-1]}, stranger ${XP_THRESHOLDS[-1] + 1}..${XP_THRESHOLDS[1] - 1}, friend ${XP_THRESHOLDS[1]}..${XP_THRESHOLDS[2] - 1}, close_friend >= ${XP_THRESHOLDS[2]}`,
+    `ฟิลด์ที่จำเป็นต้องตอบในเทิร์นนี้: ${requiredFieldsFor(bond).join(", ")}`,
+    romanticallyAvailable(bond)
+      ? `ระดับนี้พัฒนาเป็นเชิงชู้สาวได้ — ตอบ is_flirt ด้วย`
+      : `ระดับนี้ไม่สามารถพัฒนาเป็นเชิงชู้สาวได้ — ไม่ต้องส่ง is_flirt`,
     `</current_state>`,
+  ];
+  return lines.join("\n");
+}
+
+/**
+ * The ladder as Gemini 2 must read it.
+ *
+ * The rules are stated as *facts the model reports*, not as actions it may take — there is no
+ * `set_bond` any more, and the text says so explicitly so the model does not try to name a rung.
+ */
+export function bondRulesBlock(): string {
+  return [
+    "<bond_levels>",
+    bondLadderWithThresholds(),
+    "",
+    "เงื่อนไขที่ระบบใช้คำนวณระดับ (คุณไม่ต้องคำนวณเอง แค่รายงานสิ่งที่เกิดขึ้น):",
+    `- ระดับเปลี่ยนจาก xp เป็นหลัก; crush ต้องมี flirt_count >= ${FLIRT_REQUIREMENT}`,
+    `- ทุกครั้งที่ผู้ใช้จีบแล้ว Isla ไม่ปฏิเสธ จะนับ flirt_count +1 อัตโนมัติจาก is_flirt`,
+    `- lover/soulmate/sibling/family ต้องมีการขอและ Isla ตอบตกลง (approve_*) และ xp >= ${PROPOSAL_XP}`,
+    "- sibling/family อยู่ระดับ 3 และไปต่อเป็น lover/soulmate ไม่ได้เลยตลอดกาล",
+    `- enemy เกิดเมื่อ xp <= ${XP_THRESHOLDS[-1]} และเมื่อกลับมาปกติจะกระโดดไปที่ friend เท่านั้น`,
+    "ห้ามเลือกระดับความสัมพันธ์เอง ส่งแค่สัญญาณของเทิร์นนี้",
+    "</bond_levels>",
   ].join("\n");
 }
 
-export function bondRulesBlock(): string {
-  return `<bond_levels>\n${bondLadderText()}\n</bond_levels>`;
-}
-
 /**
- * Apply one `execute` operation.
+ * Apply one turn's JSON state.
  *
- * Returns the image name when the operation was `select_image`, otherwise undefined. Every write
- * goes through `user_profiles`; the alias cases exist because the model was prompted with the old
- * names for the whole life of this bot, and a refused operation must not silently lose the turn.
+ * Replaces `applyExecute()`. Order matters: the ladder move (`applyTurnState`) happens first so a
+ * fact or memory written later sees the same bond the user was just promoted to.
+ *
+ * Exported so the contract can be tested without a Gemini round-trip.
  */
-async function applyOperation(
-  op: { name: string; args: Record<string, unknown> },
-  userId: string,
-  timestamp: string,
-  userName: string,
-): Promise<string | undefined> {
-  const { name, args } = op;
-  const delta = Number(args.delta ?? 0);
-  switch (name) {
-    case "adjust_affection":
-    case "adjust_affinity": {
-      if (!Number.isFinite(delta)) return undefined;
-      adjustProfileStats(userId, { affection: delta, userName });
-      return undefined;
-    }
-    case "adjust_trust": {
-      if (!Number.isFinite(delta)) return undefined;
-      adjustProfileStats(userId, { trust: delta, userName });
-      return undefined;
-    }
-    case "add_xp": {
-      if (!Number.isFinite(delta)) return undefined;
-      adjustProfileStats(userId, { xp: delta, userName });
-      return undefined;
-    }
-    case "set_bond":
-    case "set_relationship": {
-      const to = typeof args.bond === "string" ? args.bond : typeof args.state === "string" ? args.state : undefined;
-      if (!to) return undefined;
-      const result = setBond(userId, to, userName);
-      // A refused rung is a model mistake, not a crash: log it and keep the previous bond.
-      if (!result.ok) console.warn(`[PIPELINE] bond change refused for ${userId}: ${result.reason}`);
-      return undefined;
-    }
-    case "add_facts": {
-      const raw = args.facts ?? args.fact ?? args.text;
-      const list = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
-      // Strings only: a bare number or null is not a fact, and String()-ing it would store "7".
-      const added = addFacts(userId, list.filter((f): f is string => typeof f === "string"), timestamp, userName);
-      if (added) console.log(`[PIPELINE] ${userId}: +${added} fact(s)`);
-      return undefined;
-    }
-    case "ingest_memory": {
-      const text = typeof args.text === "string" ? args.text.trim() : "";
-      if (text) await saveMemoryVector({ id: crypto.randomUUID(), text, userId, timestamp }, await embed(text));
-      return undefined;
-    }
-    case "select_image": {
-      const image = typeof args.image === "string" ? args.image.trim() : "";
-      return image || undefined;
-    }
-    default:
-      return undefined;
+export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string): Promise<string | undefined> {
+  const result = applyTurnState({
+    userId,
+    userName,
+    affinity: state.affinity,
+    ...(state.isFlirt !== undefined && { isFlirt: state.isFlirt }),
+    approvals: {
+      lover: state.approveLover === true,
+      soulmate: state.approveSoulmate === true,
+      sibling: state.approveSibling === true,
+      family: state.approveFamily === true,
+    },
+  });
+
+  if (result.derivation.changed) {
+    console.log(
+      `[PIPELINE] ${userId}: bond ${result.before} -> ${result.after} (${result.derivation.reason})`,
+    );
   }
+
+  if (state.addFacts.length) {
+    const added = addFacts(userId, state.addFacts, timestamp, userName);
+    if (added) console.log(`[PIPELINE] ${userId}: +${added} fact(s)`);
+  }
+
+  if (state.ingestMemory) {
+    await saveMemoryVector(
+      { id: crypto.randomUUID(), text: state.ingestMemory, userId, timestamp },
+      await embed(state.ingestMemory),
+    );
+  }
+
+  return state.selectImage || undefined;
 }
 
 /**
- * Operations that cannot do anything without at least one argument. `select_image` is excluded on
- * purpose: an empty image means "no image this turn", which is a legitimate answer.
+ * Gemini 2 — the relationship analyst.
+ *
+ * Sees the raw user message, Isla's reply, and her own one-line recap (`summery`) from Gemini 1:
+ * the recap is the cheapest available summary of what she *meant*, which is what decides whether a
+ * proposal was accepted. It is the only place `summery` is ever consumed.
  */
-const OPERATIONS_NEEDING_ARGS = new Set([
-  "adjust_affection",
-  "adjust_affinity",
-  "adjust_trust",
-  "add_xp",
-  "set_bond",
-  "set_relationship",
-  "add_facts",
-  "ingest_memory",
-]);
-
-/** Exported so the operation contract can be tested without a Gemini round-trip. */
-export async function applyExecute(items: ExecuteItem[], userId: string, timestamp: string, userName: string): Promise<string | undefined> {
-  let selectedImage: string | undefined;
-  for (const item of items) {
-    if (item.name !== "execute") continue;
-    const operations = Array.isArray(item.args?.operations) ? item.args.operations : [];
-    for (const operation of operations) {
-      if (!operation || typeof operation !== "object") continue;
-      const op = operation as { name?: unknown; args?: unknown };
-      if (typeof op.name !== "string" || !op.args || typeof op.args !== "object" || Array.isArray(op.args)) continue;
-      // An operation with no arguments is a no-op by design, but when *every* operation arrives
-      // empty it means the model was not told what to put in `args` — which is exactly how a whole
-      // turn's worth of state silently vanished. Say so instead of returning quietly.
-      if (OPERATIONS_NEEDING_ARGS.has(op.name) && Object.keys(op.args as object).length === 0) {
-        console.warn(`[PIPELINE] ${userId}: gemini2 sent "${op.name}" with empty args -- nothing applied`);
-      }
-      const image = await applyOperation({ name: op.name, args: op.args as Record<string, unknown> }, userId, timestamp, userName);
-      if (image) selectedImage = image;
-    }
-  }
-  return selectedImage;
-}
-
-async function runGemini2(message: IncomingMessage, responseText: string, profile: UserProfile | null, media: Interactions.Content[]): Promise<ExecuteItem[]> {
+async function runGemini2(
+  message: IncomingMessage,
+  responseText: string,
+  summery: string,
+  profile: UserProfile | null,
+  media: Interactions.Content[],
+): Promise<IslaState> {
   const analysisInput = [
     `${message.user}: ${message.text}`,
     `Isla: ${responseText}`,
+    ...(summery ? [`(สรุปของข้อความนี้: ${summery})`] : []),
     ``,
     stateBlock(profile),
   ].join("\n");
@@ -317,13 +229,20 @@ async function runGemini2(message: IncomingMessage, responseText: string, profil
     messages: [{ role: "user", userId: message.userId, user: message.user, text: analysisInput, timestamp: new Date().toISOString(), ...(media.length && { media }) }],
   };
   const result = await sendRequestGemini(request, {
-    responseMode: "tool",
-    tools: [EXECUTE_TOOL],
+    // Answers as JSON like Gemini 1, so the stage must be stated: `responseMode` no longer tells
+    // client.ts which key pool or model this call belongs to.
+    stage: "gemini2",
     systemInstruction: gemini2SystemPrompt,
+    responseFormat: { type: "text", mime_type: "application/json", schema: ISLA_STATE_SCHEMA },
     debug: { userId: message.userId, userName: message.user },
   });
-  return typeof result === "string" ? [] : result.map((call) => ({ name: call.name, args: call.args }));
+  const state = parseIslaState(typeof result === "string" ? result : "", profile?.bond ?? "stranger");
+  for (const warning of state.warnings) {
+    console.warn(`[PIPELINE] ${message.userId}: gemini2 ${warning}`);
+  }
+  return state;
 }
+
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -416,9 +335,9 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const responseTimestamp = new Date().toISOString();
   saveMessage({ role: "model", text: responseText, summary: reply.summery || null, timestamp: responseTimestamp });
 
-  const executeItems = await runGemini2(message, responseText, profile, media.parts);
+  const state = await runGemini2(message, responseText, reply.summery, profile, media.parts);
   const gemini2Ms = lap();
-  const image = await applyExecute(executeItems, message.userId, message.timestamp, message.user);
+  const image = await applyState(state, message.userId, message.timestamp, message.user);
   const applyMs = lap();
   console.log(`[PIPELINE] ${message.user}: total=${prepMs + embedMs + chromaMs + buildMs + gemini1Ms + gemini2Ms + applyMs}ms prep=${prepMs} embed=${embedMs} chroma=${chromaMs} build=${buildMs} gemini1=${gemini1Ms} gemini2=${gemini2Ms} apply=${applyMs}`);
   return {

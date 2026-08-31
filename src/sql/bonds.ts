@@ -82,27 +82,6 @@ export function bondCeiling(bond: BondLevel): BondLevel {
 }
 
 /**
- * Resolve a requested bond change against the rules.
- *
- * `from` is the current bond (null/unknown = stranger). Returns the bond to store, or null when
- * the request is refused (unknown name, or a rung above this bond's ceiling).
- */
-export function resolveBondChange(from: string | null | undefined, to: string | null | undefined): BondLevel | null {
-  if (!isBond(to)) return null;
-  const current: BondLevel = isBond(from) ? from : "stranger";
-  if (to === current) return to;
-  // A capped rung cannot be climbed past. Coming *into* a capped rung is always allowed —
-  // being made family is not something the ceiling should block.
-  const info = BOND_LEVELS[current];
-  if (info.maxLevel !== undefined && BOND_LEVELS[to].level > info.maxLevel) return null;
-  // A jump rung never walks the ladder on the way out: leaving enemy lands on `friend`, never on
-  // `stranger`. Without this the rule would only exist as text in the prompt.
-  const jump = bondRecoveryFrom(current);
-  if (jump && BOND_LEVELS[to].level < BOND_LEVELS[jump].level) return jump;
-  return to;
-}
-
-/**
  * The bond to use after leaving `enemy`.
  *
  * Enemy is a one-way door: recovery never passes through `stranger`, it jumps to `friend`.
@@ -111,16 +90,6 @@ export function resolveBondChange(from: string | null | undefined, to: string | 
  */
 export function bondRecoveryFrom(bond: string | null | undefined): BondLevel | null {
   return isBond(bond) ? (BOND_LEVELS[bond].jumpTo ?? null) : null;
-}
-
-/**
- * Clamp a bond to a numeric level, honouring the ceiling.
- * Used by stat adjustments that express progress as a level rather than a rung name.
- */
-export function clampBondToLevel(bond: BondLevel, level: number): BondLevel {
-  const ceiling = BOND_LEVELS[bond].maxLevel;
-  const target = ceiling !== undefined ? Math.min(level, ceiling) : level;
-  return ASCENDING.find((name) => BOND_LEVELS[name].level === target) ?? (ceiling !== undefined ? bond : "soulmate");
 }
 
 /** The ladder as text, for prompts. */
@@ -133,4 +102,193 @@ export function bondLadderText(): string {
     return `- ${name} (ระดับ ${info.level}) = ${info.label}${notes.length ? ` — ${notes.join("; ")}` : ""}`;
   });
   return rungs.join("\n");
+}
+
+/**
+ * The same ladder with the xp gates spelled out — what Gemini 2 is given.
+ *
+ * Kept separate from `bondLadderText()` because Gemini 1 also reads the plain version, and showing
+ * it the numeric gates invites it to talk about a score with the user.
+ */
+export function bondLadderWithThresholds(): string {
+  const lines = [
+    `- stranger (ระดับ 0) = คนแปลกหน้า — xp ${XP_THRESHOLDS[-1] + 1}..${XP_THRESHOLDS[1] - 1}`,
+    `- friend (ระดับ 1) = เพื่อน — xp >= ${XP_THRESHOLDS[1]}`,
+    `- close_friend (ระดับ 2) = เพื่อนสนิท — xp >= ${XP_THRESHOLDS[2]}`,
+    `- crush (ระดับ 3) = แอบชอบ — xp >= ${XP_THRESHOLDS[3]} และถูกจีบสะสม >= ${FLIRT_REQUIREMENT} ครั้ง`,
+    `- lover (ระดับ 4) = คนรัก — ต้องเป็น crush ก่อน + ผู้ใช้ขอคบ + Isla ตอบตกลง (xp >= ${PROPOSAL_XP})`,
+    `- soulmate (ระดับ 5) = คู่แท้ — ต้องเป็น lover ก่อน + ผู้ใช้ขอแต่งงาน + Isla ตอบตกลง (xp >= ${PROPOSAL_XP})`,
+    `- sibling (ระดับ 3) = พี่น้อง — xp >= ${PROPOSAL_XP} + ขอเป็นพี่น้อง + Isla ตอบตกลง (ไประดับ 4 ไม่ได้)`,
+    `- family (ระดับ 3) = ครอบครัว — xp >= ${PROPOSAL_XP} + ขอเป็นครอบครัว + Isla ตอบตกลง (ไประดับ 4 ไม่ได้)`,
+    `- enemy (ระดับ -1) = ศัตรู — xp <= ${XP_THRESHOLDS[-1]} (กลับมาปกติต้องไปที่ friend เท่านั้น)`,
+  ];
+  return lines.join("\n");
+}
+
+/* ------------------------------------------------------------------ *
+ * Deriving the rung — the model reports facts, this decides the bond.
+ * ------------------------------------------------------------------ */
+
+/** xp needed to reach each rung on the romantic ladder, by level. */
+export const XP_THRESHOLDS: Record<number, number> = {
+  [-1]: -150, // enemy
+  0: -149, // stranger: anywhere between the two enemy walls
+  1: 150, // friend
+  2: 500, // close_friend
+  3: 500, // crush (also needs FLIRT_REQUIREMENT accepted flirts)
+  4: 500, // lover (also needs the proposal accepted)
+  5: 500, // soulmate (also needs the proposal accepted)
+};
+
+/** Accepted flirtatious approaches needed before the user can become a `crush`. */
+export const FLIRT_REQUIREMENT = 5;
+
+/** Rungs that sit at level 3 and can never become romantic. */
+const CAPPED: BondLevel[] = ["sibling", "family"];
+
+export function isCappedBond(bond: BondLevel): boolean {
+  return CAPPED.includes(bond);
+}
+
+/** The rung for a given xp on the ascending ladder, ignoring flirt/approval gates. */
+export function bondForXp(xp: number): BondLevel {
+  if (xp <= XP_THRESHOLDS[-1]) return "enemy";
+  if (xp < XP_THRESHOLDS[1]) return "stranger";
+  if (xp < XP_THRESHOLDS[2]) return "friend";
+  return "close_friend";
+}
+
+/** What `deriveBond` decided, and why — the reason is logged so a stuck ladder is visible. */
+export type BondDerivation = {
+  bond: BondLevel;
+  xp: number;
+  /** Human/developer-readable explanation of the winning rule. */
+  reason: string;
+  /** True when the rung changed from `from`. */
+  changed: boolean;
+  /** Approvals actually used, so the caller can clear only those flags from storage. */
+  consumed: ApprovalName[];
+};
+
+/** The proposal-based rungs. `lover`/`soulmate` are romantic; `sibling`/`family` are capped. */
+export type ApprovalName = "lover" | "soulmate" | "sibling" | "family";
+
+/**
+ * The xp every proposal-based rung needs before an accepted proposal can be granted.
+ *
+ * The owner's ladder puts sibling/family/lover/soulmate at level 3+, which begins at 500 xp — the
+ * same bar as `close_friend`. A yes below that bar is remembered, not thrown away (see `pending`).
+ */
+export const PROPOSAL_XP = XP_THRESHOLDS[2];
+
+/**
+ * The signals Gemini 2 reported about this turn.
+ *
+ * No bond name in here on purpose: the model says what happened, never what it means for the
+ * ladder.
+ */
+export type BondSignals = {
+  /** Accepted flirtatious approaches, all-time, *including* this turn's. */
+  flirtCount: number;
+  /**
+   * Proposals Isla accepted — newly accepted this turn, or accepted earlier and still waiting on
+   * xp. A flag is cleared only when it actually moved the rung.
+   */
+  approvals?: Partial<Record<ApprovalName, boolean>>;
+};
+
+/**
+ * Decide the bond from xp + the model's signals. Never from a rung the model named.
+ *
+ * Order matters, and each rule exists because of a specific way a model could otherwise break the
+ * ladder:
+ *  1. An accepted proposal is honoured — it is a promise she already made out loud. The ladder's
+ *     prerequisites still apply: xp must reach `PROPOSAL_XP`, `soulmate` only advances a `lover`,
+ *     `lover` only advances a `crush`, and a capped rung (sibling/family) can never become romantic
+ *     no matter what gets approved. When xp is not there yet the approval stays **pending** instead
+ *     of being dropped, so she cannot undo her own yes by warming up slowly.
+ *  2. Enemy is entered on xp alone, and left by jumping to `friend` — never through `stranger`.
+ *  3. Everything else walks the ladder by xp, and `crush` additionally requires
+ *     `FLIRT_REQUIREMENT` accepted flirts.
+ *
+ * A rung never *decays* past level 2: falling xp demotes stranger/friend/close_friend, but an
+ * established crush/lover/soulmate/sibling/family is kept, because those were granted by a decision
+ * rather than a score.
+ */
+export function deriveBond(from: string | null | undefined, xp: number, signals: BondSignals): BondDerivation {
+  const current: BondLevel = isBond(from) ? from : "stranger";
+  const capped = isCappedBond(current);
+  const approvals = signals.approvals ?? {};
+  const enoughXp = xp >= PROPOSAL_XP;
+
+  // --- 1. accepted proposals ---
+  if (enoughXp) {
+    if (approvals.family) {
+      return { bond: "family", xp, reason: `family accepted (xp ${xp})`, changed: current !== "family", consumed: ["family"] };
+    }
+    if (approvals.sibling) {
+      return { bond: "sibling", xp, reason: `sibling accepted (xp ${xp})`, changed: current !== "sibling", consumed: ["sibling"] };
+    }
+    if (!capped) {
+      if (approvals.soulmate && current === "lover") {
+        return { bond: "soulmate", xp, reason: `marriage accepted while lover (xp ${xp})`, changed: true, consumed: ["soulmate"] };
+      }
+      if (approvals.lover && current === "crush") {
+        return { bond: "lover", xp, reason: `lover proposal accepted while crush (xp ${xp})`, changed: true, consumed: ["lover"] };
+      }
+    }
+  }
+  // Said yes, but the ladder cannot grant it yet. Kept pending so the next turn can finish it.
+  const pending = (["family", "sibling", "soulmate", "lover"] as ApprovalName[]).filter((name) => approvals[name] && !enoughXp);
+
+  // --- 2. enemy, and the one-way door out of it ---
+  if (xp <= XP_THRESHOLDS[-1]) {
+    return { bond: "enemy", xp, reason: `xp ${xp} <= ${XP_THRESHOLDS[-1]}`, changed: current !== "enemy", consumed: [] };
+  }
+  if (current === "enemy") {
+    const jump = bondRecoveryFrom(current)!;
+    return { bond: jump, xp, reason: `recovered from enemy — jumps to ${jump}`, changed: true, consumed: [] };
+  }
+
+  // --- 3. walk the ladder by xp ---
+  const byXp = bondForXp(xp);
+  const rank = BOND_LEVELS[byXp].level;
+  const keep = BOND_LEVELS[current].level;
+  let bond: BondLevel = current;
+  let reason = `xp ${xp} supports level ${rank}, keeping ${current}`;
+
+  if (rank > keep) {
+    bond = byXp;
+    reason = `xp ${xp} reached level ${rank}`;
+  } else if (rank < keep && keep <= 2) {
+    // Only the xp-only rungs decay, and they decay no lower than `friend`.
+    //
+    // `stranger` is a starting state, never a destination: you cannot un-meet someone. Without this
+    // floor the enemy rule would cancel itself out — recovering from enemy lands on `friend` at an
+    // xp that the bands still call `stranger`, so the very next turn would demote it back and the
+    // jump would be worth nothing. Falling all the way still happens; it just goes through `enemy`.
+    bond = rank === 0 ? "friend" : byXp;
+    reason = rank === 0 ? `xp ${xp} is below the friend band, but stranger is not a fallback` : `xp ${xp} fell back to level ${rank}`;
+  }
+
+  if (capped && BOND_LEVELS[bond].level < 3) {
+    // Leaving a capped rung downward is allowed (family can fall out with her), but climbing back
+    // into the romantic ladder is not.
+    bond = "close_friend";
+    reason += " — capped rung cannot climb";
+  }
+
+  // `crush` is the one rung that needs more than xp.
+  if (bond === "close_friend" && BOND_LEVELS[current].level < 3) {
+    if (signals.flirtCount >= FLIRT_REQUIREMENT) {
+      bond = "crush";
+      reason = `xp ${xp} + ${signals.flirtCount} accepted flirts (>= ${FLIRT_REQUIREMENT})`;
+    } else {
+      reason = `xp ${xp} reaches crush but only ${signals.flirtCount}/${FLIRT_REQUIREMENT} flirts`;
+    }
+  }
+
+  if (pending.length) reason += ` — pending: ${pending.join(", ")}`;
+
+  return { bond, xp, reason, changed: bond !== current, consumed: [] };
 }
