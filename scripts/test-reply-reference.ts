@@ -166,6 +166,57 @@ console.log("=== 7. discord.js จริงแปลง replyReference() เป�
     bodyOf({ content: "hi", reply: { messageId: "123", failIfNotExists: false } }) === null);
 }
 
+console.log("=== 8. mood → footer, color → เส้นสีของ embed ===");
+{
+  const dataOf = (options: Parameters<typeof buildReplyPayload>[0]) =>
+    (buildReplyPayload(options).embeds?.[0] as { data?: Record<string, unknown> }).data ?? {};
+
+  const mooded = dataOf({ text: "ยินดีต้อนรับค่ะ", mood: "ยินดี", color: 0xf1c40f });
+  check("footer อารมณ์ภาษาไทย", (mooded.footer as { text?: string }).text === "ไอล่า · ยินดี");
+  check("embed ได้สีเป็น number", mooded.color === 0xf1c40f);
+
+  const plain = dataOf({ text: "ไม่มีอารมณ์" });
+  check("ไม่มี mood -> footer เดิม", (plain.footer as { text?: string }).text === "Isla");
+  check("ไม่มี color -> ไม่ส่ง color เลย (ให้ Discord ใช้สี default)", !("color" in plain));
+
+  // สีดำสนิทคือสีที่ใช้ได้จริง ถ้าโค้ดเขียน `if (options.color)` ค่า 0 จะถูกทิ้งเงียบ ๆ
+  const black = dataOf({ text: "เศร้า", color: 0x000000 });
+  check("color = 0 (ดำ) ยังถูกส่ง", black.color === 0);
+
+  const moodOnly = dataOf({ text: "งอน", mood: "งอน" });
+  check("มี mood อย่างเดียวก็ยังตั้ง footer", (moodOnly.footer as { text?: string }).text === "ไอล่า · งอน");
+  check("มี mood อย่างเดียว -> ไม่มี color key", !("color" in moodOnly));
+
+  const imageAndMood = dataOf({
+    text: "เขิน",
+    image: { buffer: Buffer.from("x"), name: "shy.png" },
+    mood: "อาย",
+    color: 0xe91e63,
+  });
+  check("มีรูป + mood + color ไปด้วยกัน", imageAndMood.color === 0xe91e63
+    && (imageAndMood.footer as { text?: string }).text === "ไอล่า · อาย"
+    && (imageAndMood.image as { url?: string }).url === "attachment://shy.png");
+
+  // of-Discord proof: ค่าทั้งสองรอดผ่าน MessagePayload ไปถึง body จริง
+  const target = {
+    isMessage: false,
+    client: { options: { failIfNotExists: true, jsonTransformer: (x: unknown) => x } },
+    messages: { resolveId: (x: unknown) => (typeof x === "string" ? x : null) },
+  };
+  const payload = new MessagePayload(target as never, buildReplyPayload({
+    text: "ขอบคุณค่ะ", mood: "ขอบคุณ", color: 0xf1c40f, replyTo: "999",
+  }) as never);
+  payload.resolveBody();
+  const body = payload.body as {
+    embeds?: Array<{ color?: number; footer?: { text?: string }; description?: string }>;
+    message_reference?: { message_id?: string };
+  };
+  check("body ที่ส่งให้ Discord มี color", body.embeds?.[0]?.color === 0xf1c40f);
+  check("body มี footer ภาษาไทยตรงตัว", body.embeds?.[0]?.footer?.text === "ไอล่า · ขอบคุณ");
+  check("footer/color ไม่ไปทับ message_reference", body.message_reference?.message_id === "999");
+  check("ข้อความยังอยู่ใน description (ไม่ไปปนกับ mood)", body.embeds?.[0]?.description === "ขอบคุณค่ะ");
+}
+
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

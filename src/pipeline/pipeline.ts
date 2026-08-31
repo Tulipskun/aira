@@ -31,7 +31,15 @@ export type IncomingMessage = {
   mediaSources?: MediaSource[];
 };
 type ExecuteItem = { name?: string; args?: Record<string, unknown> };
-export type ProcessMessageResult = { text: string; image?: string };
+export type ProcessMessageResult = {
+  text: string;
+  image?: string;
+  /** Isla's mood in Thai, from Gemini 1 -- rendered in the embed footer. */
+  mood?: string;
+  /** That mood as a 24-bit RGB integer -- the embed's accent colour. Undefined when she sent no
+   * usable colour, which must not cost us the reply. */
+  color?: number;
+};
 const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
 /**
  * Gemini 2's instruction.
@@ -395,7 +403,15 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   // recap is metadata. parseIslaReply degrades to "send the raw text" when the model ignores the
   // format, so a malformed turn still gets a reply instead of an empty message.
   const reply = parseIslaReply(typeof response1 === "string" ? response1 : "");
-  if (!reply.parsed) console.warn(`[PIPELINE] ${message.user}: Gemini 1 reply was not valid JSON -- sent raw text, no summery`);
+  if (!reply.parsed) {
+    console.warn(`[PIPELINE] ${message.user}: Gemini 1 reply was not valid JSON -- sent raw text, no summery/mood/color`);
+  } else if (reply.color === undefined) {
+    // She named a colour we could not read. The reply still goes out, just without the accent
+    // colour -- but say so, because a mood that never paints the embed is otherwise invisible.
+    console.warn(
+      `[PIPELINE] ${message.user}: gemini1 sent unusable color "${reply.colorText}" -- embed left default`,
+    );
+  }
   const responseText = reply.isla;
   const responseTimestamp = new Date().toISOString();
   saveMessage({ role: "model", text: responseText, summary: reply.summery || null, timestamp: responseTimestamp });
@@ -405,5 +421,10 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const image = await applyExecute(executeItems, message.userId, message.timestamp, message.user);
   const applyMs = lap();
   console.log(`[PIPELINE] ${message.user}: total=${prepMs + embedMs + chromaMs + buildMs + gemini1Ms + gemini2Ms + applyMs}ms prep=${prepMs} embed=${embedMs} chroma=${chromaMs} build=${buildMs} gemini1=${gemini1Ms} gemini2=${gemini2Ms} apply=${applyMs}`);
-  return { text: responseText, image };
+  return {
+    text: responseText,
+    image,
+    ...(reply.mood && { mood: reply.mood }),
+    ...(reply.color !== undefined && { color: reply.color }),
+  };
 }

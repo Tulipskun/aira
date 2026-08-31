@@ -123,6 +123,8 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
           buildReplyPayload({
             text: result.text,
             ...(imageBuffer && result.image ? { image: { buffer: imageBuffer, name: result.image } } : {}),
+            ...(result.mood ? { mood: result.mood } : {}),
+            ...(result.color !== undefined ? { color: result.color } : {}),
             replyTo: anchor,
           }),
         );
@@ -131,7 +133,12 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
         // MESSAGE response — `quote=none` or a mismatch means it landed as a plain message, which is
         // exactly the silent failure replyReference() exists to avoid.
         const echoed = sent.reference?.messageId;
-        console.log(`[DISCORD] ${first.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}`);
+        // `mood`/`color` are what she actually painted the embed with. `color=none` means she sent
+        // no usable hex (see the [PIPELINE] warn) and the bar stayed Discord grey.
+        const embedColor = result.color === undefined ? "none" : `#${result.color.toString(16).padStart(6, "0")}`;
+        console.log(
+          `[DISCORD] ${first.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}, mood=${result.mood ?? "none"}, color=${embedColor}`,
+        );
       } catch (error) {
         console.error(`[DISCORD] Failed to send reply: ${String((error as Error)?.message ?? error)}`);
       }
@@ -149,14 +156,21 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
 export function buildReplyPayload(options: {
   text: string;
   image?: { buffer: Buffer; name: string };
+  /** Isla's mood in Thai -- shown in the embed footer. */
+  mood?: string;
+  /** 24-bit RGB accent colour for the embed bar. */
+  color?: number;
   replyTo?: string;
 }): MessageCreateOptions {
   // Discord rejects an embed whose description is empty (it surfaced as "Missing
   // Permissions" in the log). A media-only turn can legitimately produce a text-free reply.
   const embed = new EmbedBuilder()
     .setDescription(options.text || "…")
-    .setFooter({ text: "Isla" });
+    .setFooter({ text: options.mood ? `ไอล่า · ${options.mood}` : "Isla" });
 
+  // setColor() takes a 24-bit integer only (a hex *string* is rejected by the builder's
+  // validator), and an absent colour falls back to Discord's default grey.
+  if (options.color !== undefined) embed.setColor(options.color);
   if (options.image) embed.setImage(`attachment://${options.image.name}`);
 
   return {
