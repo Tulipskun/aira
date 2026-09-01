@@ -72,7 +72,7 @@ check("enemy is the only negative rung", bonds.BOND_NAMES.filter((n) => bonds.BO
 check("sibling and family are capped at 3", bonds.isCappedBond("sibling") && bonds.isCappedBond("family") && !bonds.isCappedBond("crush"));
 check("ladder text lists every rung", bonds.BOND_NAMES.every((n) => bonds.bondLadderText().includes(n)));
 check("threshold text lists every rung", bonds.BOND_NAMES.every((n) => bonds.bondLadderWithThresholds().includes(n)));
-check("threshold text states the xp gates", bonds.bondLadderWithThresholds().includes("xp >= 500") && bonds.bondLadderWithThresholds().includes("xp <= -150"));
+check("threshold text states the xp gates", bonds.bondLadderWithThresholds().includes("xp >= 300") && bonds.bondLadderWithThresholds().includes("xp <= -150"));
 
 // --- the footer's `[X Unlocked]` badge reads these two, so the rules live next to the ladder ---
 check("every announceable rung has an unlock label", ["friend", "close_friend", "crush", "lover", "soulmate", "sibling", "family"]
@@ -91,7 +91,8 @@ check("an unknown target is never an unlock", !bonds.isBondUnlock("friend", "bes
 
 check("xp -> stranger in the band", bonds.bondForXp(0) === "stranger" && bonds.bondForXp(149) === "stranger" && bonds.bondForXp(-149) === "stranger");
 check("xp -> friend at 150", bonds.bondForXp(150) === "friend");
-check("xp -> close_friend at 500", bonds.bondForXp(500) === "close_friend");
+check("xp -> close_friend at 300", bonds.bondForXp(300) === "close_friend");
+check("xp 299 is still friend, not close_friend", bonds.bondForXp(299) === "friend");
 check("xp -> enemy at -150", bonds.bondForXp(-150) === "enemy");
 check("xp below -150 stays enemy", bonds.bondForXp(-900) === "enemy");
 
@@ -100,13 +101,14 @@ const d = (from: string | null, xp: number, signals: { flirtCount?: number; appr
 
 check("new user at 0 xp is stranger", d(null, 0, {}).bond === "stranger");
 check("unknown current bond is treated as stranger", d("nonsense", 200, {}).bond === "friend");
-check("friend at 500 becomes close_friend", d("friend", 500, {}).bond === "close_friend");
-check("close_friend at 500 without flirts stays close_friend", d("close_friend", 500, { flirtCount: 4 }).bond === "close_friend");
-check("close_friend + 5 flirts becomes crush", d("close_friend", 500, { flirtCount: 5 }).bond === "crush");
+check("friend at 300 becomes close_friend", d("friend", 300, {}).bond === "close_friend");
+check("friend at 299 stays friend", d("friend", 299, {}).bond === "friend");
+check("close_friend at 300 without flirts stays close_friend", d("close_friend", 300, { flirtCount: 4 }).bond === "close_friend");
+check("close_friend + 5 flirts becomes crush", d("close_friend", 300, { flirtCount: 5 }).bond === "crush");
 check("crush needs 5 flirts, not more", d("stranger", 600, { flirtCount: 5 }).bond === "crush");
 check("a crush does not decay on a bad week", d("crush", 120, {}).bond === "crush");
 // The live case after the migration: Farris was already `lover` at xp 19 with no flirt history,
-// because the OLD engine granted rungs the new one gates behind 500 xp + 5 flirts. A rung granted by
+// because the OLD engine granted rungs the new one gates behind 300 xp + 5 flirts. A rung granted by
 // a decision must survive the schema change — otherwise the first message after the restart silently
 // dumps an established lover back to stranger.
 check("a pre-existing lover at low xp is grandfathered, not demoted", d("lover", 19, { flirtCount: 0 }).bond === "lover");
@@ -124,17 +126,17 @@ check("lover proposal from a stranger is refused", d("stranger", 900, { approval
 check("soulmate needs the approval", d("lover", 900, {}).bond === "lover");
 check("soulmate granted when a lover proposes marriage", d("lover", 900, { approvals: { soulmate: true } }).bond === "soulmate");
 check("soulmate cannot skip lover", d("crush", 900, { approvals: { soulmate: true } }).bond === "crush");
-check("proposal below the xp bar is pending, not lost", d("crush", 400, { approvals: { lover: true } }).bond === "crush");
-check("pending reason says so", d("crush", 400, { approvals: { lover: true } }).reason.includes("pending: lover"));
-check("a pending proposal is consumed once xp arrives", d("crush", 500, { approvals: { lover: true } }).consumed.join() === "lover");
-check("sibling granted from a friend", d("friend", 500, { approvals: { sibling: true } }).bond === "sibling");
+check("proposal below the xp bar is pending, not lost", d("crush", 200, { approvals: { lover: true } }).bond === "crush");
+check("pending reason says so", d("crush", 200, { approvals: { lover: true } }).reason.includes("pending: lover"));
+check("a pending proposal is consumed once xp arrives", d("crush", 300, { approvals: { lover: true } }).consumed.join() === "lover");
+check("sibling granted from a friend", d("friend", 300, { approvals: { sibling: true } }).bond === "sibling");
 check("family granted from a stranger", d("stranger", 700, { approvals: { family: true } }).bond === "family");
 check("family needs xp too", d("stranger", 100, { approvals: { family: true } }).bond === "stranger");
 check("sibling can never become lover", d("sibling", 900, { approvals: { lover: true } }).bond === "sibling");
 check("family can never become soulmate", d("family", 900, { approvals: { soulmate: true, lover: true } }).bond === "family");
 check("family falling out can reach enemy", d("family", -200, {}).bond === "enemy");
 check("a capped rung recovering from low xp cannot climb into romance", d("sibling", 900, { flirtCount: 9 }).bond === "sibling");
-check("changed flag only when the rung moved", d("friend", 200, {}).changed === false && d("friend", 500, {}).changed === true);
+check("changed flag only when the rung moved", d("friend", 200, {}).changed === false && d("friend", 300, {}).changed === true);
 check("enemy entry reports changed", d("friend", -160, {}).changed === true);
 check("no bond name is ever invented", bonds.BOND_NAMES.includes(d("crush", 900, { approvals: { lover: true } }).bond));
 
@@ -302,9 +304,9 @@ console.log("=== H. applyTurnState is the only path onto the ladder ===");
   check("xp accumulates", turn("s1", { affinity: 10 }).xp === 20);
 
   check("150 xp reaches friend", grind("s1", 150).bond === "friend", mod.getUserProfile("s1"));
-  check("500 xp reaches close_friend", grind("s1", 500).bond === "close_friend", mod.getUserProfile("s1"));
+  check("300 xp reaches close_friend", grind("s1", 300).bond === "close_friend", mod.getUserProfile("s1"));
   check("no flirts yet, so no crush", mod.getUserProfile("s1")?.flirtCount === 0);
-  check("close_friend at 500 xp without flirts holds", turn("s1", { affinity: 10 }).after === "close_friend");
+  check("close_friend at 300 xp without flirts holds", turn("s1", { affinity: 10 }).after === "close_friend");
 
   check("4 accepted flirts is not enough", (() => {
     for (let i = 0; i < 4; i++) turn("s1", { affinity: 10, isFlirt: true });
@@ -334,7 +336,7 @@ console.log("=== H. applyTurnState is the only path onto the ladder ===");
   const early = turn("late", { affinity: 10, approvals: { family: true } });
   check("a proposal below the xp bar does not move the rung", early.after === "stranger", early);
   check("but the yes is stored as pending", mod.getUserProfile("late")?.approvals.family === true, mod.getUserProfile("late")?.approvals);
-  grind("late", 500);
+  grind("late", 300);
   const later = turn("late", { affinity: 0 });
   check("the pending yes fires once xp is there", later.after === "family", later);
   check("and is then cleared", mod.getUserProfile("late")?.approvals.family === false);
@@ -566,7 +568,7 @@ const blocks = await loadProfile(process.env.SQLITE_PATH, "blocks");
   // The ladder rules used to be a `bondRulesBlock()` function here; they are a section of the prompt
   // file now, so they are asserted through the rendered instruction in section K2.
   const bands = bonds.xpBandsText();
-  check("xp bands carry every xp-only rung", ["-150", "-149..149", "150..499", ">= 500"].every((n) => bands.includes(n)), bands);
+  check("xp bands carry every xp-only rung", ["-150", "-149..149", "150..299", ">= 300"].every((n) => bands.includes(n)), bands);
   check("state block uses the shared band line", state.includes(`ขอบเขต xp: ${bands}`), state);
 }
 
@@ -599,7 +601,7 @@ console.log("=== K2. Gemini 2's instruction is a rendered file ===");
   check("the no-image answer is the constant", rendered.includes(`"${st.NO_IMAGE}"`), rendered.slice(0, 300));
   check("ladder lists every rung", bonds.BOND_NAMES.every((n: string) => rendered.includes(n)), bonds.BOND_NAMES.filter((n: string) => !rendered.includes(n)).join(","));
   check("ladder wrapped in <bond_levels>", rendered.includes("<bond_levels>") && rendered.includes("</bond_levels>"));
-  check("ladder states the xp gates", rendered.includes("xp >= 500") && rendered.includes("xp <= -150"));
+  check("ladder states the xp gates", rendered.includes("xp >= 300") && rendered.includes("xp <= -150"));
   check("flirt requirement rendered from bonds.ts", rendered.includes(`flirt_count >= ${bonds.FLIRT_REQUIREMENT}`));
   check("proposal xp rendered from bonds.ts", rendered.includes(`xp >= ${bonds.PROPOSAL_XP}`));
   check("instruction forbids naming a bond", rendered.includes("ห้ามเลือกระดับความสัมพันธ์เอง"));

@@ -204,7 +204,7 @@ export function xpBandRange(bond: "enemy" | "stranger" | "friend" | "close_frien
   }
 }
 
-/** The same bands as one line: `enemy <= -150, stranger -149..149, friend 150..499, close_friend >= 500`. */
+/** The same bands as one line: `enemy <= -150, stranger -149..149, friend 150..299, close_friend >= 300`. */
 export function xpBandsText(): string {
   return (["enemy", "stranger", "friend", "close_friend"] as const)
     .map((bond) => `${bond} ${xpBandRange(bond)}`)
@@ -217,7 +217,7 @@ export function xpBandsText(): string {
  * Generated from `BOND_LEVELS[*].reach` rather than typed out line by line. It used to be nine
  * literal strings that repeated each rung's name, level and label, so a rung added to the ladder
  * above silently went missing from the text the model reads — and the numbers in it
- * (`xp >= 500`, `>= ${FLIRT_REQUIREMENT}`) were a fourth copy of thresholds that `deriveBond()`
+ * (`xp >= 300`, `>= ${FLIRT_REQUIREMENT}`) were a fourth copy of thresholds that `deriveBond()`
  * reads from `XP_THRESHOLDS` directly.
  *
  * Kept separate from `bondLadderText()` because Gemini 1 also reads the plain version, and showing
@@ -261,10 +261,10 @@ export const XP_THRESHOLDS: Record<number, number> = {
   [-1]: -150, // enemy
   0: -149, // stranger: anywhere between the two enemy walls
   1: 150, // friend
-  2: 500, // close_friend
-  3: 500, // crush (also needs FLIRT_REQUIREMENT accepted flirts)
-  4: 500, // lover (also needs the proposal accepted)
-  5: 500, // soulmate (also needs the proposal accepted)
+  2: 300, // close_friend
+  3: 300, // crush (also needs FLIRT_REQUIREMENT accepted flirts)
+  4: 300, // lover (also needs the proposal accepted)
+  5: 300, // soulmate (also needs the proposal accepted)
 };
 
 /** Accepted flirtatious approaches needed before the user can become a `crush`. */
@@ -303,7 +303,7 @@ export type ApprovalName = "lover" | "soulmate" | "sibling" | "family";
 /**
  * The xp every proposal-based rung needs before an accepted proposal can be granted.
  *
- * The owner's ladder puts sibling/family/lover/soulmate at level 3+, which begins at 500 xp — the
+ * The owner's ladder puts sibling/family/lover/soulmate at level 3+, which begins at 300 xp — the
  * same bar as `close_friend`. A yes below that bar is remembered, not thrown away (see `pending`).
  */
 export const PROPOSAL_XP = XP_THRESHOLDS[2];
