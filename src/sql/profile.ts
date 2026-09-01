@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { bondLabel, bondLevel, deriveBond, isBond, type ApprovalName, type BondDerivation, type BondLevel } from "./bonds.js";
+import { bondLabel, bondLevel, deriveBond, isBond, isBondUnlock, type ApprovalName, type BondDerivation, type BondLevel } from "./bonds.js";
 
 /**
  * One user, one row.
@@ -455,6 +455,19 @@ export type TurnStateResult = {
   after: BondLevel;
   xp: number;
   flirtCount: number;
+  /**
+   * Flirts this turn actually added to `flirtCount` — 1 or 0.
+   *
+   * Reported by the writer rather than read off `change.isFlirt` so the footer's `[Flirt +1]` can
+   * only ever appear on a turn that really incremented the counter.
+   */
+  flirtDelta: number;
+  /**
+   * True when this turn *reached* a new rung worth announcing (`[Lover Unlocked]`).
+   *
+   * Narrower than `derivation.changed`, which is also true for a demotion — see `isBondUnlock()`.
+   */
+  bondUnlocked: boolean;
   derivation: BondDerivation;
 };
 
@@ -488,7 +501,16 @@ export function applyTurnState(change: TurnStateChange): TurnStateResult {
     bond: derivation.bond,
   });
 
-  return { profile, before, after: derivation.bond, xp, flirtCount, derivation };
+  return {
+    profile,
+    before,
+    after: derivation.bond,
+    xp,
+    flirtCount,
+    flirtDelta: flirted ? 1 : 0,
+    bondUnlocked: isBondUnlock(before, derivation.bond),
+    derivation,
+  };
 }
 
 /**

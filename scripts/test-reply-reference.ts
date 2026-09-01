@@ -275,6 +275,30 @@ console.log("=== 10. embed-footer: การตัดชื่อ/ป้าย �
   check("bond ไม่รู้จัก -> ไม่แต่งสถานะให้", footer.statusLineOf({ userName: "A", bond: "bestie", xp: 3 }) === "A 3");
   check("xpDelta 0 -> ไม่ใส่ [0]", footer.statusLineOf({ userName: "A", bond: "friend", xp: 3, xpDelta: 0 }) === "A (เพื่อน) 🙂 3");
   check("xpDelta ติดลบมีเครื่องหมาย", footer.xpDeltaText(-7) === "-7" && footer.xpDeltaText(7) === "+7" && footer.xpDeltaText(0) === "");
+  check("xpDelta หายไป -> ไม่มี []", footer.statusLineOf({ userName: "A", bond: "friend", xp: 3 }) === "A (เพื่อน) 🙂 3");
+
+  // --- the turn's receipts: [+15] [Flirt +1] [Lover Unlocked] ---
+  check("flirt เทิร์นนี้ -> [Flirt +1] ต่อท้ายแต้ม",
+    footer.statusLineOf({ userName: "Farris", bond: "lover", xp: 109, xpDelta: 15, flirtDelta: 1 }) === "Farris (คนรัก) ❤️ 109 [+15] [Flirt +1]",
+    footer.statusLineOf({ userName: "Farris", bond: "lover", xp: 109, xpDelta: 15, flirtDelta: 1 }));
+  check("ผ่านเงื่อนไข -> [Lover Unlocked]",
+    footer.statusLineOf({ userName: "Farris", bond: "lover", xp: 109, xpDelta: 15, bondUnlocked: true }) === "Farris (คนรัก) ❤️ 109 [+15] [Lover Unlocked]",
+    footer.statusLineOf({ userName: "Farris", bond: "lover", xp: 109, xpDelta: 15, bondUnlocked: true }));
+  check("ทั้ง flirt และ unlock พร้อมกัน เรียง [+xp][Flirt][Unlocked]",
+    footer.statusLineOf({ userName: "Farris", bond: "crush", xp: 520, xpDelta: 10, flirtDelta: 1, bondUnlocked: true }) === "Farris (แอบชอบ) 💗 520 [+10] [Flirt +1] [Crush Unlocked]",
+    footer.statusLineOf({ userName: "Farris", bond: "crush", xp: 520, xpDelta: 10, flirtDelta: 1, bondUnlocked: true }));
+  check("flirtDelta 0 -> ไม่ใส่ป้าย", footer.statusLineOf({ userName: "A", bond: "friend", xp: 3, xpDelta: 1, flirtDelta: 0 }) === "A (เพื่อน) 🙂 3 [+1]");
+  check("flirtDelta ติดลบ/NaN ถูกทิ้ง ไม่กลายเป็น [Flirt +-1]",
+    footer.statusBadges({ flirtDelta: -1 }).length === 0 && footer.statusBadges({ flirtDelta: NaN }).length === 0);
+  check("bondUnlocked จริงแต่ bond ไม่รู้จัก -> ไม่แต่งป้าย",
+    footer.statusLineOf({ userName: "A", bond: "bestie", xp: 3, bondUnlocked: true }) === "A 3");
+  check("stranger/enemy ไม่เคยมีป้าย unlock แม้ถูกสั่ง",
+    footer.statusBadges({ bond: "stranger", bondUnlocked: true }).length === 0 &&
+    footer.statusBadges({ bond: "enemy", bondUnlocked: true }).length === 0);
+  check("ป้ายอยู่ได้แม้ไม่มี xp (xp หายไป)",
+    footer.statusLineOf({ userName: "A", bond: "friend", flirtDelta: 1 }) === "A (เพื่อน) 🙂 [Flirt +1]");
+  check("nickname ยังอยู่ท้ายสุดหลังป้ายทั้งหมด",
+    footer.statusLineOf({ userName: "A", bond: "friend", xp: 3, xpDelta: 1, flirtDelta: 1, nickname: ["คนโปรด"] }) === "A (เพื่อน) 🙂 3 [+1] [Flirt +1] #คนโปรด");
   check("nickname เกิน 3 ป้ายถูกตัด", footer.nicknameTagsOf(["a", "b", "c", "d", "e"]) === "#a #b #c");
   check("nickname ว่าง/มี # ซ้ำถูกทิ้ง", footer.nicknameTagsOf(["", "  ", "มี#ในคำ", "\n"]) === "#มีในคำ");
   check("nickname ยาวถูกตัด", (() => {

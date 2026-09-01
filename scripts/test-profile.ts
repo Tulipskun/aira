@@ -72,6 +72,21 @@ check("ladder text lists every rung", bonds.BOND_NAMES.every((n) => bonds.bondLa
 check("threshold text lists every rung", bonds.BOND_NAMES.every((n) => bonds.bondLadderWithThresholds().includes(n)));
 check("threshold text states the xp gates", bonds.bondLadderWithThresholds().includes("xp >= 500") && bonds.bondLadderWithThresholds().includes("xp <= -150"));
 
+// --- the footer's `[X Unlocked]` badge reads these two, so the rules live next to the ladder ---
+check("every announceable rung has an unlock label", ["friend", "close_friend", "crush", "lover", "soulmate", "sibling", "family"]
+  .every((n) => bonds.bondUnlockLabel(n) !== ""));
+check("stranger is never announced", bonds.bondUnlockLabel("stranger") === "");
+check("enemy is never announced -- a fall-out is not a condition passed", bonds.bondUnlockLabel("enemy") === "");
+check("an unknown rung has no label", bonds.bondUnlockLabel("bestie") === "" && bonds.bondUnlockLabel(null) === "");
+check("unlock labels are title-case English", bonds.bondUnlockLabel("close_friend") === "Close Friend" && bonds.bondUnlockLabel("lover") === "Lover");
+check("a promotion is an unlock", bonds.isBondUnlock("close_friend", "lover") && bonds.isBondUnlock(null, "friend"));
+check("holding a rung is not an unlock", !bonds.isBondUnlock("lover", "lover") && !bonds.isBondUnlock("friend", "friend"));
+check("a demotion is not an unlock", !bonds.isBondUnlock("close_friend", "friend") && !bonds.isBondUnlock("crush", "stranger"));
+check("falling out to enemy is silent", !bonds.isBondUnlock("friend", "enemy"));
+check("climbing back out of enemy to friend IS an unlock -- a rung newly reached", bonds.isBondUnlock("enemy", "friend"));
+check("a sideways move onto a new rung IS an unlock", bonds.isBondUnlock("crush", "family") && bonds.isBondUnlock("crush", "sibling"));
+check("an unknown target is never an unlock", !bonds.isBondUnlock("friend", "bestie") && !bonds.isBondUnlock("friend", null));
+
 check("xp -> stranger in the band", bonds.bondForXp(0) === "stranger" && bonds.bondForXp(149) === "stranger" && bonds.bondForXp(-149) === "stranger");
 check("xp -> friend at 150", bonds.bondForXp(150) === "friend");
 check("xp -> close_friend at 500", bonds.bondForXp(500) === "close_friend");
@@ -296,7 +311,12 @@ console.log("=== H. applyTurnState is the only path onto the ladder ===");
   const fifth = turn("s1", { affinity: 10, isFlirt: true });
   check("the fifth accepted flirt makes it crush", fifth.after === "crush" && fifth.before === "close_friend", fifth);
   check("derivation explains the rule", fifth.derivation.reason.includes("5 accepted flirts"), fifth.derivation.reason);
+  check("that turn reports BOTH a flirt and an unlock", fifth.flirtDelta === 1 && fifth.bondUnlocked === true, fifth);
   check("a flirt with no proposal stays crush", turn("s1", { affinity: 10, isFlirt: true, approvals: { lover: false } }).after === "crush");
+  check("a held rung is not an unlock, even with a flirt", (() => {
+    const held = turn("s1", { affinity: 10, isFlirt: true });
+    return held.after === "crush" && held.bondUnlocked === false && held.flirtDelta === 1;
+  })());
 
   const proposal = turn("s1", { affinity: 10, approvals: { lover: true } });
   check("an accepted proposal promotes to lover", proposal.after === "lover", proposal);
@@ -669,6 +689,11 @@ console.log("=== M. the wiring and the retired paths ===");
   check("the footer has the mood line", footer.includes("อารมณ์: "));
   check("an unknown bond renders no status", footer.includes("if (isBond(input.bond))"));
   check("the card is read after the nickname write", /const after = getUserProfile\(userId\)/.test(src));
+  // The badges must be fed by the writer, never by the model's own claim.
+  check("the card's flirt badge comes from the writer", /flirtDelta: result\.flirtDelta/.test(src));
+  check("the card's unlock badge comes from the writer", /bondUnlocked: result\.bondUnlocked/.test(src));
+  check("applyTurnState decides the unlock through the ladder rule", profile.includes("bondUnlocked: isBondUnlock(before, derivation.bond)"));
+  check("the footer spells the badges exactly as the owner asked", footer.includes("[Flirt +") && footer.includes(" Unlocked]"));
 }
 
 rmSync(dir, { recursive: true, force: true });

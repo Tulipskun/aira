@@ -3,11 +3,13 @@
  *
  * Two lines:
  *
- *   Farris (คนรัก) ❤️ 199 [+12] #คนโปรด #คนขี้แกล้ง
+ *   Farris (คนรัก) ❤️ 109 [+15] [Flirt +1] #คนโปรด #คนขี้แกล้ง
  *   อารมณ์: สงบ
  *
- * Line 1 is the relationship card: display name (max 12 chars), the bond's Thai label, its mark,
- * the accumulated xp with this turn's change in brackets, and the nicknames she gave this user.
+ * Line 1 is the relationship card: display name (max 12 chars), the bond's Thai label, its mark, the
+ * accumulated xp, this turn's badges, and the nicknames she gave this user. The badges are the turn's
+ * receipts — `[+15]` what the xp moved, `[Flirt +1]` a flirt she took, `[Lover Unlocked]` a rung this
+ * turn newly reached.
  * Line 2 is her own mood, which Gemini 1 reports every turn (see `gemini/reply-format.ts`).
  *
  * Everything here is *derived from data the caller already has* — nothing is looked up and nothing
@@ -22,7 +24,7 @@
  * should never produce.
  */
 
-import { bondEmoji, bondLabel, isBond } from "../sql/bonds.js";
+import { bondEmoji, bondLabel, bondUnlockLabel, isBond } from "../sql/bonds.js";
 import { clipThai } from "../gemini/reply-format.js";
 
 /** Hard cap from the owner: the name never takes more room than this in the footer. */
@@ -46,6 +48,19 @@ export type UserStatus = {
   xp?: number | null;
   /** What this turn moved it by. 0 / absent renders nothing. */
   xpDelta?: number | null;
+  /**
+   * Accepted flirts this turn. 1 renders `[Flirt +1]`; 0 / absent renders nothing.
+   *
+   * Comes from the writer (`applyTurnState()`), not from Gemini 2's `is_flirt`, so the badge cannot
+   * claim a flirt the counter never received.
+   */
+  flirtDelta?: number | null;
+  /**
+   * This turn *reached* a new rung worth announcing -> `[Lover Unlocked]`.
+   *
+   * A demotion is false here even though the rung changed; see `isBondUnlock()`.
+   */
+  bondUnlocked?: boolean | null;
   /** Nicknames she gave this user, in storage order. */
   nickname?: string[] | null;
 };
@@ -97,7 +112,34 @@ export function xpDeltaText(xpDelta?: number | null): string {
 }
 
 /**
- * Line 1: `Farris (คนรัก) ❤️ 199 [+12] #คนโปรด #คนขี้แกล้ง`
+ * The badges that follow the xp: `[+15] [Flirt +1] [Lover Unlocked]`.
+ *
+ * Each is built from data the writer already confirmed, and each is absent rather than zero-valued:
+ *  - `[+15]` — this turn's xp movement (0 or non-finite renders nothing);
+ *  - `[Flirt +1]` — a flirt accepted *this* turn; a count of 1 or more renders `+1`, because the
+ *    ladder accepts at most one per turn and a larger number would be a bug, not a bigger deal;
+ *  - `[Lover Unlocked]` — the rung this turn reached, only when the ladder says it is announceable.
+ */
+export function statusBadges(input: UserStatus): string[] {
+  const badges: string[] = [];
+
+  const delta = xpDeltaText(input.xpDelta);
+  if (delta) badges.push(`[${delta}]`);
+
+  if (typeof input.flirtDelta === "number" && Number.isFinite(input.flirtDelta) && Math.trunc(input.flirtDelta) > 0) {
+    badges.push(`[Flirt +${Math.trunc(input.flirtDelta)}]`);
+  }
+
+  if (input.bondUnlocked && isBond(input.bond)) {
+    const name = bondUnlockLabel(input.bond);
+    if (name) badges.push(`[${name} Unlocked]`);
+  }
+
+  return badges;
+}
+
+/**
+ * Line 1: `Farris (คนรัก) ❤️ 109 [+15] [Flirt +1] #คนโปรด #คนขี้แกล้ง`
  *
  * Returns "" when there is no name to build a card around, which is what lets the caller fall back
  * to `FALLBACK_FOOTER` instead of shipping a footer of stray punctuation.
@@ -112,11 +154,8 @@ export function statusLineOf(input: FooterInput): string {
     const mark = bondEmoji(input.bond);
     if (mark) parts.push(mark);
   }
-  if (typeof input.xp === "number" && Number.isFinite(input.xp)) {
-    parts.push(String(Math.trunc(input.xp)));
-    const delta = xpDeltaText(input.xpDelta);
-    if (delta) parts.push(`[${delta}]`);
-  }
+  if (typeof input.xp === "number" && Number.isFinite(input.xp)) parts.push(String(Math.trunc(input.xp)));
+  parts.push(...statusBadges(input));
   const tags = nicknameTagsOf(input.nickname);
   if (tags) parts.push(tags);
   return parts.join(" ");

@@ -39,21 +39,38 @@ export type BondInfo = {
    * you a friend-in-progress, it makes you a friend.
    */
   jumpTo?: BondLevel;
+  /**
+   * Name used when the embed footer announces that this rung was reached
+   * (`[Lover Unlocked]`). Omitted means "never announced".
+   *
+   * Two rungs have no label on purpose, and the absence *is* the rule so a new rung cannot
+   * accidentally claim one:
+   *  - `stranger` is where everyone starts, so arriving there is not an achievement (and the ladder
+   *    never demotes to it anyway);
+   *  - `enemy` is a fall-out, not a condition passed — the owner's wording is "ผ่านเงื่อนไข", which
+   *    a demotion is not.
+   *
+   * English rather than Thai because the footer's other badge (`[Flirt +1]`) is English too, and one
+   * language keeps the two brackets looking like a pair.
+   */
+  unlockLabel?: string;
 };
 
 export const BOND_LEVELS: Record<BondLevel, BondInfo> = {
+  // No unlockLabel: everyone starts here, so arriving is not news (see BondInfo.unlockLabel).
   stranger: { level: 0, label: "คนแปลกหน้า", emoji: "👋" },
-  friend: { level: 1, label: "เพื่อน", emoji: "🙂" },
-  close_friend: { level: 2, label: "เพื่อนสนิท", emoji: "🤗" },
-  crush: { level: 3, label: "แอบชอบ", emoji: "💗" },
-  lover: { level: 4, label: "คนรัก", emoji: "❤️" },
-  soulmate: { level: 5, label: "คู่แท้", emoji: "💞" },
+  friend: { level: 1, label: "เพื่อน", emoji: "🙂", unlockLabel: "Friend" },
+  close_friend: { level: 2, label: "เพื่อนสนิท", emoji: "🤗", unlockLabel: "Close Friend" },
+  crush: { level: 3, label: "แอบชอบ", emoji: "💗", unlockLabel: "Crush" },
+  lover: { level: 4, label: "คนรัก", emoji: "❤️", unlockLabel: "Lover" },
+  soulmate: { level: 5, label: "คู่แท้", emoji: "💞", unlockLabel: "Soulmate" },
   // Falling out with her does not walk down the ladder, it lands here — and climbing back out
-  // lands on `friend` (level 1), never on `stranger`.
+  // lands on `friend` (level 1), never on `stranger`. No unlockLabel: a fall-out is not a
+  // condition passed.
   enemy: { level: -1, label: "ศัตรู", emoji: "💢", jumpTo: "friend" },
   // Family is fixed at level 3 and can never become romantic: the ladder stops at level 3.
-  sibling: { level: 3, label: "พี่น้อง", emoji: "🌱", maxLevel: 3 },
-  family: { level: 3, label: "ครอบครัว", emoji: "🏠", maxLevel: 3 },
+  sibling: { level: 3, label: "พี่น้อง", emoji: "🌱", maxLevel: 3, unlockLabel: "Sibling" },
+  family: { level: 3, label: "ครอบครัว", emoji: "🏠", maxLevel: 3, unlockLabel: "Family" },
 };
 
 export const BOND_NAMES = Object.keys(BOND_LEVELS) as BondLevel[];
@@ -85,6 +102,38 @@ export function bondLabel(bond: string | null | undefined): string {
  */
 export function bondEmoji(bond: string | null | undefined): string {
   return isBond(bond) ? BOND_LEVELS[bond].emoji : "";
+}
+
+/**
+ * The rung's announcement name, or "" when the footer must not announce it.
+ *
+ * `""` for `stranger`/`enemy` and for any unknown value — the same "no placeholder" rule as
+ * `bondEmoji()`: an empty badge is absent, a wrong badge claims a relationship the ladder did not
+ * grant.
+ */
+export function bondUnlockLabel(bond: string | null | undefined): string {
+  return isBond(bond) ? (BOND_LEVELS[bond].unlockLabel ?? "") : "";
+}
+
+/**
+ * Is moving `from` -> `to` an unlock worth announcing?
+ *
+ * Three rules, each covering a way a footer could otherwise lie:
+ *  1. The target must have an `unlockLabel` — that is what keeps `stranger` and `enemy` silent.
+ *  2. `from === to` is never an unlock; a rung held is not a rung reached.
+ *  3. A *demotion* is never an unlock. `close_friend -> friend` is xp falling, not a condition
+ *     passed, so it must not print `[Friend Unlocked]` on the way down. Sideways moves at the same
+ *     level (e.g. an accepted `family` proposal from `crush`) do count: the rung is new to them.
+ */
+export function isBondUnlock(from: string | null | undefined, to: string | null | undefined): boolean {
+  // `isBond()` rather than `bondUnlockLabel()` as the guard: it is the type predicate, so `to` stays
+  // usable as a key below, and reading the field directly keeps the "no label = silent" rule in one
+  // place.
+  if (!isBond(to)) return false;
+  if (!BOND_LEVELS[to].unlockLabel) return false;
+  if (!isBond(from)) return true;
+  if (from === to) return false;
+  return BOND_LEVELS[to].level >= BOND_LEVELS[from].level;
 }
 
 /**

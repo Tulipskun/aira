@@ -252,6 +252,11 @@ export async function applyState(state: IslaState, userId: string, timestamp: st
       bond: after?.bond ?? result.after,
       xp: after?.xp ?? result.xp,
       xpDelta: state.affinity,
+      // Both badges come from the writer, not from what the model asked for: `[Flirt +1]` only
+      // appears if `flirt_count` really moved, and `[X Unlocked]` only if the ladder says the move
+      // was a promotion onto an announceable rung (a demotion never is).
+      flirtDelta: result.flirtDelta,
+      bondUnlocked: result.bondUnlocked,
       nickname: after?.nickname ?? [],
     },
   };
