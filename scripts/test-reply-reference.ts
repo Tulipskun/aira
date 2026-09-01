@@ -11,7 +11,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MessagePayload } from "discord.js";
+import { ChannelType, Client, GatewayIntentBits, MessagePayload } from "discord.js";
+import type { Message } from "discord.js";
 
 const dir = mkdtempSync(join(tmpdir(), "aira-replyref-test-"));
 // Importing message-handler pulls in the pipeline and the SQLite layer, which runs the
@@ -23,6 +24,7 @@ const {
   buildReplyPayload,
   replyAnchorOf,
   replyReference,
+  textForModel,
   toScheduledMessage,
 } = await import("../src/bot/message-handler.js");
 const { MessageScheduler } = await import("../src/pipeline/scheduler.js");
@@ -309,6 +311,102 @@ console.log("=== 10. embed-footer: การตัดชื่อ/ป้าย �
   check("mood หลายช่องว่างถูกบีบ", footer.moodLineOf("  ยินดี   มาก  ") === "อารมณ์: ยินดี มาก");
   check("ทุก bond มี emoji", bondsAll.every((b) => bondEmoji(b) !== ""));
   check("bond ไม่รู้จัก -> emoji ว่าง", bondEmoji("nope") === "" && bondEmoji(null) === "");
+}
+
+console.log("=== 11. mention แบบอื่นที่ AI เห็น: role / channel / @everyone / slash / emoji ===");
+{
+  // Built on a REAL discord.js Client with REAL caches, offline (no login, no network).
+  // This exists because `cleanContent` is not one function we own: role/channel mentions resolve
+  // through guild.roles.cache and client.channels.cache, so the answer to "what does the model see"
+  // depends on whether those caches are populated. A hand-built object cannot answer that.
+  const GUILD = "1500000000000000001";
+  const CH = "1500000000000000002";
+  const ROLE = "1500000000000000003";
+  const UNKNOWN_ROLE = "1500000000000000004";
+  const OTHER_CH = "1500000000000000005";
+  const USER = "1500000000000000006";
+  const UNKNOWN_USER = "1500000000000000099";
+
+  const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  });
+  // discord.js marks `_add` as internal (private in the typings) and types `channels._add` as the
+  // base `Channel`, so the cache-seeding calls go through this helper. At runtime it is exactly what
+  // the gateway does with a GUILD_CREATE / MESSAGE_CREATE payload.
+  const add = <T>(manager: unknown, data: unknown): T =>
+    (manager as { _add(d: unknown): unknown })._add(data) as T;
+
+  // Same shape GUILD_CREATE delivers: roles[] and channels[] ride along, and Guild.js feeds them
+  // into guild.roles._add() / client.channels._add() (Guild.js:399,411). That is why the Guilds
+  // intent alone is enough for role/channel names to resolve.
+  add(client.guilds, {
+    id: GUILD,
+    name: "testguild",
+    unavailable: false,
+    roles: [
+      { id: GUILD, name: "@everyone", permissions: "0", color: 0, hoist: false, managed: false, position: 0 },
+      { id: ROLE, name: "Moderator", permissions: "0", color: 0, hoist: true, managed: false, position: 1 },
+    ],
+    channels: [{ id: CH, name: "general", type: ChannelType.GuildText, position: 0 }],
+    members: [
+      { user: { id: USER, username: "yuuta", discriminator: "0", global_name: "Yuuta G." }, nick: "Yuuta-nick", roles: [ROLE] },
+    ],
+  });
+  const channel = add<{ messages: unknown }>(client.channels, { id: CH, guild_id: GUILD, name: "general", type: ChannelType.GuildText });
+  add(client.channels, { id: OTHER_CH, guild_id: GUILD, name: "off-topic", type: ChannelType.GuildText });
+
+  const raw =
+    `สวัสดี <@&${ROLE}> <@&${UNKNOWN_ROLE}> <#${CH}> <#${OTHER_CH}> ` +
+    `<@${USER}> <@${UNKNOWN_USER}> @everyone @here </isla:1543313183719030816> <:DeepSeek:1234567890123456789>`;
+  const message = add<Message>(channel.messages, {
+    id: "1544000000000000001",
+    channel_id: CH,
+    guild_id: GUILD,
+    content: raw,
+    author: { id: USER, username: "yuuta", discriminator: "0", global_name: "Yuuta G." },
+    timestamp: "2026-09-01T00:00:00.000Z",
+    edited_timestamp: null,
+    mention_everyone: true,
+    mention_roles: [ROLE, UNKNOWN_ROLE],
+    mentions: [{ id: USER, username: "yuuta", discriminator: "0", global_name: "Yuuta G.", member: { nick: "Yuuta-nick", roles: [ROLE] } }],
+  });
+
+  const seen = textForModel(message);
+  check("role ที่รู้จัก -> @RoleName (ไม่ใช่ <@&id>)", seen.includes("@Moderator"), seen);
+  check("ไม่มี <@&...> หลงเหลือสำหรับ role ที่ cache มี", !seen.includes(`<@&${ROLE}>`));
+  check("role ไม่รู้จัก -> คง <@&id> ดิบไว้ (cleanContent ไม่แต่งชื่อ)", seen.includes(`<@&${UNKNOWN_ROLE}>`));
+  check("channel ใน guild -> #name", seen.includes("#general") && seen.includes("#off-topic"), seen);
+  check("ไม่มี <#id> ของ channel ที่ cache มี", !seen.includes(`<#${CH}>`) && !seen.includes(`<#${OTHER_CH}>`));
+  check("user mention -> @guild nickname (precedence เดียวกับ displayNameOf)", seen.includes("@Yuuta-nick"));
+  check("user ไม่รู้จัก -> คง <@id> ดิบ", seen.includes(`<@${UNKNOWN_USER}>`));
+  check("@everyone/@here ผ่านไปเหมือนเดิม (ไม่ใช่รูปแบบ <...>)", seen.includes("@everyone") && seen.includes("@here"));
+  check("slash command -> /isla (id หายไป)", seen.includes("/isla") && !seen.includes("1543313183719030816"), seen);
+  check("custom emoji -> :DeepSeek: ในข้อความที่ AI เห็น", seen.includes(":DeepSeek:"));
+  check("แต่ content ดิบยังมี id ให้ media.ts ใช้", message.content.includes("<:DeepSeek:1234567890123456789>"));
+  check("textForModel != content (พิสูจน์ว่าใช้ cleanContent จริง)", seen !== message.content);
+
+  // The scheduled turn — what actually reaches the pipeline and history — must carry the words.
+  const scheduled = toScheduledMessage(message);
+  check("toScheduledMessage ใช้ค่าเดียวกับ textForModel", scheduled?.text === seen);
+  // Only ids the caches DO know are replaced; an unknown id stays raw on purpose (asserted above),
+  // so the regex is scoped to the known ones rather than "no snowflakes at all".
+  check("snowflake ที่ cache รู้จัก หายจาก text ที่เข้า AI",
+    !new RegExp(`<@&${ROLE}>|<@${USER}>|<#${CH}>|<#${OTHER_CH}>`).test(scheduled?.text ?? ""),
+    scheduled?.text);
+  check("media ยังมาจาก content ดิบ: อิโมจิได้ id ไปทำ CDN URL",
+    scheduled?.media?.[0]?.url === "https://cdn.discordapp.com/emojis/1234567890123456789.png",
+    JSON.stringify(scheduled?.media));
+  check("role/channel mention ไม่ใช่ media (ไม่ไปดาวน์โหลดอะไรเพิ่ม)",
+    (scheduled?.media?.length ?? 0) === 1);
+
+  // Proof that the caches — not a hardcoded table — are the source of the names.
+  client.guilds.cache.get(GUILD)!.roles.cache.delete(ROLE);
+  client.channels.cache.delete(OTHER_CH);
+  const degraded = textForModel(message);
+  check("ลบ role ออกจาก cache -> กลายเป็น <@&id> ดิบ (ชื่อมาจาก cache ล้วน ๆ)",
+    !degraded.includes("@Moderator") && degraded.includes(`<@&${ROLE}>`), degraded);
+  check("ลบ channel ออกจาก cache -> กลายเป็น <#id> ดิบ",
+    !degraded.includes("#off-topic") && degraded.includes(`<#${OTHER_CH}>`));
 }
 
 rmSync(dir, { recursive: true, force: true });
