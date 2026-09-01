@@ -20,6 +20,10 @@ export const config = {
     geminiKeyState: process.env.GEMINI_KEY_STATE_FILE ?? ".aira/gemini-key-state.json",
     geminiThoughtSignatures: process.env.GEMINI_THOUGHT_SIGNATURE_FILE ?? ".aira/gemini-thought-signatures.json",
     gemini1SystemPrompt: process.env.GEMINI1_SYSTEM_PROMPT_FILE ?? "./src/gemini/prompts/isla.md",
+    // Gemini 2's instruction as a template: prose with {{placeholders}} filled from the code that owns
+    // each number (see gemini/prompt-template.ts + gemini2PromptValues()). Re-read per request and
+    // cached by mtime, so editing it needs no restart — unlike Gemini 1's, which is read once at boot.
+    gemini2SystemPrompt: process.env.GEMINI2_SYSTEM_PROMPT_FILE ?? "./src/gemini/prompts/isla-state.md",
     geminiPayloadDump: process.env.GEMINI_DEBUG_PAYLOAD_FILE ?? ".aira/logs/gemini-payload.jsonl",
     // Isla's expression images. The directory *is* the enum offered to Gemini 2, so adding a
     // picture needs no code change. Relative paths resolve from the project root (see bot/images.ts).

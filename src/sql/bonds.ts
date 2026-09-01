@@ -54,23 +54,36 @@ export type BondInfo = {
    * language keeps the two brackets looking like a pair.
    */
   unlockLabel?: string;
+  /**
+   * How this rung is granted, in the form Gemini 2 is shown.
+   *
+   * Data rather than a hand-written paragraph in `bondLadderWithThresholds()`: that function used to
+   * be nine literal lines repeating each rung's name, level and label a second time, so adding a
+   * rung here left it silently absent from the text the model reads. `ask` is what the user has to
+   * request, in Thai, for the proposal-based rungs.
+   */
+  reach?: "band" | "xp" | "xpWithFlirts" | "proposal" | "proposalCapped" | "enemy";
+  /** For `proposal`: the rung the user must already hold for an accepted request to grant this one. */
+  reachAfter?: BondLevel;
+  /** For the proposal rungs: what the user has to ask for, in Thai. */
+  ask?: string;
 };
 
 export const BOND_LEVELS: Record<BondLevel, BondInfo> = {
   // No unlockLabel: everyone starts here, so arriving is not news (see BondInfo.unlockLabel).
-  stranger: { level: 0, label: "คนแปลกหน้า", emoji: "👋" },
-  friend: { level: 1, label: "เพื่อน", emoji: "🙂", unlockLabel: "Friend" },
-  close_friend: { level: 2, label: "เพื่อนสนิท", emoji: "🤗", unlockLabel: "Close Friend" },
-  crush: { level: 3, label: "แอบชอบ", emoji: "💗", unlockLabel: "Crush" },
-  lover: { level: 4, label: "คนรัก", emoji: "❤️", unlockLabel: "Lover" },
-  soulmate: { level: 5, label: "คู่แท้", emoji: "💞", unlockLabel: "Soulmate" },
+  stranger: { level: 0, label: "คนแปลกหน้า", emoji: "👋", reach: "band" },
+  friend: { level: 1, label: "เพื่อน", emoji: "🙂", unlockLabel: "Friend", reach: "xp" },
+  close_friend: { level: 2, label: "เพื่อนสนิท", emoji: "🤗", unlockLabel: "Close Friend", reach: "xp" },
+  crush: { level: 3, label: "แอบชอบ", emoji: "💗", unlockLabel: "Crush", reach: "xpWithFlirts" },
+  lover: { level: 4, label: "คนรัก", emoji: "❤️", unlockLabel: "Lover", reach: "proposal", reachAfter: "crush", ask: "ขอคบ" },
+  soulmate: { level: 5, label: "คู่แท้", emoji: "💞", unlockLabel: "Soulmate", reach: "proposal", reachAfter: "lover", ask: "ขอแต่งงาน" },
   // Falling out with her does not walk down the ladder, it lands here — and climbing back out
   // lands on `friend` (level 1), never on `stranger`. No unlockLabel: a fall-out is not a
   // condition passed.
-  enemy: { level: -1, label: "ศัตรู", emoji: "💢", jumpTo: "friend" },
+  enemy: { level: -1, label: "ศัตรู", emoji: "💢", jumpTo: "friend", reach: "enemy" },
   // Family is fixed at level 3 and can never become romantic: the ladder stops at level 3.
-  sibling: { level: 3, label: "พี่น้อง", emoji: "🌱", maxLevel: 3, unlockLabel: "Sibling" },
-  family: { level: 3, label: "ครอบครัว", emoji: "🏠", maxLevel: 3, unlockLabel: "Family" },
+  sibling: { level: 3, label: "พี่น้อง", emoji: "🌱", maxLevel: 3, unlockLabel: "Sibling", reach: "proposalCapped", ask: "ขอเป็นพี่น้อง" },
+  family: { level: 3, label: "ครอบครัว", emoji: "🏠", maxLevel: 3, unlockLabel: "Family", reach: "proposalCapped", ask: "ขอเป็นครอบครัว" },
 };
 
 export const BOND_NAMES = Object.keys(BOND_LEVELS) as BondLevel[];
@@ -171,23 +184,71 @@ export function bondLadderText(): string {
 }
 
 /**
+ * The xp band of each rung granted by xp alone, as a bare range.
+ *
+ * `deriveBond()` reads `XP_THRESHOLDS` directly; these strings are the same arithmetic in the form the
+ * model is shown. They exist because the stranger/friend/close_friend bands were computed in two
+ * places (the ladder text and Gemini 2's per-turn `<current_state>`), and a band edited in only one of
+ * them would tell the model the ladder says something it does not.
+ */
+export function xpBandRange(bond: "enemy" | "stranger" | "friend" | "close_friend"): string {
+  switch (bond) {
+    case "enemy":
+      return `<= ${XP_THRESHOLDS[-1]}`;
+    case "stranger":
+      return `${XP_THRESHOLDS[-1] + 1}..${XP_THRESHOLDS[1] - 1}`;
+    case "friend":
+      return `${XP_THRESHOLDS[1]}..${XP_THRESHOLDS[2] - 1}`;
+    case "close_friend":
+      return `>= ${XP_THRESHOLDS[2]}`;
+  }
+}
+
+/** The same bands as one line: `enemy <= -150, stranger -149..149, friend 150..499, close_friend >= 500`. */
+export function xpBandsText(): string {
+  return (["enemy", "stranger", "friend", "close_friend"] as const)
+    .map((bond) => `${bond} ${xpBandRange(bond)}`)
+    .join(", ");
+}
+
+/**
  * The same ladder with the xp gates spelled out — what Gemini 2 is given.
+ *
+ * Generated from `BOND_LEVELS[*].reach` rather than typed out line by line. It used to be nine
+ * literal strings that repeated each rung's name, level and label, so a rung added to the ladder
+ * above silently went missing from the text the model reads — and the numbers in it
+ * (`xp >= 500`, `>= ${FLIRT_REQUIREMENT}`) were a fourth copy of thresholds that `deriveBond()`
+ * reads from `XP_THRESHOLDS` directly.
  *
  * Kept separate from `bondLadderText()` because Gemini 1 also reads the plain version, and showing
  * it the numeric gates invites it to talk about a score with the user.
  */
 export function bondLadderWithThresholds(): string {
-  const lines = [
-    `- stranger (ระดับ 0) = คนแปลกหน้า — xp ${XP_THRESHOLDS[-1] + 1}..${XP_THRESHOLDS[1] - 1}`,
-    `- friend (ระดับ 1) = เพื่อน — xp >= ${XP_THRESHOLDS[1]}`,
-    `- close_friend (ระดับ 2) = เพื่อนสนิท — xp >= ${XP_THRESHOLDS[2]}`,
-    `- crush (ระดับ 3) = แอบชอบ — xp >= ${XP_THRESHOLDS[3]} และถูกจีบสะสม >= ${FLIRT_REQUIREMENT} ครั้ง`,
-    `- lover (ระดับ 4) = คนรัก — ต้องเป็น crush ก่อน + ผู้ใช้ขอคบ + Isla ตอบตกลง (xp >= ${PROPOSAL_XP})`,
-    `- soulmate (ระดับ 5) = คู่แท้ — ต้องเป็น lover ก่อน + ผู้ใช้ขอแต่งงาน + Isla ตอบตกลง (xp >= ${PROPOSAL_XP})`,
-    `- sibling (ระดับ 3) = พี่น้อง — xp >= ${PROPOSAL_XP} + ขอเป็นพี่น้อง + Isla ตอบตกลง (ไประดับ 4 ไม่ได้)`,
-    `- family (ระดับ 3) = ครอบครัว — xp >= ${PROPOSAL_XP} + ขอเป็นครอบครัว + Isla ตอบตกลง (ไประดับ 4 ไม่ได้)`,
-    `- enemy (ระดับ -1) = ศัตรู — xp <= ${XP_THRESHOLDS[-1]} (กลับมาปกติต้องไปที่ friend เท่านั้น)`,
-  ];
+  const lines = [...ASCENDING, ...SPECIAL].map((name) => {
+    const info = BOND_LEVELS[name];
+    const head = `- ${name} (ระดับ ${info.level}) = ${info.label}`;
+    switch (info.reach) {
+      case "band":
+        return `${head} — xp ${xpBandRange("stranger")}`;
+      case "xp":
+        return `${head} — xp >= ${XP_THRESHOLDS[info.level]}`;
+      case "xpWithFlirts":
+        return `${head} — xp >= ${XP_THRESHOLDS[info.level]} และถูกจีบสะสม >= ${FLIRT_REQUIREMENT} ครั้ง`;
+      case "proposal":
+        return `${head} — ต้องเป็น ${info.reachAfter} ก่อน + ผู้ใช้${info.ask} + Isla ตอบตกลง (xp >= ${PROPOSAL_XP})`;
+      case "proposalCapped": {
+        // "ไประดับ 4 ไม่ได้" — 4 is the first rung above this one's ceiling, read off the ladder so
+        // the sentence cannot claim a level that does not exist.
+        const above = ASCENDING.find((rung) => BOND_LEVELS[rung].level > (info.maxLevel ?? info.level));
+        return `${head} — xp >= ${PROPOSAL_XP} + ${info.ask} + Isla ตอบตกลง${above ? ` (ไประดับ ${BOND_LEVELS[above].level} ไม่ได้)` : ""}`;
+      }
+      case "enemy":
+        return `${head} — xp ${xpBandRange("enemy")}${info.jumpTo ? ` (กลับมาปกติต้องไปที่ ${info.jumpTo} เท่านั้น)` : ""}`;
+      default:
+        // A rung with no `reach` is a rung nobody can earn, so say nothing rather than invent a rule.
+        return head;
+    }
+  });
   return lines.join("\n");
 }
 

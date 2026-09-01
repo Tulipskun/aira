@@ -1,7 +1,19 @@
 import { ctxWindowCreate, fakeToolCallResult, sendRequestGemini, type GeminiRequest } from "../gemini/client.js";
 import { prepareMedia, type MediaSource } from "../bot/media.js";
 import { ISLA_REPLY_SCHEMA, parseIslaReply } from "../gemini/reply-format.js";
-import { ISLA_STATE_SCHEMA, parseIslaState, requiredFieldsFor, romanticallyAvailable, type IslaState } from "../gemini/state-format.js";
+import {
+  AFFINITY_MAX,
+  AFFINITY_MIN,
+  AFFINITY_NEUTRAL_FLOOR,
+  affinityScaleText,
+  FACTS_PER_TURN,
+  ISLA_STATE_SCHEMA,
+  NO_IMAGE,
+  parseIslaState,
+  requiredFieldsFor,
+  romanticallyAvailable,
+  type IslaState,
+} from "../gemini/state-format.js";
 import { currentTimeBlock, thaiTimestamp } from "../gemini/time.js";
 import { imageListForPrompt } from "../bot/images.js";
 import type { UserStatus } from "../bot/embed-footer.js";
@@ -19,16 +31,20 @@ import {
   type UserProfile,
 } from "../sql/profile.js";
 import {
+  BOND_LEVELS,
   bondLabel,
   bondLadderWithThresholds,
   bondLevel,
+  bondRecoveryFrom,
   FLIRT_REQUIREMENT,
   PROPOSAL_XP,
   XP_THRESHOLDS,
+  xpBandsText,
 } from "../sql/bonds.js";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { config } from "../config.js";
+import { loadPromptTemplate, renderPrompt, type CachedPrompt, type PromptValues } from "../gemini/prompt-template.js";
 import type { Interactions } from "@google/genai";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..");
@@ -60,7 +76,50 @@ export type ProcessMessageResult = {
 const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
 
 /**
- * Gemini 2's instruction — the relationship analyst.
+ * The numbers Gemini 2's instruction asks for, from the modules that own them.
+ *
+ * Every value here already exists in code: `AFFINITY_NEUTRAL_FLOOR`, the affinity bands, the ladder
+ * and its xp gates, the flirt requirement, and the `images/` directory. The instruction file used to
+ * restate them as Thai prose — `+${10}` typed out beside the constant that says 10, "ระดับ 3" written
+ * by hand beside `BOND_LEVELS.sibling.level` — and a restated number is one that can drift away from
+ * the rule that actually uses it. Changing a threshold in `sql/bonds.ts` now reaches the prompt on
+ * its own.
+ *
+ * Nothing in here is per-user or per-turn (see `gemini2SystemPrompt()` for why that matters).
+ */
+export function gemini2PromptValues(): PromptValues {
+  return {
+    affinity_min: AFFINITY_MIN,
+    affinity_max: AFFINITY_MAX,
+    affinity_floor: AFFINITY_NEUTRAL_FLOOR,
+    affinity_tiers: affinityScaleText(),
+    no_image: NO_IMAGE,
+    facts_per_turn: FACTS_PER_TURN,
+    bond_ladder: bondLadderWithThresholds(),
+    flirt_requirement: FLIRT_REQUIREMENT,
+    proposal_xp: PROPOSAL_XP,
+    enemy_xp: XP_THRESHOLDS[-1],
+    recovery_bond: bondRecoveryFrom("enemy") ?? "friend",
+    capped_level: BOND_LEVELS.sibling.maxLevel ?? BOND_LEVELS.sibling.level,
+    expression_images: imageListForPrompt(),
+  };
+}
+
+/** The cache slot for the instruction file. Module-level so the mtime check is per process. */
+const gemini2PromptCache: { current?: CachedPrompt } = {
+  // Read once at module load, like Gemini 1's prompt: a missing or unreadable instruction file is a
+  // broken deploy and should stop the bot at startup, not degrade its first reply.
+  current: loadPromptTemplate(
+    resolve(PROJECT_ROOT, config.paths.gemini2SystemPrompt),
+    "GEMINI2_SYSTEM_PROMPT_FILE",
+  ),
+};
+
+/**
+ * Gemini 2's instruction — the relationship analyst, rendered from `prompts/isla-state.md`.
+ *
+ * The wording is a file (relocatable with `GEMINI2_SYSTEM_PROMPT_FILE`) exactly like Gemini 1's
+ * character prompt, and the numbers in it come from `gemini2PromptValues()` above.
  *
  * It used to answer with an `execute` tool call carrying an `operations` array. It now answers with
  * one flat JSON object like Gemini 1 does, which removes a whole class of failure: the tool path
@@ -72,39 +131,14 @@ const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemP
  * see `runGemini2()`. The image catalog is in here because it changes only when somebody adds a
  * picture to `images/`, never between turns.
  *
- * A function rather than a module-level const so that adding a picture takes effect on the next
- * message without a restart. While the directory is unchanged the returned string is byte-identical
- * across calls, so prompt caching is unaffected by the liveness.
+ * Re-read per request but cached by mtime, so editing the file or dropping in a picture takes effect
+ * on the next message without a restart. While neither changes, the returned string is
+ * byte-identical across calls, so prompt caching is unaffected by the liveness.
  */
 export function gemini2SystemPrompt(): string {
-    return [
-    "วิเคราะห์บทสนทนาระหว่าง Isla และผู้ใช้ในเทิร์นนี้ แล้วตอบเป็น JSON ตาม schema ที่กำหนดเท่านั้น",
-    "",
-    "สิ่งที่ต้องรายงาน:",
-    "- affinity: คะแนนความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (-100..100) — ค่านี้คือ xp ของระบบ แต่ให้คิดเป็น 'ความใกล้ชิด'",
-    `  การคุยกันปกติ/ไม่ใช่ด้านลบ ต้องได้อย่างน้อย +${10}; หยาบคาย/ทำร้ายความรู้สึกติดลบ; ด่าซ้ำ ๆ หรือดูถูกแรง ๆ ติดลบลึก`,
-    "- is_flirt: true เมื่อผู้ใช้จีบ/พูดหวาน/เข้าหาเชิงชู้สาว และ Isla ไม่ได้ปฏิเสธ — จำเป็นเมื่อผู้ใช้ยังพัฒนาเป็นแฟนได้",
-    "- approve_lover: true เมื่อผู้ใช้ขอเป็นแฟน **และ Isla ตอบตกลงในข้อความของเธอเอง** — จำเป็นเมื่อระดับคือ crush",
-    "- approve_soulmate: true เมื่อผู้ใช้ขอแต่งงาน **และ Isla ตอบตกลง** — จำเป็นเมื่อระดับคือ lover",
-    "- approve_sibling / approve_family: เช่นเดียวกัน เมื่อผู้ใช้ขอเป็นพี่น้อง/ครอบครัว และ Isla ตอบตกลง",
-    `- select_image: ชื่อไฟล์รูปของไอล่าที่ตรงกับอารมณ์ในข้อความของเธอที่สุดในเทิร์นนี้ ` +
-    `ต้องเลือกจากรายการใน <expression_images> เท่านั้น (หรือส่ง "none" เมื่อไม่มีรูปไหนตรงจริง)`,
-    "- add_facts: ข้อเท็จจริงเกี่ยวกับผู้ใช้โดยตรง (ไม่จำเป็น, ไม่เกิน 3 ข้อ, ไม่มีก็ส่ง [])",
-    "- add_nicknames: ฉายาที่ไอล่าเพิ่งตั้งให้ผู้ใช้ในข้อความของเธอ (ไม่จำเป็น, ไม่มีก็ส่ง [])",
-    "- ingest_memory: ความทรงจำที่ควรเก็บระยะยาว (ไม่จำเป็น, ไม่มีก็ส่ง \"\")",
-    "",
-    "กฎสำคัญ:",
-    "1. ห้ามเลือกระดับความสัมพันธ์เอง — ไม่มีฟิลด์ bond ในคำตอบ ระบบจะคำนวณระดับจาก affinity, จำนวนครั้งที่ถูกจีบ และการตอบตกลงของเธอ",
-    "2. approve_* คือการรายงานสิ่งที่ Isla ตอบไปในข้อความของเธอแล้ว ไม่ใช่การตัดสินใจใหม่ — ถ้าเธอไม่ตกลง ต้องส่ง false",
-    "3. ส่งเฉพาะสิ่งที่เทิร์นนี้ทำให้เปลี่ยนจริง ๆ แต่ affinity และ select_image ต้องมีเสมอ",
-    "",
-    bondRulesBlock(),
-    "",
-    "<expression_images>",
-    "ไฟล์รูปที่มีอยู่ในโฟลเดอร์ images — select_image ต้องเป็นชื่อไฟล์หนึ่งในนี้:",
-    imageListForPrompt(),
-    "</expression_images>",
-    ].join("\n");
+  const file = resolve(PROJECT_ROOT, config.paths.gemini2SystemPrompt);
+  gemini2PromptCache.current = loadPromptTemplate(file, "GEMINI2_SYSTEM_PROMPT_FILE", gemini2PromptCache.current);
+  return renderPrompt(gemini2PromptCache.current.text, gemini2PromptValues(), "gemini2");
 }
 
 /**
@@ -150,7 +184,7 @@ export function stateBlock(profile: UserProfile | null): string {
     `flirt_count: ${profile?.flirtCount ?? 0} (ต้องได้อย่างน้อย ${FLIRT_REQUIREMENT} ครั้งจึงจะเป็น crush ได้)`,
     `approved_pending: ${pending.length ? pending.join(", ") : "-"}`,
     `xp ที่ต้องมีก่อนเลื่อนระดับจากการตอบตกลง: ${PROPOSAL_XP}`,
-    `ขอบเขต xp: enemy <= ${XP_THRESHOLDS[-1]}, stranger ${XP_THRESHOLDS[-1] + 1}..${XP_THRESHOLDS[1] - 1}, friend ${XP_THRESHOLDS[1]}..${XP_THRESHOLDS[2] - 1}, close_friend >= ${XP_THRESHOLDS[2]}`,
+    `ขอบเขต xp: ${xpBandsText()}`,
     `ฟิลด์ที่จำเป็นต้องตอบในเทิร์นนี้: ${requiredFieldsFor(bond).join(", ")}`,
     romanticallyAvailable(bond)
       ? `ระดับนี้พัฒนาเป็นเชิงชู้สาวได้ — ตอบ is_flirt ด้วย`
@@ -158,28 +192,6 @@ export function stateBlock(profile: UserProfile | null): string {
     `</current_state>`,
   ];
   return lines.join("\n");
-}
-
-/**
- * The ladder as Gemini 2 must read it.
- *
- * The rules are stated as *facts the model reports*, not as actions it may take — there is no
- * `set_bond` any more, and the text says so explicitly so the model does not try to name a rung.
- */
-export function bondRulesBlock(): string {
-  return [
-    "<bond_levels>",
-    bondLadderWithThresholds(),
-    "",
-    "เงื่อนไขที่ระบบใช้คำนวณระดับ (คุณไม่ต้องคำนวณเอง แค่รายงานสิ่งที่เกิดขึ้น):",
-    `- ระดับเปลี่ยนจาก xp เป็นหลัก; crush ต้องมี flirt_count >= ${FLIRT_REQUIREMENT}`,
-    `- ทุกครั้งที่ผู้ใช้จีบแล้ว Isla ไม่ปฏิเสธ จะนับ flirt_count +1 อัตโนมัติจาก is_flirt`,
-    `- lover/soulmate/sibling/family ต้องมีการขอและ Isla ตอบตกลง (approve_*) และ xp >= ${PROPOSAL_XP}`,
-    "- sibling/family อยู่ระดับ 3 และไปต่อเป็น lover/soulmate ไม่ได้เลยตลอดกาล",
-    `- enemy เกิดเมื่อ xp <= ${XP_THRESHOLDS[-1]} และเมื่อกลับมาปกติจะกระโดดไปที่ friend เท่านั้น`,
-    "ห้ามเลือกระดับความสัมพันธ์เอง ส่งแค่สัญญาณของเทิร์นนี้",
-    "</bond_levels>",
-  ].join("\n");
 }
 
 /** What one turn's state changed, in the shape the reply path needs. */

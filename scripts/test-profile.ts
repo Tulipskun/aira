@@ -5,9 +5,11 @@
 // No network. Every case uses a throwaway SQLite file, and the applyState cases never set
 // `ingest_memory` — that is the only field that would reach Chroma/Gemini.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+const PROJECT_ROOT = join(import.meta.dirname, "..");
 
 let pass = 0;
 let fail = 0;
@@ -561,11 +563,80 @@ const blocks = await loadProfile(process.env.SQLITE_PATH, "blocks");
     return pipe.stateBlock(blocks.getUserProfile("p2")).includes("approved_pending: lover");
   })(), pipe.stateBlock(blocks.getUserProfile("p2")));
 
-  const rules = pipe.bondRulesBlock();
-  check("rules list every rung", bonds.BOND_NAMES.every((n) => rules.includes(n)));
-  check("rules wrapped", rules.startsWith("<bond_levels>") && rules.trimEnd().endsWith("</bond_levels>"));
-  check("rules state the xp gates", rules.includes("-150") && rules.includes("500"), rules);
-  check("rules forbid naming a bond", rules.includes("ห้ามเลือกระดับความสัมพันธ์เอง"), rules);
+  // The ladder rules used to be a `bondRulesBlock()` function here; they are a section of the prompt
+  // file now, so they are asserted through the rendered instruction in section K2.
+  const bands = bonds.xpBandsText();
+  check("xp bands carry every xp-only rung", ["-150", "-149..149", "150..499", ">= 500"].every((n) => bands.includes(n)), bands);
+  check("state block uses the shared band line", state.includes(`ขอบเขต xp: ${bands}`), state);
+}
+
+// ---------------------------------------------------------------- K2. the prompt template
+console.log("=== K2. Gemini 2's instruction is a rendered file ===");
+{
+  const tpl = await import("../src/gemini/prompt-template.js");
+  const cfg = (await import("../src/config.js")).config;
+  const promptFile = join(PROJECT_ROOT, "src/gemini/prompts/isla-state.md");
+
+  check("the instruction file exists", existsSync(promptFile));
+  check("config points at it", cfg.paths.gemini2SystemPrompt === "./src/gemini/prompts/isla-state.md", cfg.paths.gemini2SystemPrompt);
+
+  const rendered = pipe.gemini2SystemPrompt();
+  const asks = tpl.promptPlaceholders(readFileSync(promptFile, "utf8"));
+  check("the template asks for something", asks.length > 0, asks.join(","));
+  check("every placeholder got a value", !rendered.includes("{{"), (rendered.match(/\{\{[^}]*\}\}/g) ?? []).join(","));
+  check("nothing the template did not ask for is injected",
+    asks.every((key) => key in pipe.gemini2PromptValues()),
+    Object.keys(pipe.gemini2PromptValues()).filter((k) => !asks.includes(k)).join(","));
+  check("the maintainer comment never reaches the model", !rendered.includes("<!--") && !rendered.includes("placeholders"), rendered.slice(0, 80));
+  check("renders the same bytes twice (prompt cache)", pipe.gemini2SystemPrompt() === rendered);
+
+  // --- the numbers come from the code, not from prose typed into the file ---
+  const st = await import("../src/gemini/state-format.js");
+  check("affinity range rendered", rendered.includes(`(${st.AFFINITY_MIN}..${st.AFFINITY_MAX})`), rendered.slice(0, 200));
+  check("affinity floor rendered", rendered.includes(`อย่างน้อย +${st.AFFINITY_NEUTRAL_FLOOR}`));
+  check("affinity bands match the schema's wording", rendered.includes(st.affinityScaleText()), st.affinityScaleText());
+  check("the fact cap rendered", rendered.includes(`ไม่เกิน ${st.FACTS_PER_TURN} ข้อ`));
+  check("the no-image answer is the constant", rendered.includes(`"${st.NO_IMAGE}"`), rendered.slice(0, 300));
+  check("ladder lists every rung", bonds.BOND_NAMES.every((n: string) => rendered.includes(n)), bonds.BOND_NAMES.filter((n: string) => !rendered.includes(n)).join(","));
+  check("ladder wrapped in <bond_levels>", rendered.includes("<bond_levels>") && rendered.includes("</bond_levels>"));
+  check("ladder states the xp gates", rendered.includes("xp >= 500") && rendered.includes("xp <= -150"));
+  check("flirt requirement rendered from bonds.ts", rendered.includes(`flirt_count >= ${bonds.FLIRT_REQUIREMENT}`));
+  check("proposal xp rendered from bonds.ts", rendered.includes(`xp >= ${bonds.PROPOSAL_XP}`));
+  check("instruction forbids naming a bond", rendered.includes("ห้ามเลือกระดับความสัมพันธ์เอง"));
+  check("catalog is in the instruction", rendered.includes("<expression_images>") && rendered.includes(imageListForPrompt()));
+  check("the retired tool vocabulary stayed retired", !rendered.includes("adjust_affection") && !rendered.includes("set_bond") && !rendered.includes("add_xp"));
+  check("bondRulesBlock is gone", !("bondRulesBlock" in pipe));
+
+  // --- relocatable, and re-read without a restart ---
+  const custom = join(dir, "custom-state.md");
+  writeFileSync(custom, "เทสต์เท่านั้น affinity {{affinity_floor}}\n<!-- note -->\n");
+  const original = cfg.paths.gemini2SystemPrompt;
+  cfg.paths.gemini2SystemPrompt = custom;
+  check("GEMINI2_SYSTEM_PROMPT_FILE relocates the instruction", pipe.gemini2SystemPrompt() === "เทสต์เท่านั้น affinity 10", pipe.gemini2SystemPrompt());
+  writeFileSync(custom, "ฉบับใหม่ {{proposal_xp}}\n");
+  utimesSync(custom, new Date(), new Date(Date.now() + 2000));
+  check("editing the file takes effect with no restart", pipe.gemini2SystemPrompt() === `ฉบับใหม่ ${bonds.PROPOSAL_XP}`, pipe.gemini2SystemPrompt());
+  cfg.paths.gemini2SystemPrompt = original;
+  check("restoring the path restores the instruction", pipe.gemini2SystemPrompt() === rendered);
+
+  // --- the renderer itself ---
+  check("renderPrompt fills numbers and strings", tpl.renderPrompt("a {{x}} b {{y}}", { x: 1, y: "สอง" }) === "a 1 b สอง");
+  check("renderPrompt tolerates padded braces", tpl.renderPrompt("{{ x }}", { x: "v" }) === "v");
+  check("renderPrompt leaves an unknown key literal", tpl.renderPrompt("{{x}}", {}) === "{{x}}");
+  check("renderPrompt treats empty string as missing", tpl.renderPrompt("{{x}}", { x: "" }) === "{{x}}");
+  check("renderPrompt strips comments", tpl.renderPrompt("keep<!-- drop -->{{x}}", { x: "!" }) === "keep!");
+  check("promptPlaceholders ignores commented keys", tpl.promptPlaceholders("{{a}} <!-- {{b}} -->").join(",") === "a");
+  check("loadPromptTemplate throws with the env var named", (() => {
+    try {
+      tpl.loadPromptTemplate(join(dir, "nowhere.md"), "GEMINI2_SYSTEM_PROMPT_FILE");
+      return false;
+    } catch (error) {
+      return String(error).includes("GEMINI2_SYSTEM_PROMPT_FILE") && String(error).includes("file not found");
+    }
+  })());
+  const kept = tpl.loadPromptTemplate(custom, "GEMINI2_SYSTEM_PROMPT_FILE");
+  rmSync(custom);
+  check("an unreadable file keeps the last good text", tpl.loadPromptTemplate(custom, "GEMINI2_SYSTEM_PROMPT_FILE", kept).text === kept.text);
 }
 
 // ---------------------------------------------------------------- L. applyState
@@ -646,7 +717,12 @@ console.log("=== M. the wiring and the retired paths ===");
   check("Gemini 2 is given a JSON response_format", src.includes("schema: ISLA_STATE_SCHEMA"));
   check("Gemini 2 declares its stage explicitly", /stage: "gemini2"/.test(src));
   check("Gemini 2 no longer uses the tool path", !src.includes("EXECUTE_TOOL") && !src.includes('responseMode: "tool"'));
-  check("Gemini 2's instruction forbids setting a bond", src.includes("ห้ามเลือกระดับความสัมพันธ์เอง"));
+  // The instruction's wording is a prompt file now, so prose assertions read the file (and the
+  // rendered result in K2), never pipeline.ts.
+  const statePrompt = readFileSync("src/gemini/prompts/isla-state.md", "utf8");
+  check("Gemini 2's instruction forbids setting a bond", statePrompt.includes("ห้ามเลือกระดับความสัมพันธ์เอง"));
+  check("Gemini 2's instruction is no longer typed into pipeline.ts", !/วิเคราะห์บทสนทนา/.test(src));
+  check("the instruction file carries no numbers of its own", !/[-+]?\b\d{2,}\b/.test(statePrompt.replace(/<!--[\s\S]*?-->/g, "")), (statePrompt.match(/[-+]?\b\d{2,}\b/g) ?? []).join(","));
   check("Gemini 2 sees Gemini 1's recap", src.includes("reply.summery") && src.includes("สรุปของข้อความนี้"));
   check("applyState replaced applyExecute", src.includes("export async function applyState") && !src.includes("export async function applyExecute"));
   check("no retired stat is read anywhere", !src.includes(".trust") && !src.includes(".affection") && !src.includes(".familiarity"));
@@ -670,7 +746,7 @@ console.log("=== M. the wiring and the retired paths ===");
   check("the schema enum is read live, so it cannot drift from the prompt list", /get enum\(\) \{\s*return imageChoices\(\);/.test(state));
   check("Gemini 2's instruction is a function so a new picture needs no restart", /export function gemini2SystemPrompt\(\): string/.test(src) && src.includes("systemInstruction: gemini2SystemPrompt()"));
   check("no invented image names survived", !/["'](neutral|shy_smile|soft_smile|playful|laugh)["']/.test(state));
-  check("Gemini 2 is shown the catalog", src.includes("imageListForPrompt()") && src.includes("<expression_images>"));
+  check("Gemini 2 is shown the catalog", src.includes("imageListForPrompt()") && statePrompt.includes("<expression_images>"));
   check("the catalog sits in the cached system prompt, not the per-turn message", src.indexOf("imageListForPrompt()") < src.indexOf("export function profileBlock"));
   // Quoted literals only: the module's doc comment names a real file as an example, and that is
   // documentation, not a list that can drift.

@@ -59,6 +59,51 @@ export const AFFINITY_MAX = 100;
 export const AFFINITY_NEUTRAL_FLOOR = 10;
 
 /**
+ * How hard a turn hits the relationship, as the model is told.
+ *
+ * These bands exist only to steer the number — nothing in the ladder reads them, `deriveBond()` sees
+ * the resulting xp. But they are stated in **two** places that must agree: the `affinity` field
+ * description in the JSON schema, and Gemini 2's instruction file. Both are rendered from this list
+ * (`affinityScaleText()`), because a model told "+10 floor" in one place and "-1..-9 for mild
+ * negativity" in another will average the two instructions and produce a number nobody designed.
+ */
+export type AffinityTier = {
+  /** Lowest value in this band. */
+  min: number;
+  /** Highest value in this band. */
+  max: number;
+  /** What kind of turn lands here, in Thai. */
+  label: string;
+};
+
+export const AFFINITY_TIERS: readonly AffinityTier[] = [
+  { min: AFFINITY_NEUTRAL_FLOOR, max: AFFINITY_MAX, label: "การคุยปกติ/ไม่ใช่ด้านลบ" },
+  { min: -9, max: -1, label: "ด้านลบเล็กน้อย" },
+  { min: -40, max: -10, label: "ด่า/ทำร้ายความรู้สึก" },
+  { min: AFFINITY_MIN, max: -41, label: "หยาบคายมาก/ดูถูกซ้ำ ๆ" },
+];
+
+/** `+10..+100` / `-9..-1` — a positive band always carries its `+` so it cannot read as a minus. */
+function signed(value: number): string {
+  return value > 0 ? `+${value}` : String(value);
+}
+
+/** The bands as one line of prose, e.g. `การคุยปกติ +10..+100; ด้านลบเล็กน้อย -9..-1; …`. */
+export function affinityScaleText(separator = "; "): string {
+  return AFFINITY_TIERS.map((tier) => `${tier.label} ${signed(tier.min)}..${signed(tier.max)}`).join(separator);
+}
+
+/**
+ * How many facts she may learn from one turn.
+ *
+ * A reporting guideline the model is told twice (schema + instruction), so it lives here once. It is
+ * deliberately *not* enforced in `parseIslaState()`: a turn that reports four facts is not a
+ * malformed reply, and silently dropping the fourth would be the model deciding something the owner
+ * never asked for. `MAX_FACTS` in `sql/profile.ts` is the hard bound that does exist.
+ */
+export const FACTS_PER_TURN = 3;
+
+/**
  * What Gemini 2 must report about one turn.
  *
  * `bond` is deliberately absent — see the module comment.
@@ -109,9 +154,8 @@ export const ISLA_STATE_SCHEMA = {
     affinity: {
       type: "number",
       description:
-        "ค่าความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (-100 ถึง 100) — ยิ่งบวกยิ่งสนิท, ติดลบเมื่อแย่ลง " +
-        `การคุยปกติ/ไม่ใช่ด้านลบต้องได้อย่างน้อย +${AFFINITY_NEUTRAL_FLOOR}; ` +
-        "ด้านลบเล็กน้อย -1..-9; ด่า/ทำร้ายความรู้สึก -10..-40; หยาบคายมาก/ดูถูกซ้ำ ๆ -41..-100",
+        `ค่าความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (${AFFINITY_MIN} ถึง ${AFFINITY_MAX}) — ยิ่งบวกยิ่งสนิท, ติดลบเมื่อแย่ลง ` +
+        `(${affinityScaleText()})`,
     },
     is_flirt: {
       type: "boolean",
@@ -147,7 +191,7 @@ export const ISLA_STATE_SCHEMA = {
     add_facts: {
       type: "array",
       items: { type: "string" },
-      description: "ข้อเท็จจริงเกี่ยวกับผู้ใช้โดยตรง (ชื่อ, อายุ, การเรียน, งาน, ครอบครัว, ความชอบ, นิสัย) — ไม่เกิน 3 ข้อต่อเทิร์น",
+      description: `ข้อเท็จจริงเกี่ยวกับผู้ใช้โดยตรง (ชื่อ, อายุ, การเรียน, งาน, ครอบครัว, ความชอบ, นิสัย) — ไม่เกิน ${FACTS_PER_TURN} ข้อต่อเทิร์น`,
     },
     add_nicknames: {
       type: "array",
