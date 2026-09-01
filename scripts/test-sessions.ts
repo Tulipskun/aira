@@ -13,11 +13,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
 import { MessageFlags } from "discord.js";
+import type { ScheduledMessage } from "../src/pipeline/scheduler.js";
 
 let pass = 0;
 let fail = 0;
-function check(label: string, cond: boolean): void {
-  console.log(`  ${cond ? "✅" : "❌"} ${label}`);
+// `seen` mirrors test-profile.ts's check(): a failing assertion prints what it actually got, which
+// is the difference between "the room merged nothing" and being able to see why.
+function check(label: string, cond: boolean, seen?: unknown): void {
+  console.log(`  ${cond ? "✅" : "❌"} ${label}${cond || seen === undefined ? "" : ` -- got: ${JSON.stringify(seen)}`}`);
   cond ? pass++ : fail++;
 }
 
@@ -391,6 +394,115 @@ if (!chromaUp) {
 
   await chroma.deleteCollection({ name: process.env.CHROMA_COLLECTION });
   delete process.env.CHROMA_COLLECTION;
+}
+
+/* ------------------------------------------------------------------ *
+ * 13. What a session-keyed batch means downstream
+ *
+ * The scheduler, the ladder owner and the rename map all act *after* routing has been
+ * decided, and each is a place where a shared room could quietly credit the wrong
+ * person. They are checked here rather than in test-profile.ts §K3 because §K3 asks
+ * what the model is told; these ask what the code does with the batch it built.
+ * ------------------------------------------------------------------ */
+console.log("=== 13. batching, turn owner, renames in a shared stream ===");
+{
+  // Importing the pipeline runs the profile migration against SQLITE_PATH and pulls in the
+  // Gemini key pools, so both are pinned before the import: the temp DB (already current) and
+  // bogus keys, because a real key here would be silently spent by any accidental request.
+  process.env.SQLITE_PATH = dbPath;
+  process.env.CHROMA_COLLECTION = "aira_sessions_test_unused";
+  process.env.GEMINI1_API_KEYS = "bogus-key-for-offline-test";
+  process.env.GEMINI2_API_KEYS = "bogus-key-for-offline-test";
+  const pipe = await import("../src/pipeline/pipeline.js");
+  const { MessageScheduler } = await import("../src/pipeline/scheduler.js");
+  type Row = Parameters<typeof pipe.restateHistory>[0][number];
+
+  const mk = (userId: string, user: string, sessionKey: string, messageId: string): ScheduledMessage => ({
+    userId, user, text: `t-${messageId}`, timestamp: "2026-01-01T00:00:00.000Z", channelId: ROOM, messageId, sessionKey,
+  });
+  // `userId`/`user`/`fileName` are optional strings on HistoryMessage (a NULL column reads back as
+  // undefined), so the helper takes undefined rather than null — passing null here would model a
+  // shape the driver never actually returns.
+  const row = (id: number, role: "user" | "model", userId: string | undefined, user: string | undefined, text: string): Row =>
+    ({ id, role, userId, user, text, timestamp: "2026-01-01T00:00:00.000Z", summary: null, sessionKey: `group:${ROOM}` });
+
+  const flushed: ScheduledMessage[][] = [];
+  const scheduler = new MessageScheduler({ debounceMs: 40, maxWaitMs: 500, onFlush: (batch) => { flushed.push(batch); } });
+  // Alice, then Bob in the SAME room, then Alice again: one conversation, answered once.
+  scheduler.push(mk(ALICE, "Alice", `group:${ROOM}`, "a1"));
+  scheduler.push(mk(BOB, "Bob", `group:${ROOM}`, "b1"));
+  scheduler.push(mk(ALICE, "Alice", `group:${ROOM}`, "a2"));
+  // Carol never joined anything: her turn must not wait behind the room, nor merge into it.
+  scheduler.push(mk("carol", "Carol", keys.userSessionKey("carol"), "c1"));
+  check("two sessions pending, not three", scheduler.pendingCount() === 2);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  check("one flush per session", flushed.length === 2);
+  const room = flushed.find((batch) => batch[0].sessionKey === `group:${ROOM}`);
+  const solo = flushed.find((batch) => batch[0].sessionKey === keys.userSessionKey("carol"));
+  check("the room merged all three messages", room?.map((m) => m.messageId).join(",") === "a1,b1,a2");
+  check("and kept both speakers", new Set(room?.map((m) => m.userId)).size === 2);
+  check("arrival order survives the queue", room?.map((m) => m.user).join(",") === "Alice,Bob,Alice");
+  check("a private session stays its own batch", solo?.length === 1 && solo[0].messageId === "c1");
+  check("no batch ever spans two sessions", flushed.every((batch) => batch.every((m) => m.sessionKey === batch[0].sessionKey)));
+
+  // A second speaker must NOT cut off the turn that is about to answer the first one —
+  // that is exactly why interruptByOtherUser became interruptOtherSessions.
+  const interrupted: ScheduledMessage[][] = [];
+  const s2 = new MessageScheduler({ debounceMs: 5_000, maxWaitMs: 5_000, onFlush: (batch) => { interrupted.push(batch); } });
+  s2.push(mk(ALICE, "Alice", `group:${ROOM}`, "x1"));
+  s2.interruptOtherSessions(`group:${ROOM}`);
+  check("a message from the same room interrupts nothing", interrupted.length === 0 && s2.pendingCount() === 1);
+  s2.push(mk("dave", "Dave", keys.userSessionKey("dave"), "y1"));
+  s2.interruptOtherSessions(keys.userSessionKey("dave"));
+  check("a message from another session flushes the room", interrupted.length === 1 && interrupted[0][0].messageId === "x1");
+  check("and leaves its own queue running", s2.pendingCount() === 1);
+  s2.flushAll();
+  check("flushAll drains what is left", s2.pendingCount() === 0);
+
+  // --- whose ladder this turn moves ---
+  check("the owner is the LAST speaker",
+    pipe.turnOwner([{ userId: ALICE, user: "Alice" }, { userId: BOB, user: "Bob" }, { userId: "carol", user: "Carol" }])?.userId === "carol");
+  check("a private turn owns itself", pipe.turnOwner([{ userId: ALICE, user: "Alice" }])?.userId === ALICE);
+  check("nobody spoke, nobody advances", pipe.turnOwner([]) === null);
+  // She answers one person and rewards exactly that person, or the footer lies.
+  check("the ladder owner is the reply anchor's author",
+    room !== undefined && room[room.length - 1].userId === pipe.turnOwner(room.map((m) => ({ userId: m.userId, user: m.user })))?.userId);
+
+  // --- renames inside a SHARED stream ---
+  // restateHistory() used to take one (userId, name) pair. In a group window that is not enough:
+  // renaming Alice must not rename Bob, and must not touch Isla's own replies.
+  const shared = [
+    row(1, "user", ALICE, "OldAlice", "OldAlice: สวัสดี\nบรรทัดสอง"),
+    row(2, "model", undefined, undefined, "Isla: หวัดดีค่ะ"),
+    row(3, "user", BOB, "Bob", "Bob: หวัดดี"),
+    row(4, "user", ALICE, "OldAlice", "OldAlice: อีกแล้ว"),
+  ];
+  const restated = pipe.restateHistory(shared, new Map([[ALICE, "NewAlice"]]));
+  check("Alice's user_name is restamped", restated[0].user === "NewAlice" && restated[3].user === "NewAlice");
+  check("every line of hers is relabelled", restated[0].text === "NewAlice: สวัสดี\nบรรทัดสอง");
+  check("Bob is left alone", restated[2].user === "Bob" && restated[2].text === "Bob: หวัดดี");
+  check("Isla's reply is untouched", restated[1].text === "Isla: หวัดดีค่ะ" && restated[1].user === undefined);
+  check("an empty rename map changes nobody", pipe.restateHistory(shared, new Map()).every((r, i) => r.user === shared[i].user));
+  check("a name already current is a no-op",
+    pipe.restateHistory([row(1, "user", ALICE, "NewAlice", "NewAlice: หวัดดี")], new Map([[ALICE, "NewAlice"]]))[0].text === "NewAlice: หวัดดี");
+  // Speakers are matched by id, never by name: Bob may be *called* "Alice Jr." and renaming the
+  // real Alice must not reach into his rows.
+  const lookalike = pipe.restateHistory([row(1, "user", BOB, "Alice Jr.", "Alice Jr.: สวัสดี")], new Map([[ALICE, "NewAlice"]]));
+  check("a lookalike name is not rewritten by someone else's rename", lookalike[0].text === "Alice Jr.: สวัสดี" && lookalike[0].user === "Alice Jr.");
+
+  // --- the scoping has to be in the code, not merely available as helpers ---
+  const pipelineSource = readFileSync(join(import.meta.dirname, "../src/pipeline/pipeline.ts"), "utf8");
+  const scoped = pipelineSource
+    .split("\n")
+    .filter((line) => /getHistory\(|searchMemoriesByVector\(/.test(line) && !/^\s*(\/\/|\*|\/\*)/.test(line));
+  check("the pipeline does read history and memories", scoped.length >= 2, `${scoped.length} call site(s)`);
+  check("every one of them passes a session key", scoped.every((line) => line.includes("sessionKey")), scoped.join(" ⏎ "));
+  check("history is read for THIS session only", pipelineSource.includes("getHistory(50, sessionKey)"));
+  check("memories are recalled inside THIS session", pipelineSource.includes("searchMemoriesByVector(vector, 8, sessionKey)"));
+  check("the user turn is written with its key", pipelineSource.includes("timestamp, fileName, sessionKey }"));
+  check("her reply is written with the same key", pipelineSource.includes("timestamp: responseTimestamp, sessionKey }"));
+  check("the ladder moves for the owner, not the first speaker", pipelineSource.includes("applyState(state, owner.userId"));
+  check("a memory written here carries the session", pipelineSource.includes("text: state.ingestMemory, userId, timestamp, sessionKey }"));
 }
 
 rmSync(dir, { recursive: true, force: true });
