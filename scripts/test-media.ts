@@ -377,6 +377,50 @@ const emojiOnly = toScheduledMessage(fake("<a:dance:456>"));
 check("animated-emoji-only message is kept", (emojiOnly?.media?.length ?? 0) === 1 && emojiOnly?.media?.[0]?.mimeType === "image/gif", JSON.stringify(emojiOnly?.media));
 check("placeholder is Thai and non-empty", MEDIA_ONLY_TEXT.trim().length > 0 && !/[a-z]/.test(MEDIA_ONLY_TEXT));
 
+console.log("=== 9b. what the AI sees is cleanContent; what pulls media is raw content ===");
+{
+  const raw = "เฮ้ <@1540705689318592632> <:DeepSeek:123456789012345678>";
+  const cleaned = "เฮ้ @Yuuta :DeepSeek:";
+  // `fake()` is already cast to `never`, so it cannot be spread — build with the extra field instead.
+  const withClean = (content: string, cleanContent: string | null) =>
+    ({
+      content,
+      cleanContent,
+      author: { id: "u1", username: "tulip", displayName: "Tulip" },
+      member: null,
+      attachments: { values: () => [], first: () => null },
+      stickers: { values: () => [] },
+      createdTimestamp: 1_789_000_000_000,
+      channelId: "c1",
+    }) as never;
+  const scheduled = toScheduledMessage(withClean(raw, cleaned));
+  check("text ที่เข้า pipeline/history คือ cleanContent", scheduled?.text === cleaned, JSON.stringify(scheduled?.text));
+  check("ไม่มี snowflake หลงเหลือให้ AI", !scheduled?.text.includes("<@"));
+  check("แต่สื่อยังมาจาก content ดิบ -> ได้ id ของอิโมจิ",
+    scheduled?.media?.[0]?.url === "https://cdn.discordapp.com/emojis/123456789012345678.png",
+    JSON.stringify(scheduled?.media));
+  check("ชื่ออิโมจิยังเป็น :name:", scheduled?.media?.[0]?.name === ":DeepSeek:");
+
+  const emojiOnly = toScheduledMessage(withClean("<:DeepSeek:123456789012345678>", ":DeepSeek:"));
+  check("ข้อความที่มีแต่อิโมจิ: text ไม่ว่าง (ไม่ต้องพึ่ง MEDIA_ONLY_TEXT)", emojiOnly?.text === ":DeepSeek:");
+  check("และยังมี media จาก content ดิบ", (emojiOnly?.media?.length ?? 0) === 1);
+
+  check("cleanContent = null (ไม่มี channel) -> ใช้ content ดิบ",
+    toScheduledMessage(withClean("hi", null))?.text === "hi");
+  check("cleanContent ไม่มี (message ประกอบเอง) -> ใช้ content ดิบ", toScheduledMessage(fake("hi"))?.text === "hi");
+  check("cleanContent ว่างล้วน + ไม่มี media -> ทิ้งเหมือนเดิม",
+    toScheduledMessage(withClean("<@1540705689318592632>", "  ")) === null);
+
+  // The split is the whole point: media.ts must never be switched to cleanContent, or
+  // parseCustomEmojis() loses the id it needs for the CDN URL.
+  const mediaSource = readFileSync(new URL("../src/bot/media.ts", import.meta.url), "utf8");
+  check("media.ts ยัง parse อิโมจิจาก message.content (ดิบ)", /parseCustomEmojis\(message\.content/.test(mediaSource));
+  check("media.ts ไม่ใช้ cleanContent เลย", !mediaSource.includes("cleanContent"));
+  const handlerSource = readFileSync(new URL("../src/bot/message-handler.ts", import.meta.url), "utf8");
+  check("toScheduledMessage ใช้ textForModel() ไม่ใช่ content ตรง ๆ",
+    /const text = textForModel\(message\)\.trim\(\)/.test(handlerSource));
+}
+
 console.log("=== 10. the receive path must not drop empty-content messages before this point ===");
 // bot.ts used to `return` on empty content, which made all of the above unreachable from Discord:
 // a photo-only message never reached toScheduledMessage. Unit tests cannot exercise bot.ts (it

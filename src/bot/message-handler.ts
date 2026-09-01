@@ -21,8 +21,29 @@ export function displayNameOf(message: Message): string {
 /** What the model is told when a turn carries media but no words at all. */
 export const MEDIA_ONLY_TEXT = "(ไม่มีข้อความแนบมา)";
 
+/**
+ * The text the AI reads and history stores.
+ *
+ * Discord writes mentions into `message.content` as raw snowflakes — `<@1540705689318592632>` — so
+ * handing `content` to Gemini pointed the model at a 19-digit number instead of a person.
+ * `cleanContent` turns them into words: `@DisplayName` (guild nickname -> global name -> username,
+ * the same order as `displayNameOf()`), `@RoleName`, `#channel-name`, `/command`; custom emoji
+ * become `:name:`. Mentioned users need no GUILD_MEMBERS intent: `MessageMentions` adds
+ * MESSAGE_CREATE's own mention payload to the member/user caches before this getter reads them.
+ *
+ * Raw `content` remains what `mediaSourcesOf()` parses, because `cleanContent` rewrites
+ * `<:DeepSeek:123456789012345678>` to `:DeepSeek:` and `parseCustomEmojis()` needs the id to build
+ * the CDN URL. The two sources must stay separate — see project_knowledge "Keep raw content".
+ *
+ * `cleanContent` is null when a message has no channel object and absent on hand-built messages
+ * (tests, replays), so fall back to raw content rather than losing the turn.
+ */
+export function textForModel(message: Message): string {
+  return message.cleanContent ?? message.content ?? "";
+}
+
 export function toScheduledMessage(message: Message): ScheduledMessage | null {
-  const text = message.content.trim();
+  const text = textForModel(message).trim();
   // Sources are only URLs — resolving them costs no network, so this stays cheap enough for the
   // receive path. A sticker-only message has empty content but is still worth answering.
   const media = mediaSourcesOf(message);
