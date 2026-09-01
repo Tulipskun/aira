@@ -8,6 +8,12 @@ export type ScheduledMessage = {
   fileName?: string;
   channelId: string;
   /**
+   * Conversation stream this message belongs to (`user:<id>` / `group:<channel>`), resolved once at
+   * receive time by sql/sessions.ts. The scheduler batches on THIS rather than on `userId`, which is
+   * what makes a group session one merged turn from several people instead of one turn each.
+   */
+  sessionKey: string;
+  /**
    * Discord message id, used to reply to the *last* message of a flushed batch. Optional so
    * callers that build messages by hand (tests, replays) keep compiling — the reply is simply
    * skipped when it is missing rather than falling back to some earlier message in the batch.
@@ -44,49 +50,66 @@ export class MessageScheduler {
     this.onFlush = options.onFlush;
   }
 
+  /**
+   * Batches are keyed by session, not by user. Two people in the same group session therefore merge
+   * into ONE turn that she answers once, while two private sessions never wait on each other.
+   */
   push(message: ScheduledMessage): void {
     const now = Date.now();
-    const existing = this.pending.get(message.userId);
+    const key = message.sessionKey;
+    const existing = this.pending.get(key);
 
     if (existing) {
       existing.messages.push(message);
       clearTimeout(existing.timer);
-      existing.timer = setTimeout(() => this.flush(message.userId), this.delay(existing.firstAt, now));
+      existing.timer = setTimeout(() => this.flush(key), this.delay(existing.firstAt, now));
       return;
     }
 
     const pending: Pending = {
       messages: [message],
       firstAt: now,
-      timer: setTimeout(() => this.flush(message.userId), this.debounceMs),
+      timer: setTimeout(() => this.flush(key), this.debounceMs),
     };
-    this.pending.set(message.userId, pending);
+    this.pending.set(key, pending);
   }
 
-  interruptByOtherUser(userId: string): void {
-    for (const pendingUserId of this.pending.keys()) {
-      if (pendingUserId !== userId) this.flush(pendingUserId);
+  /**
+   * Flush every session except `sessionKey`. Called when a new message arrives so a session that is
+   * being written to keeps its own turn boundary, and the others answer what they already have.
+   */
+  interruptOtherSessions(sessionKey: string): void {
+    for (const pendingKey of this.pending.keys()) {
+      if (pendingKey !== sessionKey) this.flush(pendingKey);
     }
   }
 
-  flush(userId: string): void {
-    const pending = this.pending.get(userId);
+  /**
+   * @deprecated use `interruptOtherSessions`. Kept as an alias because callers historically spoke of
+   * users; a session key is the same idea now, so this takes a session key, not a user id.
+   */
+  interruptByOtherUser(sessionKey: string): void {
+    this.interruptOtherSessions(sessionKey);
+  }
+
+  flush(sessionKey: string): void {
+    const pending = this.pending.get(sessionKey);
     if (!pending) return;
     clearTimeout(pending.timer);
-    this.pending.delete(userId);
+    this.pending.delete(sessionKey);
     void this.onFlush(pending.messages);
   }
 
   flushAll(): void {
-    for (const userId of this.pending.keys()) this.flush(userId);
+    for (const sessionKey of this.pending.keys()) this.flush(sessionKey);
   }
 
-  /** True while at least one user has messages waiting in the debounce queue. */
+  /** True while at least one session has messages waiting in the debounce queue. */
   hasPending(): boolean {
     return this.pending.size > 0;
   }
 
-  /** Number of users with queued messages. */
+  /** Number of sessions with queued messages. */
   pendingCount(): number {
     return this.pending.size;
   }

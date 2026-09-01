@@ -27,13 +27,24 @@ current user input
   -> Gemini Embedding 2
   -> local Chroma server
   -> .aira/chroma
-  -> similarity search
+  -> similarity search, filtered to ONE session (`where: { sessionKey }`)
   -> relevant memories
   -> temporary search_memory(username) result
   -> Gemini 1
 ```
 
-The memory search is performed before Gemini 1 so the dialogue model receives relevant memories as request-local context.
+The memory search is performed before Gemini 1 so the dialogue model receives relevant memories as
+request-local context.
+
+**Retrieval is scoped.** Every memory carries a `sessionKey` metadata (`user:<id>` private, the
+default; `group:<channel>` when the sender joined a shared room) and the query filters on it, so a
+fact one user shared privately can never surface in someone else's context from a merely-similar
+question. `searchMemoriesByVector(vector, limit)` without a key is deliberately the unscoped escape
+hatch for tests and the `forget` CLI, not the pipeline path.
+
+`userId` and `sessionKey` are both stored and mean different things: *who the memory is about* and
+*which conversation stream may see it*. In a group session they differ — a memory about Alice,
+written during a turn owned by Bob, is retrievable by everyone in that room and by nobody else.
 
 ## Ingestion
 

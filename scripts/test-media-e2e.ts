@@ -85,6 +85,7 @@ try {
   const answer = await processMessage({
     userId: "e2e-user",
     user: "Tulip",
+    sessionKey: "user:e2e-user",
     text: "ไฟล์ที่แนบมานี้ภาพหลักเป็นสีอะไร? ตอบสั้น ๆ",
     timestamp: stamp,
     mediaSources: [{ name: "red.png", mimeType: "image/png", url: `${base}/red.png` }],
@@ -107,6 +108,7 @@ try {
   const silentTurn = {
     userId: "e2e-user",
     user: "Tulip",
+    sessionKey: "user:e2e-user",
     text: "",
     timestamp: new Date().toISOString(),
     mediaSources: [{ name: "red.png", mimeType: "image/png", url: `${base}/red.png` }],
@@ -130,6 +132,7 @@ try {
     const moving = await processMessage({
       userId: "e2e-user",
       user: "Tulip",
+      sessionKey: "user:e2e-user",
       text: "ไฟล์ gif ที่แนบนี้มันเคลื่อนไหวยังไง มีตัวเลขอะไรเปลี่ยนบ้าง? ตอบสั้น ๆ",
       timestamp: new Date().toISOString(),
       mediaSources: [{ name: "anim.gif", mimeType: "image/gif", url: `${base}/anim.gif` }],
@@ -148,6 +151,7 @@ try {
   const textTurn = {
     userId: "e2e-user",
     user: "Tulip",
+    sessionKey: "user:e2e-user",
     text: "ในไฟล์ note.txt ที่แนบมา มีรหัสลับเป็นตัวเลขอะไร? ตอบสั้น ๆ",
     timestamp: new Date().toISOString(),
     // octet-stream on purpose: that is what Discord actually reports for a .txt upload.

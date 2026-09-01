@@ -185,7 +185,9 @@ console.log("=== 6. sendTyping() ยิง REST ตรง (mock client.rest) ===
 console.log("=== 7. integration: loop + MessageScheduler จริง (wiring เดียวกับ bot.ts) ===");
 {
   const { MessageScheduler } = await import("../src/pipeline/scheduler.js");
-  const msg = (u: string, t: string) => ({ userId: u, user: u, text: t, timestamp: new Date().toISOString(), channelId: "c1" });
+  // Private session per user (the default), so "ต่างผู้ใช้ -> pendingCount 2" still holds: the
+  // scheduler batches on sessionKey, and user:<id> is unique per user until they join a group.
+  const msg = (u: string, t: string) => ({ userId: u, user: u, text: t, timestamp: new Date().toISOString(), channelId: "c1", sessionKey: `user:${u}` });
   const busy: string[] = [];
   let inFlight = 0;
   let total = 0;

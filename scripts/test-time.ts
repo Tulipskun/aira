@@ -81,8 +81,8 @@ console.log("=== 7. storage must stay UTC (the point of the split) ===");
 process.env.SQLITE_PATH = join(mkdtempSync(join(tmpdir(), "aira-time-")), "t.db");
 const { saveMessage, getHistory } = await import("../src/sql/history.js");
 const stored = "2026-08-30T20:01:47.957Z";
-saveMessage({ role: "user", userId: "u1", user: "Yuuta", text: "hi", timestamp: stored });
-const row = getHistory(5)[0];
+saveMessage({ role: "user", userId: "u1", user: "Yuuta", text: "hi", timestamp: stored, sessionKey: "user:u1" });
+const row = getHistory(5, "user:u1")[0];
 check("DB still stores UTC, untouched by the display conversion", row.timestamp === stored, row.timestamp);
 
 console.log("=== 8. currentTimeBlock(): the per-turn <current_time> anchor ===");

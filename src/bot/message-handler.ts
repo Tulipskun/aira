@@ -5,11 +5,12 @@ import {
   type MessageCreateOptions,
   type ReplyOptions,
 } from "discord.js";
-import { processMessage, type ProcessMessageResult } from "../pipeline/pipeline.js";
+import { processMessage, type ProcessMessageResult, type TurnSpeaker } from "../pipeline/pipeline.js";
 import type { ScheduledMessage } from "../pipeline/scheduler.js";
 import { fetchEmotionImage } from "./images.js";
 import { buildFooterText, type UserStatus } from "./embed-footer.js";
 import { mediaSourcesOf } from "./media.js";
+import { sessionKeyFor } from "../sql/sessions.js";
 import { getResponseChannelId } from "./discord-config.js";
 
 export function displayNameOf(message: Message): string {
@@ -57,6 +58,10 @@ export function toScheduledMessage(message: Message): ScheduledMessage | null {
     fileName: message.attachments.first()?.name ?? undefined,
     channelId: message.channelId,
     messageId: message.id,
+    // One indexed primary-key lookup, on the receive path, before the debounce window even opens.
+    // Resolved here rather than at flush time so a join/leave mid-batch cannot change which stream
+    // messages that were already queued belong to.
+    sessionKey: sessionKeyFor(message.author.id, message.channelId),
     ...(media.length && { media }),
   };
 }
@@ -75,16 +80,22 @@ export function replyReference(messageId?: string): { reply: ReplyOptions } | Re
 /**
  * Which message of a flushed batch to reply to.
  *
- * The scheduler merges everything a user sent inside the debounce window (5s, capped at 12s) into
- * ONE turn, so a reply would otherwise point at the oldest message while the newest, most relevant
- * one sits unquoted. We anchor on the last message — but only when it belongs to the same author as
- * the turn, because `processMessage()` is given a single user's merged text and quoting somebody
- * else's message would attribute it wrongly.
+ * The scheduler merges everything sent inside the debounce window (5s, capped at 12s) into ONE turn,
+ * so a reply would otherwise point at the oldest message while the newest, most relevant one sits
+ * unquoted. We anchor on the last message.
+ *
+ * It used to be conditional on the whole batch sharing one author, because a private turn is handed
+ * to `processMessage()` as one person's merged text and quoting somebody else would misattribute it.
+ * That is now guaranteed by the batching key itself: a batch is one *session*, and a private session
+ * has exactly one member. A group session deliberately mixes authors, and there the last message is
+ * the right thing to quote — it is the message she is answering. The session check stays as the
+ * guard instead of the author check, so a scheduler bug shows up as an unanchored reply rather than
+ * a quote of the wrong person.
  */
 export function replyAnchorOf(messages: ScheduledMessage[]): string | undefined {
   if (!messages.length) return undefined;
   const last = messages[messages.length - 1];
-  return last.userId === messages[0].userId ? last.messageId : undefined;
+  return messages.every((message) => message.sessionKey === messages[0].sessionKey) ? last.messageId : undefined;
 }
 
 export type FlushBusyListener = (busy: boolean) => void;
@@ -108,6 +119,15 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
       .join("\n");
 
     const first = messages[0];
+    const last = messages[messages.length - 1];
+    // Everyone who spoke, in arrival order, deduped by id: a group batch interleaves people and the
+    // pipeline needs each of their profiles, while a private batch collapses to one entry.
+    const speakers: TurnSpeaker[] = [];
+    for (const message of messages) {
+      if (!speakers.some((speaker) => speaker.userId === message.userId)) {
+        speakers.push({ userId: message.userId, user: message.user });
+      }
+    }
     // Everything the user sent inside the debounce window became ONE turn, so the reply is
     // anchored on their LAST message — see replyAnchorOf().
     const anchor = replyAnchorOf(messages);
@@ -120,12 +140,16 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
       let result: ProcessMessageResult;
       try {
         result = await processMessage({
-          userId: first.userId,
-          user: first.user,
+          // The person this turn is *about*: the last speaker, same rule as the quote anchor and as
+          // turnOwner() in the pipeline. `first` stays the batch's timestamp/fileName carrier.
+          userId: last.userId,
+          user: last.user,
           text: input,
           timestamp: first.timestamp,
           fileName: first.fileName,
           mediaSources,
+          sessionKey: first.sessionKey,
+          speakers,
         });
       } catch (error) {
         // The scheduler calls onFlush without awaiting it, so an escaping rejection would
@@ -142,7 +166,7 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
       if (result.image && !imageBuffer) {
         // Gemini 2 named a picture we could not attach. The reply still goes out — but say so,
         // because a missing image is otherwise indistinguishable from her choosing none.
-        console.warn(`[DISCORD] ${first.user}: select_image "${result.image}" produced no bytes -- embed sent without a picture`);
+        console.warn(`[DISCORD] ${last.user}: select_image "${result.image}" produced no bytes -- embed sent without a picture`);
       }
 
       try {
@@ -170,7 +194,7 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
         // It is a debug aid only: no test asserts this line, and the footer itself is covered by
         // test-profile.ts §11 and test-mood-e2e.ts.
         console.log(
-          `[DISCORD] ${first.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}, mood=${result.mood ?? "none"}, color=${embedColor}, image=${result.image ?? "none"}, footer=${JSON.stringify(buildFooterText({ ...result.status, mood: result.mood }))}`,
+          `[DISCORD] ${last.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}, mood=${result.mood ?? "none"}, color=${embedColor}, image=${result.image ?? "none"}, session=${first.sessionKey}, footer=${JSON.stringify(buildFooterText({ ...result.status, mood: result.mood }))}`,
         );
       } catch (error) {
         console.error(`[DISCORD] Failed to send reply: ${String((error as Error)?.message ?? error)}`);

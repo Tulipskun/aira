@@ -61,6 +61,7 @@ for (const [index, turn] of turns.entries()) {
   const result = await processMessage({
     userId: USER,
     user: "Yuuta",
+    sessionKey: `user:${USER}`,
     text: turn.text,
     timestamp: new Date().toISOString(),
   });

@@ -9,6 +9,8 @@ import { createLiveness } from "./liveness.js";
 import { shardReadiness, startHealthServer } from "./health.js";
 import { warmNetwork } from "./warmup.js";
 import { getResponseChannelId } from "./discord-config.js";
+import { migrateMemorySessions } from "../memory/chroma.js";
+import { LEGACY_SESSION_KEY } from "../session-keys.js";
 import { config } from "../config.js";
 
 const token = process.env.ISLA_TOKEN;
@@ -81,7 +83,10 @@ client.on("messageCreate", async (message: Message) => {
   }
 
   liveness.note("queued");
-  scheduler.interruptByOtherUser(scheduled.userId);
+  // Flush any *other* session's queue so the reply order matches the conversation. Keyed on the
+  // session rather than the user: in a group room, a second speaker must not cut off the turn that
+  // is about to answer the first one — their messages are merging into the same batch.
+  scheduler.interruptOtherSessions(scheduled.sessionKey);
   scheduler.push(scheduled);
   // Poke so the indicator shows immediately instead of waiting for the next 8s tick;
   // the loop's own min-gap throttle keeps a burst of messages from sending repeats.
@@ -134,5 +139,23 @@ client.once("ready", () => {
 // gateway connection eat it would leave the embedding call still exposed.
 const warm = await warmNetwork();
 console.log(`[WARMUP] ${warm.stalls} DNS stall(s) absorbed in ${warm.lookups} lookups, ${warm.ms}ms`);
+
+// Memories written before session scoping carry no `sessionKey`, and retrieval filters on that
+// metadata — so an un-migrated collection is not "old memories still work", it is *no* memories
+// ever matching. History is backfilled at its module load (sql/history.ts); this is the vector
+// half of the same migration. Best-effort on purpose: Chroma is started by the daemon before this
+// process, but if it is unreachable the bot must still come online rather than crash-loop, and the
+// next boot retries (the migration is idempotent).
+try {
+  const migrated = await migrateMemorySessions();
+  if (migrated.backfilled) {
+    console.log(`[SESSIONS] memories backfilled: ${migrated.backfilled} keyed` +
+      (migrated.unattributed ? `, ${migrated.unattributed} unattributable -> ${LEGACY_SESSION_KEY}` : ""));
+  } else {
+    console.log(`[SESSIONS] memories already keyed (${migrated.alreadyKeyed})`);
+  }
+} catch (error) {
+  console.warn(`[SESSIONS] memory backfill skipped: ${String((error as Error)?.message ?? error)} -- memories stay unscoped until the next boot`);
+}
 
 await client.login(token);

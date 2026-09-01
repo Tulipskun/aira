@@ -6,15 +6,16 @@
 Discord
   -> src/bot/bot.ts
   -> command filter + channel lock (src/bot/commands.ts)
-  -> MessageScheduler (src/pipeline/scheduler.ts)
+  -> session resolution (src/sql/sessions.ts -> user:<id> | group:<channel>)
+  -> MessageScheduler (src/pipeline/scheduler.ts), batching per session
   -> src/pipeline/pipeline.ts
   -> Gemini Embedding 2 (src/memory/embedding.ts)
-  -> Chroma similarity search (src/memory/chroma.ts)
-  -> SQLite history + relationship + profile (src/sql/)
+  -> Chroma similarity search, scoped to the session (src/memory/chroma.ts)
+  -> SQLite history for this session + profiles of every speaker (src/sql/)
   -> Gemini 1 (src/gemini/client.ts)
   -> Gemini 2 (must wait for Gemini 1)
   -> one flat JSON state object (no tool call)
-  -> SQLite relationship/profile + Chroma memory
+  -> SQLite relationship/profile + Chroma memory (stamped with the session key)
   -> select_image(filename)
   -> local images/<filename>
   -> Discord Embed

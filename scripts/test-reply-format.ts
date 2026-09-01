@@ -110,10 +110,10 @@ check("schema is JSON-serialisable", (() => { JSON.stringify(ISLA_REPLY_SCHEMA);
 const { saveMessage, getHistory, listMessages, closeHistoryDb } = await import("../src/sql/history.js");
 
 console.log("=== 6. summery is stored beside the reply, not inside it ===");
-saveMessage({ role: "user", userId: "u1", user: "Yuuta", text: "สวัสดี", timestamp: "2026-01-01T00:00:00.000Z" });
-saveMessage({ role: "model", text: "สวัสดีค่ะ", summary: "ผู้ใช้สวัสดีและไอล่าตอบกลับ", timestamp: "2026-01-01T00:00:05.000Z" });
-saveMessage({ role: "model", text: "ไม่มีสรุป", timestamp: "2026-01-01T00:00:09.000Z" });
-const rows = getHistory(50);
+saveMessage({ role: "user", userId: "u1", user: "Yuuta", text: "สวัสดี", timestamp: "2026-01-01T00:00:00.000Z", sessionKey: "user:u1" });
+saveMessage({ role: "model", text: "สวัสดีค่ะ", summary: "ผู้ใช้สวัสดีและไอล่าตอบกลับ", timestamp: "2026-01-01T00:00:05.000Z", sessionKey: "user:u1" });
+saveMessage({ role: "model", text: "ไม่มีสรุป", timestamp: "2026-01-01T00:00:09.000Z", sessionKey: "user:u1" });
+const rows = getHistory(50, "user:u1");
 check("history round-trips summary", rows[1].summary === "ผู้ใช้สวัสดีและไอล่าตอบกลับ");
 check("model text holds only the reply", rows[1].text === "สวัสดีค่ะ" && !rows[1].text.includes("summery"));
 check("absent summary is null, not undefined-crash", rows[2].summary === null);
@@ -121,7 +121,7 @@ check("user rows carry no summary", rows[0].summary === null);
 check("listMessages also exposes summary", listMessages({ limit: 3 })[1].summary === "ผู้ใช้สวัสดีและไอล่าตอบกลับ");
 closeHistoryDb();
 
-console.log("=== 7. existing databases get the column (lazy migration) ===");
+console.log("=== 7. existing databases get the columns (lazy migration) ===");
 const { Database } = await import("bun:sqlite");
 const legacy = join(dir, "legacy.db");
 const raw = new Database(legacy);
@@ -134,11 +134,16 @@ raw.run(`INSERT INTO messages (role, user_id, user_name, text, timestamp) VALUES
 raw.close();
 process.env.SQLITE_PATH = legacy;
 const mod = await import(`../src/sql/history.js?legacy=${Date.now()}`);
-const old = mod.getHistory(10);
+const old = mod.getHistory(10, mod.LEGACY_SESSION_KEY);
 check("old row still readable after migration", old.length === 1 && old[0].text === "ของเก่า");
 check("old row summary is null", old[0].summary === null);
-mod.saveMessage({ role: "model", text: "ใหม่", summary: "สรุปใหม่", timestamp: "2025-01-02T00:00:00.000Z" });
-check("new write works on migrated table", mod.getHistory(10)[1].summary === "สรุปใหม่");
+mod.saveMessage({ role: "model", text: "ใหม่", summary: "สรุปใหม่", timestamp: "2025-01-02T00:00:00.000Z", sessionKey: "user:u1" });
+const mine = mod.getHistory(10, "user:u1");
+check("new write works on migrated table", mine.length === 1 && mine[0].summary === "สรุปใหม่");
+// The point of the session column: an unattributable legacy row stays out of a real user's window
+// rather than being handed to whoever asks first.
+check("legacy row is NOT visible in user:u1's history", !mine.some((r: { text: string }) => r.text === "ของเก่า"));
+check("and the legacy read does not see the new row", mod.getHistory(10, mod.LEGACY_SESSION_KEY).length === 1);
 mod.closeHistoryDb();
 
 rmSync(dir, { recursive: true, force: true });

@@ -20,6 +20,7 @@ import type { UserStatus } from "../bot/embed-footer.js";
 import { embed } from "../memory/embedding.js";
 import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
+import { groupChannelOf, isGroupSession, userOfSession } from "../sql/sessions.js";
 import {
   addFacts,
   addNicknames,
@@ -56,6 +57,18 @@ export type IncomingMessage = {
   fileName?: string;
   /** Media URLs to fetch and attach to this turn. Fetched once, used by both stages. */
   mediaSources?: MediaSource[];
+  /**
+   * Which conversation stream this turn belongs to — see sql/sessions.ts. Required: history and
+   * memory are both scoped by it, so a turn without one would either read nobody's context or
+   * everybody's. `user:<userId>` is the default; `group:<channelId>` when the sender opted in.
+   */
+  sessionKey: string;
+  /**
+   * Everyone who spoke inside this turn's debounce batch, in arrival order. A private session has
+   * one entry; a group session can carry several people whose messages were merged into one turn.
+   * When absent the turn is treated as `userId`/`user` alone.
+   */
+  speakers?: TurnSpeaker[];
 };
 export type ProcessMessageResult = {
   text: string;
@@ -166,6 +179,64 @@ export function profileBlock(profile: UserProfile | null, currentName?: string):
   ].join("\n");
 }
 
+/** One person's identity material for a turn. */
+export type TurnIdentity = { userId: string; userName: string; profile: UserProfile | null };
+
+/**
+ * The identity material for a whole turn.
+ *
+ * A private session has exactly one person, so this is `profileBlock()` unchanged — byte-for-byte,
+ * which matters because that block is the stable part of Gemini 1's cached prefix.
+ *
+ * A group session has everyone who spoke, and Isla needs each of them separately: one block would
+ * describe one user while the message contains four, and she would answer the wrong person's
+ * history. Two things the wording has to do, both learned from how the text actually arrives:
+ *  - name the person she is *answering* (the last speaker, whose ladder this turn moves), or she
+ *    will treat the whole room as one addressee;
+ *  - say explicitly that facts/nicknames/bonds do not cross between blocks. Sharing one history
+ *    stream is the point of the feature, and without this line "we see the same context" reads as
+ *    "these facts are about each other".
+ */
+export function identityBlockFor(identities: TurnIdentity[], group: boolean, ownerId: string | null = null): string {
+  if (!group) {
+    const only = identities[0];
+    return profileBlock(only?.profile ?? null, only?.userName);
+  }
+  const blocks = identities.map((identity) => {
+    const head = identity.userId === ownerId
+      ? `--- คนที่เธอกำลังตอบในเทิร์นนี้ (id: ${identity.userId}) ---`
+      : `--- อีกคนในห้องเดียวกัน (id: ${identity.userId}) ---`;
+    return `${head}\n${profileBlock(identity.profile, identity.userName)}`;
+  });
+  return [
+    "<group_session>",
+    `เซสชันนี้เป็นการสนทนารวม: ทุกคนที่เข้าร่วมผ่าน /isla join-group ในแชแนลนี้ใช้ประวัติและความทรงจำชุดเดียวกัน`,
+    `ข้อความในเทิร์นนี้มาจากหลายคน แต่ละบรรทัดขึ้นต้นด้วยชื่อคนพูด — ตอบให้ถูกคน และห้ามอ้างคำพูดของคนหนึ่งเป็นของคนอื่น`,
+    `ข้อมูลของแต่ละคนแยกกันเด็ดขาด: fact, ฉายา และระดับความสัมพันธ์ในบล็อกหนึ่งเป็นของคนชื่อนั้นเท่านั้น`,
+    ...blocks,
+    `</group_session>`,
+  ].join("\n");
+}
+
+/**
+ * The turn as Gemini 2 reads it: who said what.
+ *
+ * The merged text already carries `Name: ` on every line (see `createOnFlush`), so prefixing it with
+ * one more name duplicates it for a private turn and — worse — labels an entire group turn as one
+ * person's words, which is exactly the misattribution that then moves the wrong user's ladder.
+ * A hand-built turn (tests, replays) has no prefix at all, so the label is added only when the first
+ * line is not already attributed to one of this turn's speakers.
+ */
+export function turnTranscript(speakers: TurnSpeaker[], text: string): string {
+  const breakAt = text.indexOf("\n");
+  const firstLine = breakAt === -1 ? text : text.slice(0, breakAt);
+  // Matched as a prefix, not by splitting on ":": a Discord display name may contain one ("A: B"),
+  // and the merged form written by `createOnFlush` is exactly `${name}: ${text}`.
+  if (speakers.some((speaker) => firstLine.startsWith(`${speaker.user}: `))) return text;
+  const only = speakers[speakers.length - 1];
+  return `${only?.user ?? "ผู้ใช้"}: ${text}`;
+}
+
 /**
  * What Gemini 2 is told about the current state.
  *
@@ -213,9 +284,20 @@ export type TurnApplyResult = {
  * Nicknames come from the same row. Nothing writes them yet (she has no tool for it), so the footer
  * simply has no `#tags` until that exists — see the note in `sql/profile.ts`.
  *
+ * `userId`/`userName` are whose ladder this turn moves (see `turnOwner()`), not necessarily whoever
+ * the batch started with. `sessionKey` is stamped on any memory written here so retrieval can stay
+ * inside the session — it is optional only so the ladder contract can be tested without inventing
+ * one.
+ *
  * Exported so the contract can be tested without a Gemini round-trip.
  */
-export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string): Promise<TurnApplyResult> {
+export async function applyState(
+  state: IslaState,
+  userId: string,
+  timestamp: string,
+  userName: string,
+  sessionKey?: string,
+): Promise<TurnApplyResult> {
   const result = applyTurnState({
     userId,
     userName,
@@ -249,7 +331,7 @@ export async function applyState(state: IslaState, userId: string, timestamp: st
 
   if (state.ingestMemory) {
     await saveMemoryVector(
-      { id: crypto.randomUUID(), text: state.ingestMemory, userId, timestamp },
+      { id: crypto.randomUUID(), text: state.ingestMemory, userId, timestamp, sessionKey },
       await embed(state.ingestMemory),
     );
   }
@@ -287,12 +369,19 @@ async function runGemini2(
   summery: string,
   profile: UserProfile | null,
   media: Interactions.Content[],
+  speakers: TurnSpeaker[],
+  owner: TurnSpeaker,
 ): Promise<IslaState> {
   const analysisInput = [
-    `${message.user}: ${message.text}`,
+    // Not `${message.user}: ${message.text}` — in a group turn that would credit every line of the
+    // merged batch to one person. See turnTranscript().
+    turnTranscript(speakers, message.text),
     `Isla: ${responseText}`,
     ...(summery ? [`(สรุปของข้อความนี้: ${summery})`] : []),
     ``,
+    // Whose ladder this is, stated next to the numbers: the transcript above has several names, and
+    // the state block has exactly one.
+    `สถานะด้านล่างคือของ ${owner.user} (id: ${owner.userId}) — ผู้พูดคนสุดท้ายของเทิร์นนี้`,
     stateBlock(profile),
   ].join("\n");
   const request: GeminiRequest = {
@@ -321,16 +410,35 @@ function escapeRegExp(value: string): string {
 }
 
 // Stored turns carry the name the author used back then, both in user_name and as the
-// "name: " prefix the scheduler merges into text. Re-stamp this sender's past turns with
-// their current display name so the model sees one consistent identity after a rename.
-export function restateHistory(history: HistoryMessage[], userId: string, user: string): HistoryMessage[] {
+// "name: " prefix the scheduler merges into text. Re-stamp these senders' past turns with their
+// current display names so the model sees one consistent identity after a rename. A group session
+// shares one stream between several people, hence the map rather than a single id.
+export function restateHistory(history: HistoryMessage[], speakers: Map<string, string>): HistoryMessage[] {
   return history.map((entry) => {
-    if (entry.role !== "user" || entry.userId !== userId) return entry;
+    if (entry.role !== "user") return entry;
+    const current = entry.userId ? speakers.get(entry.userId) : undefined;
+    if (!current) return entry;
     const stale = entry.user;
-    if (!stale || stale === user) return { ...entry, user };
-    const text = entry.text.replace(new RegExp(`^${escapeRegExp(stale)}: `, "gm"), `${user}: `);
-    return { ...entry, user, text };
+    if (!stale || stale === current) return { ...entry, user: current };
+    const text = entry.text.replace(new RegExp(`^${escapeRegExp(stale)}: `, "gm"), `${current}: `);
+    return { ...entry, user: current, text };
   });
+}
+
+/** One person who spoke in this turn. */
+export type TurnSpeaker = { userId: string; user: string };
+
+/**
+ * Whose ladder this turn moves.
+ *
+ * `applyTurnState()` writes one row and Gemini 2 reports one affinity number, so a group turn has
+ * to nominate exactly one owner. It is the speaker of the LAST message of the batch — the same
+ * message the reply is quoted to (see `replyAnchorOf()`), so the person she answered is the person
+ * whose relationship advances. Nobody is promoted for something they said earlier in a burst that
+ * has already been replied to. A private session has one speaker, so this is that person.
+ */
+export function turnOwner(speakers: TurnSpeaker[]): TurnSpeaker | null {
+  return speakers.length ? speakers[speakers.length - 1]! : null;
 }
 
 export async function processMessage(message: IncomingMessage): Promise<ProcessMessageResult> {
@@ -344,7 +452,14 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
     return ms;
   };
 
-  const history = restateHistory(getHistory(50), message.userId, message.user);
+  const sessionKey = message.sessionKey;
+  const group = isGroupSession(sessionKey);
+  // Everyone who spoke in this turn, in arrival order. A private session has exactly one entry, so
+  // the group path is a superset of it rather than a second code path.
+  const speakers: TurnSpeaker[] = message.speakers?.length ? message.speakers : [{ userId: message.userId, user: message.user }];
+  const owner = turnOwner(speakers) ?? { userId: message.userId, user: message.user };
+
+  const history = restateHistory(getHistory(50, sessionKey), new Map(speakers.map((speaker) => [speaker.userId, speaker.user])));
   // Media is fetched here, once, and shared by both stages. It lands inside the `prep` lap
   // of the timing line, so a slow 20 MB download is attributable instead of mysterious.
   const media = await prepareMedia(message.mediaSources ?? []);
@@ -355,26 +470,32 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   if (media.parts.length) {
     console.log(`[MEDIA] ${message.user}: ${media.parts.length} part(s) attached — ${media.summary}`);
   }
-  saveMessage({ role: "user", userId: message.userId, user: message.user, text: message.text, timestamp: message.timestamp, fileName });
+  saveMessage({ role: "user", userId: message.userId, user: message.user, text: message.text, timestamp: message.timestamp, fileName, sessionKey });
   const prepMs = lap();
   // An empty string is rejected outright by the embedding endpoint (verified: "content contains
   // an empty Part"), and media-only messages are common. Embed what the turn actually is instead.
   const embedText = message.text || media.summary || "(no text)";
   const vector = await embed(embedText);
   const embedMs = lap();
-  const memories = await searchMemoriesByVector(vector, 8);
+  // Retrieved inside the session only. Without this filter a fact one user shared privately would
+  // surface in someone else's context from a merely-similar question.
+  const memories = await searchMemoriesByVector(vector, 8, sessionKey);
   const chromaMs = lap();
   // One read of one table. This used to be two tables keyed by the same user_id, fetched twice,
   // and rendered by two functions that could disagree about the name.
-  let profile = getUserProfile(message.userId);
-  // Keep the stored name in step with Discord. `restateHistory()` only fixes what the *model sees*
-  // this turn; without this write the row would keep whatever name it was created with, and the
-  // next turn's block (and the forget CLI) would show a stale identity. Only the name is written,
-  // so bond/xp/facts are never touched here. A first-time user gets their row created here too.
-  if (!profile || profile.userName !== message.user) {
-    profile = upsertUserProfile({ userId: message.userId, userName: message.user }) ?? profile;
-  }
-  const identityBlock = profileBlock(profile, message.user);
+  const identities = speakers.map((speaker) => {
+    let profile = getUserProfile(speaker.userId);
+    // Keep the stored name in step with Discord. `restateHistory()` only fixes what the *model sees*
+    // this turn; without this write the row would keep whatever name it was created with, and the
+    // next turn's block (and the forget CLI) would show a stale identity. Only the name is written,
+    // so bond/xp/facts are never touched here. A first-time user gets their row created here too.
+    if (!profile || profile.userName !== speaker.user) {
+      profile = upsertUserProfile({ userId: speaker.userId, userName: speaker.user }) ?? profile;
+    }
+    return { userId: speaker.userId, userName: speaker.user, profile };
+  });
+  const profile = identities.find((identity) => identity.userId === owner.userId)?.profile ?? null;
+  const identityBlock = identityBlockFor(identities, group, owner.userId);
   // Chroma stores UTC; the model reads Thai local time, same rule as messageStep().
   const temporaryMemory = fakeToolCallResult("search_memory", { user: message.user }, { memories: memories.map((memory) => ({ text: memory.text, timestamp: thaiTimestamp(memory.timestamp) })) });
   const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, fileName, temporaryMemory, message.userId, media.parts);
@@ -405,11 +526,14 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   }
   const responseText = reply.isla;
   const responseTimestamp = new Date().toISOString();
-  saveMessage({ role: "model", text: responseText, summary: reply.summery || null, timestamp: responseTimestamp });
+  // Her reply is stored under the SAME session key as the question it answers. It has always been
+  // written with `user_id NULL` and that stays true — the session key is what makes it findable now,
+  // which is the information the old global stream never needed.
+  saveMessage({ role: "model", text: responseText, summary: reply.summery || null, timestamp: responseTimestamp, sessionKey });
 
-  const state = await runGemini2(message, responseText, reply.summery, profile, media.parts);
+  const state = await runGemini2(message, responseText, reply.summery, profile, media.parts, speakers, owner);
   const gemini2Ms = lap();
-  const applied = await applyState(state, message.userId, message.timestamp, message.user);
+  const applied = await applyState(state, owner.userId, message.timestamp, owner.user, sessionKey);
   const applyMs = lap();
   console.log(`[PIPELINE] ${message.user}: total=${prepMs + embedMs + chromaMs + buildMs + gemini1Ms + gemini2Ms + applyMs}ms prep=${prepMs} embed=${embedMs} chroma=${chromaMs} build=${buildMs} gemini1=${gemini1Ms} gemini2=${gemini2Ms} apply=${applyMs}`);
   return {

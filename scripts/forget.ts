@@ -30,6 +30,7 @@ import {
   searchMemories,
   type MemoryFilter,
 } from "../src/memory/chroma.js";
+import { isGroupSession, isUserSession } from "../src/session-keys.js";
 
 const root = resolve(import.meta.dir, "..");
 const dbPath = process.env.SQLITE_PATH ?? "./.aira/aira.db";
@@ -38,26 +39,35 @@ function usage(message?: string): never {
   if (message) console.error(`[FORGET] ${message}\n`);
   console.error(`usage: bun run scripts/forget.ts <history|memory> <list|search|clear> [flags]
 
-history (SQLite conversation context, read fresh on every incoming message)
-  list    [--user <id>] [--role user|model] [--before <iso>] [--after <iso>] [--limit N]
-  clear   (--all | --user <id> | --role <r> | --before <iso> | --after <iso> | --id <n> ... | --limit N) [--yes]
+history (SQLite conversation context, one stream per session)
+  list    [--session <key>] [--user <id>] [--role user|model] [--before <iso>] [--after <iso>] [--limit N]
+  clear   (--all | --session <key> | --user <id> | --role <r> | --before <iso> | --after <iso> | --id <n> ... | --limit N) [--yes]
           note: --limit with clear deletes the newest N matching rows
 
-memory  (Chroma long-term memories, searched by vector on every message)
-  list    [--user <id>] [--limit N]
-  search  "<query>" [--limit N]
-  clear   (--all | --user <id> | --id <uuid> ...) [--yes]
+memory  (Chroma long-term memories, searched by vector inside one session)
+  list    [--session <key>] [--user <id>] [--limit N]
+  search  "<query>" [--session <key>] [--limit N]
+  clear   (--all | --session <key> | --user <id> | --id <uuid> ...) [--yes]
+
+  --session  a conversation stream: "user:<id>" (private, the default) or
+             "group:<channel>" (shared, joined with /isla join-group). The exact key is printed
+             by /isla status and in the bot's reply log. --user and --session combine as AND.
 
 flags
   --yes   actually delete; without it the run is a dry-run
   --quiet hide row details
 
-schema note: only user rows carry user_id -- Isla's own replies (role=model) are stored with
-user_id NULL, so \`--user <id>\` removes just their side of the exchange. Use \`--all\` to wipe the
-whole context window, or \`--role model\` to target her replies separately.
+schema notes:
+ - only user rows carry user_id -- Isla's own replies (role=model) are stored with user_id NULL,
+   so \`--user <id>\` removes just their side of the exchange. \`--session\` is what targets a whole
+   conversation *including her replies*, which is usually what "forget that chat" means.
+ - rows written before session scoping were backfilled from the user turn they answer; anything
+   with no author at all is filed under \`legacy:unattributed\` and is never read by the bot.
 
 examples
   bun run scripts/forget.ts history list --user 617201465437716493 --limit 10
+  bun run scripts/forget.ts history clear --session group:1538589700000000000 --yes
+  bun run scripts/forget.ts memory search "กาแฟ" --session user:617201465437716493
   bun run scripts/forget.ts history clear --id 36 --id 37 --yes
   bun run scripts/forget.ts history clear --before 2026-08-30 --yes
   bun run scripts/forget.ts memory clear --all --yes`);
@@ -87,9 +97,23 @@ function preview(text: string, width = 72): string {
   return flat.length > width ? `${flat.slice(0, width - 1)}…` : flat;
 }
 
+/**
+ * Accept a session either in its stored form (`user:123`, `group:456`) or as a bare id with a kind.
+ *
+ * The stored form is what `/isla status` prints and what the logs show, so it must work verbatim —
+ * copy-pasting from either should not need reformatting. A bare snowflake is ambiguous (a user id
+ * and a channel id are the same shape), so `--session` never guesses: bare ids need the prefix.
+ */
+function sessionFlag(value: string): string {
+  const trimmed = value.trim();
+  if (isUserSession(trimmed) || isGroupSession(trimmed)) return trimmed;
+  usage(`--session must be "user:<id>" or "group:<channel>", got "${value}"`);
+}
+
 function historyFilter(args: Args): MessageFilter {
   const filter: MessageFilter = {};
   if (args.flags.user) filter.userId = String(args.flags.user);
+  if (args.flags.session) filter.sessionKey = sessionFlag(String(args.flags.session));
   if (args.flags.role) {
     const role = String(args.flags.role);
     if (role !== "user" && role !== "model") usage(`--role must be user or model, got ${role}`);
@@ -111,6 +135,7 @@ function historyFilter(args: Args): MessageFilter {
 function memoryFilter(args: Args): MemoryFilter {
   const filter: MemoryFilter = {};
   if (args.flags.user) filter.userId = String(args.flags.user);
+  if (args.flags.session) filter.sessionKey = sessionFlag(String(args.flags.session));
   const ids = args.multi.id ?? [];
   if (ids.length) filter.ids = ids;
   if (args.flags.limit) {
@@ -151,7 +176,7 @@ async function runHistory(command: string, args: Args): Promise<void> {
   const all = Boolean(args.flags.all);
   const filter = historyFilter(args);
   if (all && hasFilter(filter)) usage("--all cannot be combined with filters");
-  if (!all && !hasFilter(filter)) usage("history clear needs --all or at least one filter (--user/--role/--before/--after/--id)");
+  if (!all && !hasFilter(filter)) usage("history clear needs --all or at least one filter (--user/--session/--role/--before/--after/--id)");
 
   const { limit: _omit, ...countFilter } = filter;
   // --limit on clear scopes the delete to the newest N rows, so report that many.
@@ -173,19 +198,22 @@ async function runMemory(command: string, args: Args): Promise<void> {
   const quiet = Boolean(args.flags.quiet);
   if (command === "list") {
     const filter = memoryFilter(args);
-    const total = await countMemories({ ...(filter.userId && { userId: filter.userId }) });
+    const { limit: _omit, ...countFilter } = filter;
+    const total = await countMemories(countFilter);
     const rows = await listMemories({ ...filter, limit: filter.limit ?? 20 });
-    console.log(`[FORGET] memories: ${total} stored${filter.userId ? ` (user ${filter.userId})` : ""} (showing ${rows.length})`);
-    if (!quiet) for (const row of rows) console.log(`  ${row.id}  ${(row.userId ?? "-").padEnd(20)} ${(row.timestamp ?? "-").slice(0, 19)}  ${preview(row.text)}`);
+    const scope = filter.sessionKey ? ` (session ${filter.sessionKey})` : filter.userId ? ` (user ${filter.userId})` : "";
+    console.log(`[FORGET] memories: ${total} matching${scope} of ${await countMemories()} stored (showing ${rows.length})`);
+    if (!quiet) for (const row of rows) console.log(`  ${row.id}  ${(row.userId ?? "-").padEnd(20)} ${(row.sessionKey ?? "-").padEnd(24)} ${(row.timestamp ?? "-").slice(0, 19)}  ${preview(row.text)}`);
     return;
   }
   if (command === "search") {
     const query = args._[2];
     if (!query) usage('memory search needs a query, e.g. memory search "กาแฟ"');
     const limit = args.flags.limit ? Number(args.flags.limit) : 10;
-    const rows = await searchMemories(query, limit);
-    console.log(`[FORGET] ${rows.length} memories closest to: ${query}`);
-    rows.forEach((row, index) => console.log(`  ${String(index + 1).padStart(2)}. ${row.id}  ${preview(row.text)}`));
+    const session = args.flags.session ? sessionFlag(String(args.flags.session)) : undefined;
+    const rows = await searchMemories(query, limit, session);
+    console.log(`[FORGET] ${rows.length} memories closest to: ${query}${session ? ` (inside session ${session})` : " (whole collection)"}`);
+    rows.forEach((row, index) => console.log(`  ${String(index + 1).padStart(2)}. ${row.id}  ${(row.sessionKey ?? "-").padEnd(24)} ${preview(row.text)}`));
     return;
   }
   if (command !== "clear") usage(`unknown memory command '${command}'`);
@@ -193,7 +221,7 @@ async function runMemory(command: string, args: Args): Promise<void> {
   const all = Boolean(args.flags.all);
   const filter = memoryFilter(args);
   if (all && hasFilter(filter)) usage("--all cannot be combined with filters");
-  if (!all && !hasFilter(filter)) usage("memory clear needs --all or a filter (--user/--id)");
+  if (!all && !hasFilter(filter)) usage("memory clear needs --all or a filter (--user/--session/--id)");
 
   const matching = all ? await countMemories() : await countMemories(filter);
   console.log(`[FORGET] memory: ${matching} memorie(s) ${all ? "in total" : "match the filter"}`);

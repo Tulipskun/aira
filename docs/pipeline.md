@@ -4,13 +4,18 @@
 
 ## Request path
 
-1. Read conversation history from SQLite.
+1. Read conversation history from SQLite — the last turns of **this message's session only**
+   (`getHistory(50, sessionKey)`), not one global stream shared by every user.
 2. Add the new user messages to the context.
-3. Persist incoming user messages to SQLite history.
+3. Persist incoming user messages to SQLite history, stamped with the session key.
 4. Embed the current input with Embedding 2.
-5. Search Chroma for relevant long-term memories.
-6. Load the user's relationship state and profile from SQLite.
-7. Build Gemini 1 `systemInstruction` from the configurable system prompt file, followed by a `<user_profile>` block.
+5. Search Chroma for relevant long-term memories, filtered to the same session key.
+6. Load the profile of **everyone who spoke in this turn** from SQLite (one row per user; a private
+   session has exactly one).
+7. Build Gemini 1 `systemInstruction` from the configurable system prompt file, followed by the
+   identity block for the turn: a single `<user_profile>` when the session is private, or a
+   `<group_session>` containing one `<user_profile>` per speaker — with the person she is answering
+   named as such — when the session is shared.
 8. Put relevant Chroma results into the temporary fake `search_memory(username)` call/result for Gemini 1.
 9. Send the context to Gemini 1 and wait for its text response.
 10. Send the completed Gemini 1 context/response to Gemini 2 and wait for Gemini 2.
@@ -45,11 +50,27 @@ fact:
 
 Only profile information is placed in this block: name, relationship label, accumulated xp,
 Isla-assigned nicknames and facts. Internal Discord user IDs and the separate `affinity` figure are
-never included.
+not included in a private session.
 
 xp is the one number in here, and deliberately so: it is the ladder's fuel, so Gemini 1 needs it to
 know how far she is from the next rung. It is shown as a count, never as a permission — the rung
 itself is still computed in code and Gemini 1 cannot change it.
+
+### Shared sessions
+
+In a `group:<channel>` session the block becomes a `<group_session>` wrapper holding one
+`<user_profile>` per speaker, each labelled with that person's Discord id — the id is the only thing
+that ties `@Name` in the message to the right profile when several people share one stream. The
+wrapper states that the room shares one history, that lines are prefixed by their speaker, that
+facts/nicknames/rungs do not cross between blocks, and which of them Isla is answering this turn
+(the last speaker of the batch, whose ladder moves).
+
+A private turn renders `profileBlock()` byte-for-byte as before: that block is the stable part of
+Gemini 1's cached prefix, so a group-only change must not leak into it.
+
+Gemini 2 receives the turn as a transcript (`turnTranscript()`) rather than one name prefixed over
+the whole batch, plus a line naming whose `<current_state>` follows, because every field it reports
+belongs to exactly one user. See `<whose_turn>` in `src/gemini/prompts/isla-state.md`.
 
 ## After response
 

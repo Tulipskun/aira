@@ -79,19 +79,24 @@ console.log("=== 2. buildReplyPayload(): reference รอดผ่าน spread 
   check("ไม่มี replyTo -> ไม่มี reply key (ส่งเป็นข้อความธรรมดา)", !("reply" in plain));
 }
 
-console.log("=== 3. replyAnchorOf(): ตอบข้อความล่าสุดของคนเดียวกัน ===");
+console.log("=== 3. replyAnchorOf(): ตอบข้อความล่าสุดของเซสชัน ===");
 {
-  const m = (id: string, userId: string): ScheduledMessage => ({
-    userId, user: userId, text: `t-${id}`, timestamp: "2026-08-31T00:00:00.000Z", channelId: "chan", messageId: id,
+  const m = (id: string, userId: string, sessionKey = `user:${userId}`): ScheduledMessage => ({
+    userId, user: userId, text: `t-${id}`, timestamp: "2026-08-31T00:00:00.000Z", channelId: "chan", messageId: id, sessionKey,
   });
 
   check("batch ว่าง -> undefined", replyAnchorOf([]) === undefined);
   check("ข้อความเดียว -> id ของมัน", replyAnchorOf([m("a", "u1")]) === "a");
   check("หลายข้อความรวมกัน -> id ล่าสุด", replyAnchorOf([m("a", "u1"), m("b", "u1"), m("c", "u1")]) === "c");
-  check("คนละ author ใน batch -> ไม่ anchor (กัน quote ผิดคน)",
-    replyAnchorOf([m("a", "u1"), m("b", "u2")]) === undefined);
+  // Session scoping made the batch key the session, so mixed authors in ONE batch are now normal
+  // (a group room) and the last message is the right thing to quote. The guard that remains is the
+  // one that actually matters: a batch must not span two sessions.
+  check("คนละ author ในเซสชันรวม -> anchor ที่ข้อความล่าสุด (ตอบคนที่พูดทีหลังสุด)",
+    replyAnchorOf([m("a", "u1", "group:g1"), m("b", "u2", "group:g1")]) === "b");
+  check("batch ข้ามเซสชัน (บั๊กของ scheduler) -> ไม่ anchor",
+    replyAnchorOf([m("a", "u1", "user:u1"), m("b", "u2", "user:u2")]) === undefined);
   check("batch ที่ไม่มี messageId (ของเก่า/เทสต์) -> undefined", replyAnchorOf([{
-    userId: "u1", user: "u1", text: "hi", timestamp: "2026-08-31T00:00:00.000Z", channelId: "chan",
+    userId: "u1", user: "u1", text: "hi", timestamp: "2026-08-31T00:00:00.000Z", channelId: "chan", sessionKey: "user:u1",
   }]) === undefined);
 }
 
@@ -121,8 +126,8 @@ console.log("=== 5. scheduler: messageId รอดผ่านคิวไปถ
 {
   const flushed: ScheduledMessage[][] = [];
   const scheduler = new MessageScheduler({ debounceMs: 10, maxWaitMs: 50, onFlush: (msgs) => { flushed.push(msgs); } });
-  scheduler.push({ userId: "u1", user: "Yuuta", text: "หนึ่ง", timestamp: "2026-08-31T00:00:00.000Z", channelId: "chan", messageId: "m1" });
-  scheduler.push({ userId: "u1", user: "Yuuta", text: "สอง", timestamp: "2026-08-31T00:00:01.000Z", channelId: "chan", messageId: "m2" });
+  scheduler.push({ userId: "u1", user: "Yuuta", text: "หนึ่ง", timestamp: "2026-08-31T00:00:00.000Z", channelId: "chan", messageId: "m1", sessionKey: "user:u1" });
+  scheduler.push({ userId: "u1", user: "Yuuta", text: "สอง", timestamp: "2026-08-31T00:00:01.000Z", channelId: "chan", messageId: "m2", sessionKey: "user:u1" });
   check("ก่อน flush คิวมีของ", scheduler.hasPending());
   await new Promise((r) => setTimeout(r, 120));
   check("flush 1 ครั้ง", flushed.length === 1);
@@ -138,8 +143,8 @@ console.log("=== 6. เส้นทางการส่ง: payload ที่ c
   const sent: unknown[] = [];
   const fakeChannel = { send: async (payload: unknown) => { sent.push(payload); } };
   const batch: ScheduledMessage[] = [
-    { userId: "u1", user: "Yuuta", text: "หนึ่ง", timestamp: "2026-08-31T00:00:00.000Z", channelId: "chan", messageId: "m1" },
-    { userId: "u1", user: "Yuuta", text: "สอง", timestamp: "2026-08-31T00:00:01.000Z", channelId: "chan", messageId: "m2" },
+    { userId: "u1", user: "Yuuta", text: "หนึ่ง", timestamp: "2026-08-31T00:00:00.000Z", channelId: "chan", messageId: "m1", sessionKey: "user:u1" },
+    { userId: "u1", user: "Yuuta", text: "สอง", timestamp: "2026-08-31T00:00:01.000Z", channelId: "chan", messageId: "m2", sessionKey: "user:u1" },
   ];
   await fakeChannel.send(buildReplyPayload({ text: "ตอบค่ะ", replyTo: replyAnchorOf(batch) }));
 

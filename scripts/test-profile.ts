@@ -572,6 +572,67 @@ const blocks = await loadProfile(process.env.SQLITE_PATH, "blocks");
   check("state block uses the shared band line", state.includes(`ขอบเขต xp: ${bands}`), state);
 }
 
+// ---------------------------------------------------------------- K3. who is speaking
+console.log("=== K3. identity for a shared session ===");
+{
+  blocks.upsertUserProfile({ userId: "g1", userName: "Alice", bond: "close_friend", xp: 320, facts: [{ text: "ชอบกาแฟ" }] });
+  blocks.upsertUserProfile({ userId: "g2", userName: "Bob", bond: "friend", xp: 180, nickname: ["น้องบ๊อบ"], facts: [{ text: "เรียน_architecture" }] });
+  const alice = { userId: "g1", userName: "Alice", profile: blocks.getUserProfile("g1") };
+  const bob = { userId: "g2", userName: "Bob", profile: blocks.getUserProfile("g2") };
+
+  // A private turn must be byte-identical to what it was before sessions existed: that block is the
+  // stable part of Gemini 1's cached prefix, and a group-only change leaking into it would cost every
+  // ordinary conversation its cache.
+  const solo = pipe.identityBlockFor([alice], false, "g1");
+  check("private block is exactly profileBlock()", solo === pipe.profileBlock(alice.profile, alice.userName), solo.slice(0, 60));
+  check("private block names nobody else", !solo.includes("Bob"));
+  check("private block is not wrapped as a group", !solo.includes("<group_session>"));
+  check("private block carries no group rules", !solo.includes("เซสชันนี้เป็นการสนทนารวม"));
+
+  const group = pipe.identityBlockFor([alice, bob], true, "g2");
+  check("group block wraps everything", group.startsWith("<group_session>") && group.trimEnd().endsWith("</group_session>"));
+  check("group block says it is shared", group.includes("เซสชันนี้เป็นการสนทนารวม"));
+  check("it warns that lines carry speaker names", group.includes("แต่ละบรรทัดขึ้นต้นด้วยชื่อคนพูด"));
+  check("it forbids mixing people up", group.includes("ห้ามอ้างคำพูดของคนหนึ่งเป็นของคนอื่น"));
+  check("it separates the data per person", group.includes("แยกกันเด็ดขาด"));
+  check("both profiles are inside", group.includes("ชอบกาแฟ") && group.includes("เรียน_architecture"));
+  check("each block keeps its own name", group.includes("ชื่อ: Alice") && group.includes("ชื่อ: Bob"));
+  check("each block is labelled with its Discord id", group.includes("id: g1") && group.includes("id: g2"));
+  // The distinction that decides whose ladder moves: without it she answers the room at large.
+  check("the owner is named as the one being answered", group.includes("คนที่เธอกำลังตอบในเทิร์นนี้ (id: g2)"));
+  check("the other person is not", group.includes("อีกคนในห้องเดียวกัน (id: g1)"));
+  check("only one block is marked as the addressee", (group.match(/คนที่เธอกำลังตอบในเทิร์นนี้/g) ?? []).length === 1);
+  check("an unknown owner marks nobody", !pipe.identityBlockFor([alice, bob], true, null).includes("คนที่เธอกำลังตอบในเทิร์นนี้"));
+  check("a group of one still reads as a group", pipe.identityBlockFor([alice], true, "g1").includes("<group_session>"));
+  check("a missing profile does not drop the block", pipe.identityBlockFor([{ userId: "g9", userName: "Ghost", profile: null }], true, "g9").includes("ชื่อ: Ghost"));
+  check("no blank lines inside the block", !/\n\n/.test(group));
+
+  // --- the transcript Gemini 2 reads ---
+  const speakers = [{ userId: "g1", user: "Alice" }, { userId: "g2", user: "Bob" }];
+  check("an already-labelled group turn is passed through", pipe.turnTranscript(speakers, "Alice: สวัสดี\nBob: หวัดดี") === "Alice: สวัสดี\nBob: หวัดดี");
+  check("the label may be any speaker, not just the owner", pipe.turnTranscript(speakers, "Bob: หวัดดี\nAlice: สวัสดี") === "Bob: หวัดดี\nAlice: สวัสดี");
+  check("a hand-built turn gets the owner's label", pipe.turnTranscript(speakers, "ไม่มีชื่อใครนำหน้า") === "Bob: ไม่มีชื่อใครนำหน้า");
+  check("a single speaker labels it the same way", pipe.turnTranscript([{ userId: "g1", user: "Alice" }], "ข้อความเดียว") === "Alice: ข้อความเดียว");
+  check("no speakers at all still produces text", pipe.turnTranscript([], "เปล่า") === "ผู้ใช้: เปล่า");
+  // A display name that happens to contain a colon must not be mistaken for a label.
+  check("a name containing ':' is still recognised", pipe.turnTranscript([{ userId: "g1", user: "A: B" }], "A: B: สวัสดี") === "A: B: สวัสดี");
+  check("an unrelated leading word is labelled", pipe.turnTranscript(speakers, "หมายเหตุ: ต่อจากเมื่อวาน") === "Bob: หมายเหตุ: ต่อจากเมื่อวาน");
+
+  // --- wiring ---
+  const src = readFileSync("src/pipeline/pipeline.ts", "utf8");
+  check("Gemini 1 gets the group-aware block", src.includes("identityBlockFor(identities, group, owner.userId)"));
+  check("Gemini 2 is given the speakers and the owner", src.includes("runGemini2(message, responseText, reply.summery, profile, media.parts, speakers, owner)"));
+  check("Gemini 2's input is the transcript, not one name over the whole batch", src.includes("turnTranscript(speakers, message.text)") && !src.includes("` ${message.user}: ${message.text}`"));
+  check("Gemini 2 is told whose state follows", src.includes("สถานะด้านล่างคือของ"));
+  const statePrompt = readFileSync("src/gemini/prompts/isla-state.md", "utf8");
+  check("Gemini 2's instruction has a whose_turn section", statePrompt.includes("<whose_turn>") && statePrompt.includes("</whose_turn>"));
+  check("it forbids recording somebody else's facts", statePrompt.includes("ห้ามบันทึกเรื่องของคนอื่น"));
+  check("it tells the model to name third parties in a memory", statePrompt.includes("ระบุชื่อคนที่ถูกพูดถึง"));
+  const gemini1Prompt = readFileSync("src/gemini/prompts/isla.md", "utf8");
+  check("Gemini 1's prompt teaches the shared-room rules", gemini1Prompt.includes("<group_session>") && gemini1Prompt.includes("ห้องที่คุยด้วยกันหลายคน"));
+  check("and forbids explaining the routing to users", gemini1Prompt.includes("ห้ามอธิบายกลไกว่าระบบแยก/รวมเซสชัน"));
+}
+
 // ---------------------------------------------------------------- K2. the prompt template
 console.log("=== K2. Gemini 2's instruction is a rendered file ===");
 {

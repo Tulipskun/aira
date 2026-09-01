@@ -65,6 +65,7 @@ console.log("=== 1. turn 1: answer + row created in the ONE table ===");
 const t1 = await processMessage({
   userId: USER,
   user: "Nok",
+  sessionKey: `user:${USER}`,
   text: "ฉันชื่อหน่อนะ ทำงานเป็นโปรแกรมเมอร์ ชอบกาแฟเย็นมาก จำไว้ด้วยล่ะ",
   timestamp: nowIso(),
 });
@@ -114,6 +115,7 @@ console.log("=== 4. turn 2: rename follows the SAME row (one identity, no duplic
 const t2 = await processMessage({
   userId: USER,
   user: "Noknoi",
+  sessionKey: `user:${USER}`,
   text: "เปลี่ยนชื่อเรียกเป็นหน่อน้อยแล้วนะ จำกาแฟเย็นที่บอกได้ไหม",
   timestamp: nowIso(),
 });

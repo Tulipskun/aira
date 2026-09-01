@@ -47,7 +47,25 @@ Gemini 2 can update profile data in a future structured operation. The profile i
 
 SQLite also stores conversation history so context can be reconstructed after restart.
 
-User messages retain the application-side user ID, username, text, timestamp and optional filename. Model responses retain their role/text/timestamp. Attachment binary data is not stored here; only the filename is retained.
+User messages retain the application-side user ID, username, text, timestamp and optional filename.
+Model responses retain their role/text/timestamp. Attachment binary data is not stored here; only the
+filename is retained.
+
+Every row also carries `session_key` — the conversation stream it belongs to (`user:<id>` or
+`group:<channel>`). `getHistory(limit, sessionKey)` reads one stream, never the whole table, and
+`saveMessage()` requires the key at compile time so a call site cannot forget it. Rows written before
+session scoping were backfilled at startup from the user turn they answer; anything with no
+attributable author is filed under `legacy:unattributed` and is never read.
+
+## Sessions
+
+`group_sessions` is the membership registry for shared conversations: one row per user
+(`user_id`, `channel_id`, `joined_at`), written only by `/isla join-group` and `/isla leave-group`.
+It is deliberately a separate table rather than a column on `user_profiles` — a session is routing,
+not a fact about the relationship, so joining a room can never touch bond/xp/facts.
+
+`sessionKeyFor(userId, channelId)` is the single decision point: a user who joined in channel A and
+writes in channel B gets their private stream, because they are not in A's room.
 
 ## Temporary data
 
