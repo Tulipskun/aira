@@ -18,7 +18,7 @@ import { currentTimeBlock, thaiTimestamp } from "../gemini/time.js";
 import { imageListForPrompt } from "../bot/images.js";
 import type { UserStatus } from "../bot/embed-footer.js";
 import { embed } from "../memory/embedding.js";
-import { saveMemoryVector, searchMemoriesByVector } from "../memory/chroma.js";
+import { isDuplicateMemory, recallMemories, saveMemoryVector } from "../memory/chroma.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
 import { groupChannelOf, isGroupSession, userOfSession } from "../sql/sessions.js";
 import {
@@ -330,10 +330,16 @@ export async function applyState(
   }
 
   if (state.ingestMemory) {
-    await saveMemoryVector(
-      { id: crypto.randomUUID(), text: state.ingestMemory, userId, timestamp, sessionKey },
-      await embed(state.ingestMemory),
-    );
+    const vector = await embed(state.ingestMemory);
+    // Nothing deduplicated on write before this, so one proposal became two rows inside two minutes
+    // (the live collection holds "ฟาริสขอไอล่าแต่งงาน…" twice). Every duplicate spends a slot in the
+    // recall window that a distinct memory could have used, so a restatement is dropped instead.
+    const twin = await isDuplicateMemory(vector, sessionKey);
+    if (twin) {
+      console.log(`[PIPELINE] ${userId}: memory skipped as duplicate of "${twin.text.slice(0, 40)}" (${(twin.score ?? 0).toFixed(2)})`);
+    } else {
+      await saveMemoryVector({ id: crypto.randomUUID(), text: state.ingestMemory, userId, timestamp, sessionKey }, vector);
+    }
   }
 
   // Read the row last: the card must show the nicknames written above, not the ones from before
@@ -474,12 +480,21 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const prepMs = lap();
   // An empty string is rejected outright by the embedding endpoint (verified: "content contains
   // an empty Part"), and media-only messages are common. Embed what the turn actually is instead.
+  //
+  // `embedText` deliberately keeps the `Name: ` prefix that createOnFlush() stamps on every line.
+  // Stripping it looks like the obvious fix for bad recall and is the wrong one: the memories in the
+  // collection name their person too ("คุณฟาริสขอไอล่าแต่งงาน…"), so the name is a *matching* signal.
+  // Measured against the live collection — same query, prefix vs stripped: 0.8050 vs 0.6351, and
+  // 0.7624 vs 0.5632. A merged multi-line turn costs a little (0.8050 → 0.7552 top-1 over five
+  // lines), which is the price of answering a burst as one turn, and small next to the above.
   const embedText = message.text || media.summary || "(no text)";
   const vector = await embed(embedText);
   const embedMs = lap();
-  // Retrieved inside the session only. Without this filter a fact one user shared privately would
-  // surface in someone else's context from a merely-similar question.
-  const memories = await searchMemoriesByVector(vector, 8, sessionKey);
+  // Retrieval is scoped inside the session AND filtered by similarity. The session key keeps one
+  // person's facts out of another's context; the floor keeps a weak match out of *anyone's*, because
+  // "the 8 nearest" from a collection of six is not eight memories — it is six guesses, and Isla was
+  // handed another user's marriage proposal at cosine 0.42 and used it to turn down a newcomer.
+  const memories = await recallMemories(vector, sessionKey);
   const chromaMs = lap();
   // One read of one table. This used to be two tables keyed by the same user_id, fetched twice,
   // and rendered by two functions that could disagree about the name.
@@ -497,7 +512,16 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const profile = identities.find((identity) => identity.userId === owner.userId)?.profile ?? null;
   const identityBlock = identityBlockFor(identities, group, owner.userId);
   // Chroma stores UTC; the model reads Thai local time, same rule as messageStep().
-  const temporaryMemory = fakeToolCallResult("search_memory", { user: message.user }, { memories: memories.map((memory) => ({ text: memory.text, timestamp: thaiTimestamp(memory.timestamp) })) });
+  // `relevance` travels with each memory on purpose: these are the *closest* matches above a floor,
+  // not verified facts about this conversation, and a 0.61 is a much weaker claim than a 0.85. The
+  // prompt tells her to read that number rather than treat the list as certain (isla.md §1).
+  const temporaryMemory = fakeToolCallResult("search_memory", { user: message.user }, {
+    memories: memories.map((memory) => ({
+      text: memory.text,
+      timestamp: thaiTimestamp(memory.timestamp),
+      relevance: Number((memory.score ?? 1).toFixed(2)),
+    })),
+  });
   const request1 = ctxWindowCreate(history, message.text, message.user, message.timestamp, fileName, temporaryMemory, message.userId, media.parts);
   const buildMs = lap();
   const response1 = await sendRequestGemini(request1, {

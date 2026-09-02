@@ -377,6 +377,32 @@ if (!chromaUp) {
   check("the room is its own stream", ids(await memory.searchMemoriesByVector(vector(0), 10, keys.groupSessionKey(ROOM))) === "m-room");
   check("unattributable lands in the legacy bucket", ids(await memory.searchMemoriesByVector(vector(0), 10, keys.LEGACY_SESSION_KEY)) === "m-orphan");
   check("a session nobody is in recalls nothing", (await memory.searchMemoriesByVector(vector(0), 10, keys.userSessionKey("999999999999999999"))).length === 0);
+
+  // --- the similarity floor (read-only; nothing below mutates the collection) ---
+  // Every stored row is e0, so a query built as `cos·e0 + sqrt(1-cos²)·e1` has exactly that cosine
+  // to all of them. That makes the threshold testable to the digit instead of by luck.
+  const toward = (cos: number) => Array.from({ length: 8 }, (_, k) => (k === 0 ? cos : k === 1 ? Math.sqrt(1 - cos * cos) : 0));
+  check("a search reports the score it matched on", (await memory.searchMemoriesByVector(vector(0), 10, keys.userSessionKey(ALICE)))[0]?.score === 1);
+  check("a distant query scores low, not absent", (await memory.searchMemoriesByVector(toward(0.5), 10, keys.userSessionKey(ALICE)))[0]?.score?.toFixed(4) === "0.5000");
+  check("recall keeps a close match", ids(await memory.recallMemories(toward(0.9), keys.userSessionKey(ALICE))) === "m-alice");
+  check("recall drops a weak match instead of padding the window", (await memory.recallMemories(toward(0.5), keys.userSessionKey(ALICE))).length === 0);
+  check("the floor is the caller's to set", ids(await memory.recallMemories(toward(0.5), keys.userSessionKey(ALICE), 8, 0.4)) === "m-alice");
+  check("a zero limit recalls nothing", (await memory.recallMemories(toward(0.99), keys.userSessionKey(ALICE), 0)).length === 0);
+  // The exact bug: top-8 from a collection of six returned six guesses. The floor is what turns
+  // "nearest" back into "relevant", and it must not depend on how full the collection happens to be.
+  check("an under-filled collection no longer pads the window", (await memory.recallMemories(toward(0.45), keys.LEGACY_SESSION_KEY)).length === 0);
+
+  // --- dedupe on write ---
+  check("an identical memory in the same session is a twin", (await memory.isDuplicateMemory(vector(0), keys.userSessionKey(ALICE)))?.id === "m-alice");
+  check("a merely-related memory is not", (await memory.isDuplicateMemory(toward(0.8), keys.userSessionKey(ALICE))) === null);
+  // Cross-session dedupe would let one person's fact silently swallow another's identical wording.
+  check("a twin is only ever looked for inside one session", (await memory.isDuplicateMemory(vector(0), undefined)) === null);
+  check("and another session's copy is not a twin", (await memory.isDuplicateMemory(vector(0), keys.userSessionKey(BOB)))?.id !== "m-alice");
+
+  // --- distance → cosine ---
+  check("l2 squared maps to cosine", memory.similarityOf(0) === 1 && memory.similarityOf(2) === 0 && memory.similarityOf(1) === 0.5);
+  check("a cosine-space distance is already 1-cos", memory.similarityOf(0.4, "cosine") === 0.6);
+  check("a missing distance is not treated as a mismatch", memory.similarityOf(null) === 1 && memory.similarityOf(undefined) === 1);
   // userId + sessionKey must AND, not OR: chromadb rejects a two-key where map, so this is the
   // behaviour the `$and` wrapper buys.
   check("list by session only", ids(await memory.listMemories({ sessionKey: keys.userSessionKey(ALICE) })) === "m-alice");
@@ -494,11 +520,14 @@ console.log("=== 13. batching, turn owner, renames in a shared stream ===");
   const pipelineSource = readFileSync(join(import.meta.dirname, "../src/pipeline/pipeline.ts"), "utf8");
   const scoped = pipelineSource
     .split("\n")
-    .filter((line) => /getHistory\(|searchMemoriesByVector\(/.test(line) && !/^\s*(\/\/|\*|\/\*)/.test(line));
+    .filter((line) => /getHistory\(|recallMemories\(/.test(line) && !/^\s*(\/\/|\*|\/\*)/.test(line));
   check("the pipeline does read history and memories", scoped.length >= 2, `${scoped.length} call site(s)`);
   check("every one of them passes a session key", scoped.every((line) => line.includes("sessionKey")), scoped.join(" ⏎ "));
   check("history is read for THIS session only", pipelineSource.includes("getHistory(50, sessionKey)"));
-  check("memories are recalled inside THIS session", pipelineSource.includes("searchMemoriesByVector(vector, 8, sessionKey)"));
+  check("memories are recalled inside THIS session", pipelineSource.includes("recallMemories(vector, sessionKey)"));
+  // The raw top-N search is still reachable, and it is the one primitive that has no similarity
+  // floor. If the pipeline ever calls it directly, weak matches are back in the prompt.
+  check("the pipeline does not bypass the similarity floor", !/[^l]searchMemoriesByVector\(/.test(pipelineSource));
   check("the user turn is written with its key", pipelineSource.includes("timestamp, fileName, sessionKey }"));
   check("her reply is written with the same key", pipelineSource.includes("timestamp: responseTimestamp, sessionKey }"));
   check("the ladder moves for the owner, not the first speaker", pipelineSource.includes("applyState(state, owner.userId"));

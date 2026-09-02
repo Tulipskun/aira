@@ -7,6 +7,22 @@ export const config = {
   embedding: {
     dimension: Number(process.env.GEMINI_EMBEDDING2_DIMENSION ?? 768),
   },
+  memory: {
+    /**
+     * How many memories to ask Chroma for, and the cosine floor for keeping one.
+     *
+     * `nResults` alone was the bug: a fixed top-8 always returned 8 items while the collection held
+     * 6, so Isla was handed other people's romance as if it were her own past with the person in
+     * front of her. Measured on the live collection: genuinely relevant pairs score 0.63–0.81 and
+     * unrelated ones 0.32–0.49, so 0.60 sits in the empty gap rather than on either side.
+     *
+     * `ISLA_MEMORY_MIN_SIMILARITY=0` restores the old always-return-8 behaviour.
+     */
+    maxResults: Number(process.env.ISLA_MEMORY_MAX_RESULTS ?? 8),
+    minSimilarity: Number(process.env.ISLA_MEMORY_MIN_SIMILARITY ?? 0.6),
+    /** Above this, a new memory is a restatement of one already stored and is not written again. */
+    dedupeSimilarity: Number(process.env.ISLA_MEMORY_DEDUPE_SIMILARITY ?? 0.92),
+  },
   display: {
     // Zone used to *render* timestamps for the model. Storage stays UTC regardless.
     timezone: process.env.ISLA_TIMEZONE ?? "Asia/Bangkok",

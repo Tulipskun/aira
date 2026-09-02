@@ -1,5 +1,6 @@
 import { ChromaClient, type Where } from "chromadb";
 import { embed } from "./embedding.js";
+import { config } from "../config.js";
 import { LEGACY_SESSION_KEY, userSessionKey } from "../session-keys.js";
 
 const chromaUrl = process.env.CHROMA_URL ?? "http://127.0.0.1:8000";
@@ -24,7 +25,31 @@ export type Memory = {
    */
   sessionKey?: string;
   metadata?: Record<string, Primitive>;
+  /**
+   * Cosine similarity to the query, 0..1, filled in by `searchMemoriesByVector` only.
+   *
+   * It exists because "the 8 nearest" is not the same question as "the relevant ones": without a
+   * score a caller cannot tell a 0.81 match from a 0.32 one, and both were handed to the model as
+   * fact. Absent on rows that were never searched (list/get/forget paths).
+   */
+  score?: number;
 };
+
+/**
+ * Turn Chroma's reported distance into a cosine similarity.
+ *
+ * The collection's HNSW space is `l2` (Chroma's default), and Gemini's embeddings come back
+ * unit-normalised (measured: norm 1.000000 on every stored row), so squared Euclidean distance and
+ * cosine are two views of one number: `d² = 2 − 2·cos`. Chroma returns the squared value — verified
+ * against a hand-recomputed L2² — so the square root some clients take is *not* the distance to use
+ * here. Unknown spaces fall back to treating the value as cosine already, which is what a
+ * `cosine`-space collection reports.
+ */
+export function similarityOf(distance: number | null | undefined, space: "l2" | "cosine" | "ip" | "unknown" = "l2"): number {
+  if (distance === null || distance === undefined || !Number.isFinite(distance)) return 1;
+  if (space === "cosine" || space === "ip") return 1 - distance;
+  return 1 - distance / 2;
+}
 
 async function collection() {
   return client.getOrCreateCollection({ name: collectionName, embeddingFunction: null });
@@ -53,6 +78,7 @@ export async function searchMemories(text: string, limit = 5, sessionKey?: strin
   return searchMemoriesByVector(await embed(text), limit, sessionKey);
 }
 
+
 function primitiveMetadata(value: unknown): Record<string, Primitive> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const result: Record<string, Primitive> = {};
@@ -75,6 +101,7 @@ export async function searchMemoriesByVector(vector: number[], limit = 5, sessio
   const ids = result.ids?.[0] ?? [];
   const documents = result.documents?.[0] ?? [];
   const metadatas = result.metadatas?.[0] ?? [];
+  const distances = result.distances?.[0] ?? [];
   return ids.map((id, index) => ({
     id,
     text: documents[index] ?? "",
@@ -82,8 +109,53 @@ export async function searchMemoriesByVector(vector: number[], limit = 5, sessio
     timestamp: typeof metadatas[index]?.timestamp === "string" ? metadatas[index]!.timestamp : undefined,
     sessionKey: typeof metadatas[index]?.sessionKey === "string" ? metadatas[index]!.sessionKey : undefined,
     metadata: primitiveMetadata(metadatas[index]),
+    score: similarityOf(distances[index]),
   }));
 }
+
+/**
+ * The pipeline's recall path: nearest neighbours **that actually clear a similarity bar**.
+ *
+ * `searchMemoriesByVector` alone was the wrong primitive for a chat prompt. It returns the top N
+ * whatever they score, so while the collection held six rows every turn got six "memories" — and
+ * the ones handed to Isla while a stranger was flirting with her were another user's marriage
+ * proposals, at cosine 0.42–0.49, i.e. no better than chance. She then declined the newcomer by
+ * quoting them. Returning nothing is a real answer, and a much better one than eight near-misses.
+ */
+export async function recallMemories(
+  vector: number[],
+  sessionKey: string,
+  limit = config.memory.maxResults,
+  minSimilarity = config.memory.minSimilarity,
+): Promise<Memory[]> {
+  if (!limit) return [];
+  // Ask for the full window before filtering: Chroma ranks, so dropping low scores afterwards from
+  // a larger candidate set cannot lose a good match that happened to sit at rank 7.
+  const found = await searchMemoriesByVector(vector, limit, sessionKey);
+  return found.filter((memory) => (memory.score ?? 1) >= minSimilarity);
+}
+
+/**
+ * True when this session already holds a memory that says the same thing.
+ *
+ * Nothing deduplicated on write, so one marriage proposal became two rows within two minutes, and
+ * each duplicate took a slot the model could have spent on something else. Embeddings are compared
+ * rather than text because the model rephrases; `minSimilarity` is deliberately far above the recall
+ * threshold — this is "same memory", not "related topic".
+ */
+export async function isDuplicateMemory(
+  vector: number[],
+  sessionKey: string | undefined,
+  minSimilarity = config.memory.dedupeSimilarity,
+): Promise<Memory | null> {
+  // Unscoped is not "search everything": an unfiltered match would let one person's memory swallow
+  // another's identical-sounding fact. No key means no dedupe, and the write proceeds.
+  if (!sessionKey) return null;
+  const found = await searchMemoriesByVector(vector, 1, sessionKey);
+  const top = found[0];
+  return top && (top.score ?? 1) >= minSimilarity ? top : null;
+}
+
 
 export async function chromaHeartbeat(): Promise<void> {
   await client.heartbeat();

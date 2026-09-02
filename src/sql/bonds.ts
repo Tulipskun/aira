@@ -330,10 +330,11 @@ export type BondSignals = {
  * Order matters, and each rule exists because of a specific way a model could otherwise break the
  * ladder:
  *  1. An accepted proposal is honoured — it is a promise she already made out loud. The ladder's
- *     prerequisites still apply: xp must reach `PROPOSAL_XP`, `soulmate` only advances a `lover`,
- *     `lover` only advances a `crush`, and a capped rung (sibling/family) can never become romantic
- *     no matter what gets approved. When xp is not there yet the approval stays **pending** instead
- *     of being dropped, so she cannot undo her own yes by warming up slowly.
+ *     prerequisites still apply: xp must reach `PROPOSAL_XP`, `soulmate` advances a `lover` (and a
+ *     `crush` who was proposed to gets `lover` first, so the promise is never stranded), and a
+ *     capped rung (sibling/family) can never become romantic no matter what gets approved. When the
+ *     grant is not due yet the approval stays **pending** instead of being dropped, so she cannot
+ *     undo her own yes by warming up slowly.
  *  2. Enemy is entered on xp alone, and left by jumping to `friend` — never through `stranger`.
  *  3. Everything else walks the ladder by xp, and `crush` additionally requires
  *     `FLIRT_REQUIREMENT` accepted flirts.
@@ -360,13 +361,36 @@ export function deriveBond(from: string | null | undefined, xp: number, signals:
       if (approvals.soulmate && current === "lover") {
         return { bond: "soulmate", xp, reason: `marriage accepted while lover (xp ${xp})`, changed: true, consumed: ["soulmate"] };
       }
+      // A marriage accepted while still `crush` is a promise the ladder used to hold forever: the
+      // soulmate rule only fires from `lover`, and nothing in a conversation forces the user to
+      // propose dating separately first — he already proposed *marriage*. Nobody marries someone
+      // they are not dating, so the yes contains the lover rung. Grant it now and leave `soulmate`
+      // pending (consumed is empty), so the next turn finishes the climb on its own.
+      if (approvals.soulmate && current === "crush") {
+        return {
+          bond: "lover",
+          xp,
+          reason: `marriage accepted while crush — grants lover first, soulmate stays pending (xp ${xp})`,
+          changed: true,
+          consumed: [],
+        };
+      }
       if (approvals.lover && current === "crush") {
         return { bond: "lover", xp, reason: `lover proposal accepted while crush (xp ${xp})`, changed: true, consumed: ["lover"] };
       }
     }
   }
-  // Said yes, but the ladder cannot grant it yet. Kept pending so the next turn can finish it.
-  const pending = (["family", "sibling", "soulmate", "lover"] as ApprovalName[]).filter((name) => approvals[name] && !enoughXp);
+  // Said yes, but the ladder cannot grant it yet — either xp is short *or* the prerequisite rung
+  // is not there yet (a `lover` yes while still `close_friend` is the common one). Kept pending so
+  // the next turn can finish it, and named in the reason either way: a yes that vanishes from the
+  // log reads to the operator as "the model never reported it", which is the wrong diagnosis.
+  //
+  // A flag for a rung already held is not pending — `approved_lover` stays set when a second yes
+  // arrives at `lover` (nothing consumes it there), and reporting it would claim a promise the
+  // ladder has already kept.
+  const pending = (["family", "sibling", "soulmate", "lover"] as ApprovalName[]).filter(
+    (name) => approvals[name] && BOND_LEVELS[current].level < BOND_LEVELS[name].level,
+  );
 
   // --- 2. enemy, and the one-way door out of it ---
   if (xp <= XP_THRESHOLDS[-1]) {

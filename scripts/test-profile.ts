@@ -125,7 +125,20 @@ check("lover granted when a crush proposes and she agrees", d("crush", 900, { ap
 check("lover proposal from a stranger is refused", d("stranger", 900, { approvals: { lover: true } }).bond === "close_friend");
 check("soulmate needs the approval", d("lover", 900, {}).bond === "lover");
 check("soulmate granted when a lover proposes marriage", d("lover", 900, { approvals: { soulmate: true } }).bond === "soulmate");
-check("soulmate cannot skip lover", d("crush", 900, { approvals: { soulmate: true } }).bond === "crush");
+// A marriage accepted while still `crush` must not teleport to soulmate — but it may not be held
+// hostage either: he already proposed, she already said yes, and nothing obliges him to propose
+// dating separately first. The yes grants `lover` now and leaves `soulmate` pending for next turn.
+check("soulmate is not skipped to in one turn", d("crush", 900, { approvals: { soulmate: true } }).bond === "lover");
+check("the marriage yes grants lover first", d("crush", 900, { approvals: { soulmate: true } }).reason.includes("grants lover first"));
+check("and leaves the marriage promise pending, not consumed", d("crush", 900, { approvals: { soulmate: true } }).consumed.join("") === "");
+check("the pending flag is named so the log can explain it", d("crush", 900, { approvals: { soulmate: true } }).reason.includes("soulmate stays pending"));
+check("the next turn finishes the climb", (() => {
+  const first = d("crush", 900, { approvals: { soulmate: true } });
+  const second = d(first.bond, 920, { approvals: { soulmate: true } });
+  return second.bond === "soulmate" && second.consumed.join("") === "soulmate";
+})());
+check("a marriage yes below the xp bar still waits for xp", d("crush", 200, { approvals: { soulmate: true } }).bond === "crush");
+check("and a capped rung never takes it", d("sibling", 900, { approvals: { soulmate: true } }).bond === "sibling");
 check("proposal below the xp bar is pending, not lost", d("crush", 200, { approvals: { lover: true } }).bond === "crush");
 check("pending reason says so", d("crush", 200, { approvals: { lover: true } }).reason.includes("pending: lover"));
 check("a pending proposal is consumed once xp arrives", d("crush", 300, { approvals: { lover: true } }).consumed.join() === "lover");
@@ -833,6 +846,77 @@ console.log("=== M. the wiring and the retired paths ===");
   check("the card's unlock badge comes from the writer", /bondUnlocked: result\.bondUnlocked/.test(src));
   check("applyTurnState decides the unlock through the ladder rule", profile.includes("bondUnlocked: isBondUnlock(before, derivation.bond)"));
   check("the footer spells the badges exactly as the owner asked", footer.includes("[Flirt +") && footer.includes(" Unlocked]"));
+}
+
+// ---------------------------------------------------------------- N. everyone can reach soulmate
+console.log("=== N. the ladder has no dead end for a suitor ===");
+{
+  // The bug this locks out: `is_flirt` used to mean "the user flirted **and Isla did not refuse**".
+  // A user she turns down therefore never accumulates flirts, `crush` needs FLIRT_REQUIREMENT of
+  // them, and `lover` needs `crush` — so one refusal (often caused by recalling *someone else's*
+  // marriage from memory) froze the ladder permanently. Real case: Shadow at 460 xp and 3 flirts
+  // after 49 turns, still short of crush, while the ladder's own xp gate was long since satisfied.
+  const mod = await loadProfile(join(dir, "soulmate.db"), "soulmate");
+  const grind = (userId: string, target: number) => {
+    for (let guard = 0; guard < 300 && (mod.getUserProfile(userId)?.xp ?? 0) < target; guard++) {
+      mod.applyTurnState({ userId, userName: "Shadow", affinity: 15 });
+    }
+  };
+
+  // Every turn is a refusal: is_flirt is what the *user* did, so it still counts.
+  mod.applyTurnState({ userId: "suitor", userName: "Shadow", affinity: 15, isFlirt: true });
+  check("a refused flirt still counts", mod.getUserProfile("suitor")?.flirtCount === 1, mod.getUserProfile("suitor"));
+  grind("suitor", 300);
+  check("xp alone does not skip the flirt gate", mod.getUserProfile("suitor")?.bond === "close_friend", mod.getUserProfile("suitor"));
+  check("and the reason names the missing flirts", (mod.getUserProfile("suitor")?.flirtCount ?? 0) < bonds.FLIRT_REQUIREMENT);
+
+  // She keeps turning him down, but he keeps trying — that is what the counter measures.
+  for (let i = 0; i < bonds.FLIRT_REQUIREMENT; i++) {
+    mod.applyTurnState({ userId: "suitor", userName: "Shadow", affinity: 15, isFlirt: true, approvals: { lover: false } });
+  }
+  check("refused flirts carry him to crush", mod.getUserProfile("suitor")?.bond === "crush", mod.getUserProfile("suitor"));
+
+  // She says no to the proposal too — the rung must hold, not collapse.
+  const held = mod.applyTurnState({ userId: "suitor", userName: "Shadow", affinity: 15, isFlirt: true, approvals: { lover: false } });
+  check("a declined proposal keeps crush", held.after === "crush", held);
+
+  // The whole climb, in the order the ladder grants it.
+  const toLover = mod.applyTurnState({ userId: "suitor", userName: "Shadow", affinity: 15, isFlirt: true, approvals: { lover: true } });
+  check("an accepted proposal at crush makes them lover", toLover.after === "lover", toLover);
+  check("and the flag is consumed", mod.getUserProfile("suitor")?.approvals.lover === false);
+  const toSoulmate = mod.applyTurnState({ userId: "suitor", userName: "Shadow", affinity: 15, isFlirt: true, approvals: { soulmate: true } });
+  check("a marriage accepted at lover makes them soulmate", toSoulmate.after === "soulmate", toSoulmate);
+  check("soulmate is reachable from stranger in one climb", toSoulmate.after === "soulmate");
+
+  // A yes the rung is not ready for is a promise kept, not a promise dropped.
+  const early = mod.applyTurnState({ userId: "early", userName: "Shadow", affinity: 15, isFlirt: true, approvals: { lover: true } });
+  check("a proposal accepted below crush does not move the rung", early.after === "stranger", early);
+  check("but the reason says which promise is waiting", early.derivation.reason.includes("pending: lover"), early.derivation.reason);
+  check("and the yes is stored", mod.getUserProfile("early")?.approvals.lover === true);
+  grind("early", 300);
+  for (let i = 0; i < bonds.FLIRT_REQUIREMENT; i++) mod.applyTurnState({ userId: "early", userName: "Shadow", affinity: 10, isFlirt: true });
+  const caught = mod.applyTurnState({ userId: "early", userName: "Shadow", affinity: 10 });
+  check("the stored yes fires once the rung is reached", caught.after === "lover", caught);
+  check("and is then cleared", mod.getUserProfile("early")?.approvals.lover === false);
+}
+
+// --- the wording that decides all of the above is in the model's instructions, not just in code ---
+{
+  const statePrompt = readFileSync("src/gemini/prompts/isla-state.md", "utf8");
+  const schema = readFileSync("src/gemini/state-format.ts", "utf8");
+  const gemini1 = readFileSync("src/gemini/prompts/isla.md", "utf8");
+
+  // The clause that created the deadlock, in both places it was written.
+  check("is_flirt no longer asks whether she refused", !/ไม่ได้ปฏิเสธ|ไม่ปฏิเสธ/.test(statePrompt), statePrompt.match(/.*ปฏิเสธ.*/g)?.join(" ⏎ "));
+  check("the schema states the same", /true เมื่อ \*\*ผู้ใช้\*\*/.test(schema) && !/ไม่ได้ปฏิเสธ/.test(schema));
+  check("the instruction says a refusal still counts", statePrompt.includes("แม้ Isla จะปฏิเสธ"));
+
+  // What she may NOT use as a reason to say no.
+  check("Gemini 1 is told the current rung is not a reason to refuse", gemini1.includes("ระดับปัจจุบันไม่ใช่เหตุผลให้ปฏิเสธ"));
+  check("and that 'มีเจ้าของแล้ว' from someone else's story is banned", gemini1.includes("มีเจ้าของแล้ว"));
+  check("Gemini 1 is told an empty recall is not evidence", gemini1.includes("การไม่มีความทรงจำ ไม่ใช่หลักฐาน"));
+  check("and that memories are similarity matches, not confirmed facts", gemini1.includes("ดึงมาเพราะคล้ายกัน"));
+  check("the relevance number is explained to her", gemini1.includes("relevance"));
 }
 
 rmSync(dir, { recursive: true, force: true });

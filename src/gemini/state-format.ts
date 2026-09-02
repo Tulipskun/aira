@@ -115,7 +115,10 @@ export type IslaState = {
   isFlirt?: boolean;
   /** Isla accepted a request to be lovers. Only consulted while the user is a `crush`. */
   approveLover?: boolean;
-  /** Isla accepted a marriage proposal. Only consulted while the user is a `lover`. */
+  /**
+   * Isla accepted a marriage proposal. Grants `soulmate` from `lover`, and from `crush` it grants
+   * `lover` first while this stays pending — a yes she said out loud must never be stranded.
+   */
   approveSoulmate?: boolean;
   /** Isla accepted a request to be siblings. Only consulted from level 2 up. */
   approveSibling?: boolean;
@@ -160,15 +163,17 @@ export const ISLA_STATE_SCHEMA = {
     is_flirt: {
       type: "boolean",
       description:
-        "true เมื่อผู้ใช้จีบ/พูดหวาน/เข้าหาเชิงชู้สาว, false เมื่อไม่ใช่ — จำเป็นเมื่อผู้ใช้ยังอยู่ในระดับที่พัฒนาเป็นแฟนได้",
+        "true เมื่อ **ผู้ใช้** เป็นฝ่ายจีบ/พูดหวาน/เข้าหาเชิงชู้สาวในเทิร์นนี้ — นับจากสิ่งที่เขาทำ " +
+        "ไม่เกี่ยวกับว่าไอล่าตอบรับหรือปฏิเสธ, false เมื่อเขาไม่ได้เข้าหาเชิงชู้สาว " +
+        "จำเป็นเมื่อผู้ใช้ยังอยู่ในระดับที่พัฒนาเป็นแฟนได้",
     },
     approve_lover: {
       type: "boolean",
-      description: "true เมื่อผู้ใช้ขอคบ/ขอเป็นแฟน และ **ไอล่าตอบตกลง** ในข้อความของเทิร์นนี้ — จำเป็นเมื่อระดับคือ crush",
+      description: "true เมื่อผู้ใช้ขอคบ/ขอเป็นแฟน และ **ไอล่าตอบตกลง** ในข้อความของเทิร์นนี้ — ส่งได้ทุกกระดับที่เธอตอบตกลง (จำเป็นเมื่อระดับคือ crush)",
     },
     approve_soulmate: {
       type: "boolean",
-      description: "true เมื่อผู้ใช้ขอแต่งงาน และ **ไอล่าตอบตกลง** ในข้อความของเทิร์นนี้ — จำเป็นเมื่อระดับคือ lover",
+      description: "true เมื่อผู้ใช้ขอแต่งงาน และ **ไอล่าตอบตกลง** ในข้อความของเทิร์นนี้ — ส่งได้ทุกกระดับที่เธอตอบตกลง (จำเป็นเมื่อระดับคือ lover)",
     },
     approve_sibling: {
       type: "boolean",
