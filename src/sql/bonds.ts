@@ -223,7 +223,13 @@ export function xpBandsText(): string {
  * Kept separate from `bondLadderText()` because Gemini 1 also reads the plain version, and showing
  * it the numeric gates invites it to talk about a score with the user.
  */
-export function bondLadderWithThresholds(): string {
+export function bondLadderWithThresholds(partner?: string | null): string {
+  // Named, not "the user": this text is how the analyst learns what earns a rung, and in a shared
+  // room a rule about "the user" is a rule about nobody in particular. `partner` is the display name
+  // of whoever this turn's ladder is, already resolved by the caller — this module stays import-free
+  // on purpose, so the name arrives sanitised rather than being cleaned here. Without one, the line
+  // keeps the generic Thai phrasing it has always had.
+  const who = partner?.trim() ? ` ${partner.trim()} ` : "";
   const lines = [...ASCENDING, ...SPECIAL].map((name) => {
     const info = BOND_LEVELS[name];
     const head = `- ${name} (ระดับ ${info.level}) = ${info.label}`;
@@ -233,9 +239,9 @@ export function bondLadderWithThresholds(): string {
       case "xp":
         return `${head} — xp >= ${XP_THRESHOLDS[info.level]}`;
       case "xpWithFlirts":
-        return `${head} — xp >= ${XP_THRESHOLDS[info.level]} และถูกจีบสะสม >= ${FLIRT_REQUIREMENT} ครั้ง`;
+        return `${head} — xp >= ${XP_THRESHOLDS[info.level]} และ${who ? `${who}ถูก` : "ถูก"}จีบสะสม >= ${FLIRT_REQUIREMENT} ครั้ง`;
       case "proposal":
-        return `${head} — ต้องเป็น ${info.reachAfter} ก่อน + ผู้ใช้${info.ask} + Isla ตอบตกลง (xp >= ${PROPOSAL_XP})`;
+        return `${head} — ต้องเป็น ${info.reachAfter} ก่อน +${who || " อีกฝ่าย"}${info.ask} + Isla ตอบตกลง (xp >= ${PROPOSAL_XP})`;
       case "proposalCapped": {
         // "ไประดับ 4 ไม่ได้" — 4 is the first rung above this one's ceiling, read off the ladder so
         // the sentence cannot claim a level that does not exist.

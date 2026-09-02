@@ -15,6 +15,7 @@ import {
   type IslaState,
 } from "../gemini/state-format.js";
 import { currentTimeBlock, thaiTimestamp } from "../gemini/time.js";
+import { addresseeName, DEFAULT_ADDRESSEE, fillPartner, fillPartnerIn } from "../gemini/addressee.js";
 import { imageListForPrompt } from "../bot/images.js";
 import type { UserStatus } from "../bot/embed-footer.js";
 import { embed } from "../memory/embedding.js";
@@ -86,7 +87,19 @@ export type ProcessMessageResult = {
    */
   status: UserStatus;
 };
-const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
+const systemPromptTemplate = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
+
+/**
+ * Gemini 1's instruction, addressed to whoever this turn belongs to.
+ *
+ * The file is read once at module load (a prompt edit needs a restart — unlike Gemini 2's, which is
+ * re-read by mtime), and it carries `{{partner}}` wherever it would otherwise say "the user". Only
+ * the name is substituted per turn; the rest of the prose is byte-stable, so the cached prefix is
+ * shared by every turn of one person's conversation.
+ */
+export function gemini1SystemPrompt(partner?: string | null): string {
+  return fillPartner(systemPromptTemplate, partner);
+}
 
 /**
  * The numbers Gemini 2's instruction asks for, from the modules that own them.
@@ -98,9 +111,16 @@ const systemPrompt = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemP
  * the rule that actually uses it. Changing a threshold in `sql/bonds.ts` now reaches the prompt on
  * its own.
  *
- * Nothing in here is per-user or per-turn (see `gemini2SystemPrompt()` for why that matters).
+ * Nothing in here is per-turn (see `gemini2SystemPrompt()` for why that matters).
+ *
+ * `partner` is deliberately NOT one of these values even though the ladder text needs a name: the
+ * name is substituted by `fillPartner()` *before* `renderPrompt()` runs, because spacing a name
+ * against Thai prose is a rule that must exist in exactly one place (`gemini/addressee.ts`) and
+ * `renderPrompt()` knows nothing about it. Two substitution layers each guessing at whitespace is
+ * how `เมื่อ Yuuta ขอ` and `เมื่อ ไอล่า ขอ` end up in the same prompt.
  */
-export function gemini2PromptValues(): PromptValues {
+export function gemini2PromptValues(partner?: string | null): PromptValues {
+  const who = addresseeName(partner);
   return {
     affinity_min: AFFINITY_MIN,
     affinity_max: AFFINITY_MAX,
@@ -108,7 +128,7 @@ export function gemini2PromptValues(): PromptValues {
     affinity_tiers: affinityScaleText(),
     no_image: NO_IMAGE,
     facts_per_turn: FACTS_PER_TURN,
-    bond_ladder: bondLadderWithThresholds(),
+    bond_ladder: bondLadderWithThresholds(who),
     flirt_requirement: FLIRT_REQUIREMENT,
     proposal_xp: PROPOSAL_XP,
     enemy_xp: XP_THRESHOLDS[-1],
@@ -145,13 +165,18 @@ const gemini2PromptCache: { current?: CachedPrompt } = {
  * picture to `images/`, never between turns.
  *
  * Re-read per request but cached by mtime, so editing the file or dropping in a picture takes effect
- * on the next message without a restart. While neither changes, the returned string is
- * byte-identical across calls, so prompt caching is unaffected by the liveness.
+ * on the next message without a restart. While neither changes *and the same person is being
+ * answered*, the returned string is byte-identical across calls, so the cache still works per user.
+ *
+ * `partner` is the display name of whoever this turn's ladder belongs to. Naming them is what stops
+ * the analyst from reading a rule about "the user" as a rule about anybody in the room.
  */
-export function gemini2SystemPrompt(): string {
+export function gemini2SystemPrompt(partner?: string | null): string {
   const file = resolve(PROJECT_ROOT, config.paths.gemini2SystemPrompt);
   gemini2PromptCache.current = loadPromptTemplate(file, "GEMINI2_SYSTEM_PROMPT_FILE", gemini2PromptCache.current);
-  return renderPrompt(gemini2PromptCache.current.text, gemini2PromptValues(), "gemini2");
+  // Name first, numbers second: `fillPartner()` owns how a name sits against Thai prose, and
+  // `renderPrompt()` must never see a `{{partner}}` it would have to substitute without that rule.
+  return renderPrompt(fillPartner(gemini2PromptCache.current.text, partner), gemini2PromptValues(partner), "gemini2");
 }
 
 /**
@@ -174,7 +199,10 @@ export function profileBlock(profile: UserProfile | null, currentName?: string):
     `ฉายาที่ Isla ตั้งให้: ${nicknames}`,
     `fact:`,
     facts,
-    `หมายเหตุ: ตัวเลขความสัมพันธ์เป็นข้อมูลภายใน อย่านำไปพูดกับผู้ใช้และอย่าแปลงเป็นคำพูดตรงตัว`,
+    // Named, not "the user": this block is about one specific person and the sentence is a rule
+    // about who may hear these numbers. `${name}` is the same name the block is filed under two
+    // lines above, so the instruction and its subject cannot drift apart.
+    `หมายเหตุ: ตัวเลขความสัมพันธ์เป็นข้อมูลภายใน อย่านำไปพูดกับ ${name} และอย่าแปลงเป็นคำพูดตรงตัว`,
     `</user_profile>`,
   ].join("\n");
 }
@@ -234,7 +262,9 @@ export function turnTranscript(speakers: TurnSpeaker[], text: string): string {
   // and the merged form written by `createOnFlush` is exactly `${name}: ${text}`.
   if (speakers.some((speaker) => firstLine.startsWith(`${speaker.user}: `))) return text;
   const only = speakers[speakers.length - 1];
-  return `${only?.user ?? "ผู้ใช้"}: ${text}`;
+  // The fallback is a placeholder name, never a generic noun: an unattributed line labelled
+  // "ผู้ใช้:" would read to the analyst as a fifth person in the room.
+  return `${only?.user ?? DEFAULT_ADDRESSEE}: ${text}`;
 }
 
 /**
@@ -399,8 +429,11 @@ async function runGemini2(
     // Answers as JSON like Gemini 1, so the stage must be stated: `responseMode` no longer tells
     // client.ts which key pool or model this call belongs to.
     stage: "gemini2",
-    systemInstruction: gemini2SystemPrompt(),
-    responseFormat: { type: "text", mime_type: "application/json", schema: ISLA_STATE_SCHEMA },
+    // Named by the ladder's owner, not "the user": the transcript above can carry four speakers and
+    // every field in this JSON means exactly one of them. Same name in the instruction and the
+    // schema, so the two cannot describe different people.
+    systemInstruction: gemini2SystemPrompt(owner.user),
+    responseFormat: { type: "text", mime_type: "application/json", schema: fillPartnerIn(ISLA_STATE_SCHEMA, owner.user) },
     debug: { userId: message.userId, userName: message.user },
   });
   const state = parseIslaState(typeof result === "string" ? result : "", profile?.bond ?? "stranger");
@@ -527,11 +560,14 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const response1 = await sendRequestGemini(request1, {
     // `currentTimeBlock()` is recomputed per turn on purpose: history and memory only carry the
     // timestamps of *past* rows, so without a server-side "now" the model has nothing to weigh a
-    // user's false time claim against (real case: "ยังไม่เที่ยงเลย" typed at 12:46:39+07:00, and
-    // Isla agreed with the user over her own context). Gemini 2 deliberately does NOT get it —
-    // it only picks tools, and a per-turn instruction string would break its prompt caching.
-    systemInstruction: `${systemPrompt}\n\n${identityBlock}\n\n${currentTimeBlock()}`,
-    responseFormat: { type: "text", mime_type: "application/json", schema: ISLA_REPLY_SCHEMA },
+    // claim about the time against (real case: "ยังไม่เที่ยงเลย" typed at 12:46:39+07:00, and Isla
+    // agreed with it over her own context).
+    //
+    // The instruction is addressed to `owner.user` — the same person whose ladder moves below and
+    // whose message the reply quotes, so the name in the prose cannot disagree with the name on the
+    // transcript.
+    systemInstruction: `${gemini1SystemPrompt(owner.user)}\n\n${identityBlock}\n\n${currentTimeBlock()}`,
+    responseFormat: { type: "text", mime_type: "application/json", schema: fillPartnerIn(ISLA_REPLY_SCHEMA, owner.user) },
     debug: { userId: message.userId, userName: message.user },
   });
   const gemini1Ms = lap();
