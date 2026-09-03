@@ -330,8 +330,8 @@ export type BondSignals = {
   /** Accepted flirtatious approaches, all-time, *including* this turn's. */
   flirtCount: number;
   /**
-   * Proposals Isla accepted — newly accepted this turn, or accepted earlier and still waiting on
-   * xp. A flag is cleared only when it actually moved the rung.
+   * Mutual agreements to change the relationship, reported this turn — either she accepted his
+   * request, or he accepted hers. A flag is cleared only when it actually moved the rung.
    */
   approvals?: Partial<Record<ApprovalName, boolean>>;
 };

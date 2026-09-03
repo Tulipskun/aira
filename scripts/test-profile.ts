@@ -91,7 +91,8 @@ check("climbing back out of enemy to friend IS an unlock -- a rung newly reached
 check("a sideways move onto a new rung IS an unlock", bonds.isBondUnlock("crush", "family") && bonds.isBondUnlock("crush", "sibling"));
 check("an unknown target is never an unlock", !bonds.isBondUnlock("friend", "bestie") && !bonds.isBondUnlock("friend", null));
 
-check("xp -> stranger in the band", bonds.bondForXp(0) === "stranger" && bonds.bondForXp(149) === "stranger" && bonds.bondForXp(-149) === "stranger");
+check("xp -> stranger in the band", bonds.bondForXp(0) === "stranger" && bonds.bondForXp(49) === "stranger" && bonds.bondForXp(-149) === "stranger");
+check("xp -> acquaintance in the band", bonds.bondForXp(50) === "acquaintance" && bonds.bondForXp(149) === "acquaintance");
 check("xp -> friend at 150", bonds.bondForXp(150) === "friend");
 check("xp -> close_friend at 300", bonds.bondForXp(300) === "close_friend");
 check("xp 299 is still friend, not close_friend", bonds.bondForXp(299) === "friend");
@@ -124,6 +125,7 @@ check("recovering from enemy jumps to friend even with high xp", d("enemy", 600,
 check("the jump keeps the xp, so the next turn climbs on", d("friend", 600, { flirtCount: 5 }).bond === "crush");
 check("lover needs the approval", d("crush", 900, {}).bond === "crush");
 check("lover granted when a crush proposes and she agrees", d("crush", 900, { approvals: { lover: true } }).bond === "lover");
+check("an agreement Isla proposed is honoured the same way (the engine never asks who asked)", d("crush", 900, { approvals: { lover: true } }).bond === "lover");
 check("lover proposal from a stranger is refused", d("stranger", 900, { approvals: { lover: true } }).bond === "close_friend");
 check("soulmate needs the approval", d("lover", 900, {}).bond === "lover");
 check("soulmate granted when a lover proposes marriage", d("lover", 900, { approvals: { soulmate: true } }).bond === "soulmate");
@@ -146,7 +148,7 @@ check("pending reason says so", d("crush", 200, { approvals: { lover: true } }).
 check("a pending proposal is consumed once xp arrives", d("crush", 300, { approvals: { lover: true } }).consumed.join() === "lover");
 check("sibling granted from a friend", d("friend", 300, { approvals: { sibling: true } }).bond === "sibling");
 check("family granted from a stranger", d("stranger", 700, { approvals: { family: true } }).bond === "family");
-check("family needs xp too", d("stranger", 100, { approvals: { family: true } }).bond === "stranger");
+check("family needs xp too", d("stranger", 100, { approvals: { family: true } }).bond === "acquaintance");
 check("sibling can never become lover", d("sibling", 900, { approvals: { lover: true } }).bond === "sibling");
 check("family can never become soulmate", d("family", 900, { approvals: { soulmate: true, lover: true } }).bond === "family");
 check("family falling out can reach enemy", d("family", -200, {}).bond === "enemy");
@@ -554,7 +556,7 @@ const blocks = await loadProfile(process.env.SQLITE_PATH, "blocks");
   });
   const p1 = blocks.getUserProfile("p1")!;
   const block = pipe.profileBlock(p1);
-  check("bond shown with Thai label and rank", block.includes("แอบชอบ") && block.includes("crush") && block.includes("ระดับ 3"), block);
+  check("bond shown with Thai label and rank", block.includes("แอบชอบ") && block.includes("crush") && block.includes("ระดับ 4"), block);
   check("nicknames joined", block.includes("จิ้มจุ้ม, น้องยู"));
   check("facts rendered as bullets", block.includes("- [") && block.includes("ชอบชาเขียว"));
   check("fact timestamp converted to Thai time", block.includes("2026-08-31T03:01:47+07:00"), block);
@@ -569,7 +571,7 @@ const blocks = await loadProfile(process.env.SQLITE_PATH, "blocks");
   check("profile with an empty name falls back to the caller's name", pipe.profileBlock({ ...p1, userName: "" }, "Fallback").includes("ชื่อ: Fallback"));
 
   const state = pipe.stateBlock(p1);
-  check("state block has the rung", state.includes("bond: crush") && state.includes("ระดับ 3"), state);
+  check("state block has the rung", state.includes("bond: crush") && state.includes("ระดับ 4"), state);
   check("state block has xp and flirt count", state.includes("xp: 120") && state.includes("flirt_count: 6"), state);
   check("state block names the flirt requirement", state.includes("5"), state);
   check("state block lists what this rung must answer", state.includes("approveLover") && state.includes("isFlirt"), state);
@@ -586,7 +588,7 @@ const blocks = await loadProfile(process.env.SQLITE_PATH, "blocks");
   // The ladder rules used to be a `bondRulesBlock()` function here; they are a section of the prompt
   // file now, so they are asserted through the rendered instruction in section K2.
   const bands = bonds.xpBandsText();
-  check("xp bands carry every xp-only rung", ["-150", "-149..149", "150..299", ">= 300"].every((n) => bands.includes(n)), bands);
+  check("xp bands carry every xp-only rung", ["-150", "-149..49", "50..149", "150..299", ">= 300"].every((n) => bands.includes(n)), bands);
   check("state block uses the shared band line", state.includes(`ขอบเขต xp: ${bands}`), state);
 }
 
@@ -705,7 +707,7 @@ console.log("=== K2. Gemini 2's instruction is a rendered file ===");
   utimesSync(custom, new Date(), new Date(Date.now() + 2000));
   check("editing the file takes effect with no restart", pipe.gemini2SystemPrompt() === `ฉบับใหม่ ${bonds.PROPOSAL_XP}`, pipe.gemini2SystemPrompt());
   cfg.paths.gemini2SystemPrompt = original;
-  check("restoring the path restores the instruction", pipe.gemini2SystemPrompt() === rendered);
+  check("restoring the path restores the instruction", pipe.gemini2SystemPrompt(OWNER) === rendered);
 
   // --- the renderer itself ---
   check("renderPrompt fills numbers and strings", tpl.renderPrompt("a {{x}} b {{y}}", { x: 1, y: "สอง" }) === "a 1 b สอง");
@@ -802,7 +804,7 @@ console.log("=== M. the wiring and the retired paths ===");
   const profile = readFileSync("src/sql/profile.ts", "utf8");
   const prompt = readFileSync("src/gemini/prompts/isla.md", "utf8");
 
-  check("Gemini 2 is given a JSON response_format", src.includes("schema: ISLA_STATE_SCHEMA"));
+  check("Gemini 2 is given a JSON response_format", src.includes("ISLA_STATE_SCHEMA") && src.includes("responseFormat"));
   check("Gemini 2 declares its stage explicitly", /stage: "gemini2"/.test(src));
   check("Gemini 2 no longer uses the tool path", !src.includes("EXECUTE_TOOL") && !src.includes('responseMode: "tool"'));
   // The instruction's wording is a prompt file now, so prose assertions read the file (and the

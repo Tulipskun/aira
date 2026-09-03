@@ -113,16 +113,20 @@ export type IslaState = {
   affinity: number;
   /** Present only when the user's rung can be romantic (see `requiresFlirtFlag`). */
   isFlirt?: boolean;
-  /** Isla accepted a request to be lovers. Only consulted while the user is a `crush`. */
+  /**
+   * A mutual agreement to be lovers this turn — either she accepted his request, or he accepted
+   * hers. Only consulted while the user is a `crush`.
+   */
   approveLover?: boolean;
   /**
-   * Isla accepted a marriage proposal. Grants `soulmate` from `lover`, and from `crush` it grants
-   * `lover` first while this stays pending — a yes she said out loud must never be stranded.
+   * A mutual agreement to marry this turn, in either direction. Grants `soulmate` from `lover`,
+   * and from `crush` it grants `lover` first while this stays pending — a yes said out loud must
+   * never be stranded.
    */
   approveSoulmate?: boolean;
-  /** Isla accepted a request to be siblings. Only consulted from level 2 up. */
+  /** A mutual agreement to be siblings this turn, in either direction. */
   approveSibling?: boolean;
-  /** Isla accepted a request to be family. Only consulted from level 2 up. */
+  /** A mutual agreement to be family this turn, in either direction. */
   approveFamily?: boolean;
   /** Empty means "no image this turn" — a legitimate answer, not a failure. */
   selectImage: string;
@@ -169,19 +173,19 @@ export const ISLA_STATE_SCHEMA = {
     },
     approve_lover: {
       type: "boolean",
-      description: "true เมื่อ {{partner}} ขอคบ/ขอเป็นแฟน และ **ไอล่าตอบตกลง** ในข้อความของเทิร์นนี้ — ส่งได้ทุกกระดับที่เธอตอบตกลง (จำเป็นเมื่อระดับคือ crush)",
+      description: "true เมื่อ **มีความยินยอมร่วมกัน** ในเทิร์นนี้ว่าเป็นแฟนกัน — ไม่ว่า {{partner}} ขอแล้วไอล่าตอบตกลง, หรือไอล่าเป็นฝ่ายขอแล้ว {{partner}} ตอบตกลง (จำเป็นเมื่อระดับคือ crush)",
     },
     approve_soulmate: {
       type: "boolean",
-      description: "true เมื่อ {{partner}} ขอแต่งงาน และ **ไอล่าตอบตกลง** ในข้อความของเทิร์นนี้ — ส่งได้ทุกกระดับที่เธอตอบตกลง (จำเป็นเมื่อระดับคือ lover)",
+      description: "true เมื่อ **มีความยินยอมร่วมกัน** ในเทิร์นนี้ว่าแต่งงานกัน — ไม่ว่าฝ่ายใดเป็นคนขอ อีกฝ่ายตอบตกลง (จำเป็นเมื่อระดับคือ lover)",
     },
     approve_sibling: {
       type: "boolean",
-      description: "true เมื่อ {{partner}} ขอเป็นพี่น้อง และ **ไอล่าตอบตกลง** ในข้อความของเทิร์นนี้",
+      description: "true เมื่อ **มีความยินยอมร่วมกัน** ในเทิร์นนี้ว่าเป็นพี่น้องกัน — ไม่ว่าฝ่ายใดเป็นคนขอ อีกฝ่ายตอบตกลง",
     },
     approve_family: {
       type: "boolean",
-      description: "true เมื่อ {{partner}} ขอเป็นคนในครอบครัว และ **ไอล่าตอบตกลง** ในข้อความของเทิร์นนี้",
+      description: "true เมื่อ **มีความยินยอมร่วมกัน** ในเทิร์นนี้ว่าเป็นครอบครัวกัน — ไม่ว่าฝ่ายใดเป็นคนขอ อีกฝ่ายตอบตกลง",
     },
     select_image: {
       type: "string",
