@@ -10,6 +10,7 @@
 
 export type BondLevel =
   | "stranger"
+  | "acquaintance"
   | "friend"
   | "close_friend"
   | "crush"
@@ -72,24 +73,25 @@ export type BondInfo = {
 export const BOND_LEVELS: Record<BondLevel, BondInfo> = {
   // No unlockLabel: everyone starts here, so arriving is not news (see BondInfo.unlockLabel).
   stranger: { level: 0, label: "คนแปลกหน้า", emoji: "👋", reach: "band" },
-  friend: { level: 1, label: "เพื่อน", emoji: "🙂", unlockLabel: "Friend", reach: "xp" },
-  close_friend: { level: 2, label: "เพื่อนสนิท", emoji: "🤗", unlockLabel: "Close Friend", reach: "xp" },
-  crush: { level: 3, label: "แอบชอบ", emoji: "💗", unlockLabel: "Crush", reach: "xpWithFlirts" },
-  lover: { level: 4, label: "คนรัก", emoji: "❤️", unlockLabel: "Lover", reach: "proposal", reachAfter: "crush", ask: "ขอคบ" },
-  soulmate: { level: 5, label: "คู่แท้", emoji: "💞", unlockLabel: "Soulmate", reach: "proposal", reachAfter: "lover", ask: "ขอแต่งงาน" },
+  acquaintance: { level: 1, label: "คนรู้จัก", emoji: "🤝", unlockLabel: "Acquaintance", reach: "xp" },
+  friend: { level: 2, label: "เพื่อน", emoji: "🙂", unlockLabel: "Friend", reach: "xp" },
+  close_friend: { level: 3, label: "เพื่อนสนิท", emoji: "🤗", unlockLabel: "Close Friend", reach: "xp" },
+  crush: { level: 4, label: "แอบชอบ", emoji: "💗", unlockLabel: "Crush", reach: "xpWithFlirts" },
+  lover: { level: 5, label: "คนรัก", emoji: "❤️", unlockLabel: "Lover", reach: "proposal", reachAfter: "crush", ask: "ขอคบ" },
+  soulmate: { level: 6, label: "คู่แท้", emoji: "💞", unlockLabel: "Soulmate", reach: "proposal", reachAfter: "lover", ask: "ขอแต่งงาน" },
   // Falling out with her does not walk down the ladder, it lands here — and climbing back out
-  // lands on `friend` (level 1), never on `stranger`. No unlockLabel: a fall-out is not a
+  // lands on `friend` (level 2), never on `stranger`. No unlockLabel: a fall-out is not a
   // condition passed.
   enemy: { level: -1, label: "ศัตรู", emoji: "💢", jumpTo: "friend", reach: "enemy" },
-  // Family is fixed at level 3 and can never become romantic: the ladder stops at level 3.
-  sibling: { level: 3, label: "พี่น้อง", emoji: "🌱", maxLevel: 3, unlockLabel: "Sibling", reach: "proposalCapped", ask: "ขอเป็นพี่น้อง" },
-  family: { level: 3, label: "ครอบครัว", emoji: "🏠", maxLevel: 3, unlockLabel: "Family", reach: "proposalCapped", ask: "ขอเป็นครอบครัว" },
+  // Family is fixed at level 4 and can never become romantic: the ladder stops at level 4.
+  sibling: { level: 4, label: "พี่น้อง", emoji: "🌱", maxLevel: 4, unlockLabel: "Sibling", reach: "proposalCapped", ask: "ขอเป็นพี่น้อง" },
+  family: { level: 4, label: "ครอบครัว", emoji: "🏠", maxLevel: 4, unlockLabel: "Family", reach: "proposalCapped", ask: "ขอเป็นครอบครัว" },
 };
 
 export const BOND_NAMES = Object.keys(BOND_LEVELS) as BondLevel[];
 
 /** Level 0 rungs, in ladder order — used to render the ladder for the model. */
-const ASCENDING: BondLevel[] = ["stranger", "friend", "close_friend", "crush", "lover", "soulmate"];
+const ASCENDING: BondLevel[] = ["stranger", "acquaintance", "friend", "close_friend", "crush", "lover", "soulmate"];
 /** Rungs that are not part of the romantic ladder. */
 const SPECIAL: BondLevel[] = ["sibling", "family", "enemy"];
 
@@ -191,22 +193,24 @@ export function bondLadderText(): string {
  * places (the ladder text and Gemini 2's per-turn `<current_state>`), and a band edited in only one of
  * them would tell the model the ladder says something it does not.
  */
-export function xpBandRange(bond: "enemy" | "stranger" | "friend" | "close_friend"): string {
+export function xpBandRange(bond: "enemy" | "stranger" | "acquaintance" | "friend" | "close_friend"): string {
   switch (bond) {
     case "enemy":
       return `<= ${XP_THRESHOLDS[-1]}`;
     case "stranger":
       return `${XP_THRESHOLDS[-1] + 1}..${XP_THRESHOLDS[1] - 1}`;
-    case "friend":
+    case "acquaintance":
       return `${XP_THRESHOLDS[1]}..${XP_THRESHOLDS[2] - 1}`;
+    case "friend":
+      return `${XP_THRESHOLDS[2]}..${XP_THRESHOLDS[3] - 1}`;
     case "close_friend":
-      return `>= ${XP_THRESHOLDS[2]}`;
+      return `>= ${XP_THRESHOLDS[3]}`;
   }
 }
 
-/** The same bands as one line: `enemy <= -150, stranger -149..149, friend 150..299, close_friend >= 300`. */
+/** The same bands as one line: `enemy <= -150, stranger -149..49, acquaintance 50..149, friend 150..299, close_friend >= 300`. */
 export function xpBandsText(): string {
-  return (["enemy", "stranger", "friend", "close_friend"] as const)
+  return (["enemy", "stranger", "acquaintance", "friend", "close_friend"] as const)
     .map((bond) => `${bond} ${xpBandRange(bond)}`)
     .join(", ");
 }
@@ -266,11 +270,12 @@ export function bondLadderWithThresholds(partner?: string | null): string {
 export const XP_THRESHOLDS: Record<number, number> = {
   [-1]: -150, // enemy
   0: -149, // stranger: anywhere between the two enemy walls
-  1: 150, // friend
-  2: 300, // close_friend
-  3: 300, // crush (also needs FLIRT_REQUIREMENT accepted flirts)
-  4: 300, // lover (also needs the proposal accepted)
-  5: 300, // soulmate (also needs the proposal accepted)
+  1: 50, // acquaintance
+  2: 150, // friend
+  3: 300, // close_friend
+  4: 300, // crush (also needs FLIRT_REQUIREMENT accepted flirts)
+  5: 300, // lover (also needs the proposal accepted)
+  6: 300, // soulmate (also needs the proposal accepted)
 };
 
 /** Accepted flirtatious approaches needed before the user can become a `crush`. */
@@ -287,7 +292,8 @@ export function isCappedBond(bond: BondLevel): boolean {
 export function bondForXp(xp: number): BondLevel {
   if (xp <= XP_THRESHOLDS[-1]) return "enemy";
   if (xp < XP_THRESHOLDS[1]) return "stranger";
-  if (xp < XP_THRESHOLDS[2]) return "friend";
+  if (xp < XP_THRESHOLDS[2]) return "acquaintance";
+  if (xp < XP_THRESHOLDS[3]) return "friend";
   return "close_friend";
 }
 
@@ -312,7 +318,7 @@ export type ApprovalName = "lover" | "soulmate" | "sibling" | "family";
  * The owner's ladder puts sibling/family/lover/soulmate at level 3+, which begins at 300 xp — the
  * same bar as `close_friend`. A yes below that bar is remembered, not thrown away (see `pending`).
  */
-export const PROPOSAL_XP = XP_THRESHOLDS[2];
+export const PROPOSAL_XP = XP_THRESHOLDS[3];
 
 /**
  * The signals Gemini 2 reported about this turn.
@@ -417,8 +423,9 @@ export function deriveBond(from: string | null | undefined, xp: number, signals:
   if (rank > keep) {
     bond = byXp;
     reason = `xp ${xp} reached level ${rank}`;
-  } else if (rank < keep && keep <= 2) {
-    // Only the xp-only rungs decay, and they decay no lower than `friend`.
+  } else if (rank < keep && keep <= 3) {
+    // Only the xp-only rungs (acquaintance/friend/close_friend) decay, and they decay no lower
+    // than `friend`.
     //
     // `stranger` is a starting state, never a destination: you cannot un-meet someone. Without this
     // floor the enemy rule would cancel itself out — recovering from enemy lands on `friend` at an
@@ -428,7 +435,7 @@ export function deriveBond(from: string | null | undefined, xp: number, signals:
     reason = rank === 0 ? `xp ${xp} is below the friend band, but stranger is not a fallback` : `xp ${xp} fell back to level ${rank}`;
   }
 
-  if (capped && BOND_LEVELS[bond].level < 3) {
+  if (capped && BOND_LEVELS[bond].level < 4) {
     // Leaving a capped rung downward is allowed (family can fall out with her), but climbing back
     // into the romantic ladder is not.
     bond = "close_friend";
@@ -436,7 +443,7 @@ export function deriveBond(from: string | null | undefined, xp: number, signals:
   }
 
   // `crush` is the one rung that needs more than xp.
-  if (bond === "close_friend" && BOND_LEVELS[current].level < 3) {
+  if (bond === "close_friend" && BOND_LEVELS[current].level < 4) {
     if (signals.flirtCount >= FLIRT_REQUIREMENT) {
       bond = "crush";
       reason = `xp ${xp} + ${signals.flirtCount} accepted flirts (>= ${FLIRT_REQUIREMENT})`;
