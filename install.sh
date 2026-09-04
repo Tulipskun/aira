@@ -52,5 +52,5 @@ say "Installing the 'aira' command..."
 bun run install-cli
 
 printf '\n[AIRA] Installation complete.\n'
-printf '[AIRA] Edit: %s/.env\n' "$INSTALL_ROOT"
+printf '[AIRA] Run: aira setup\n'
 printf '[AIRA] Then run: aira start\n'
