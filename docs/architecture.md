@@ -30,7 +30,7 @@ All model names are configurable from `.env` and are centralized in `config.ts`.
 - `GEMINI_EMBEDDING2_MODEL` — Gemini Embedding 2 used for Chroma queries and long-term memory vectors.
 - `GEMINI_EMBEDDING2_DIMENSION` — requested embedding dimensionality.
 
-API keys remain separate per model role: `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, and `GEMINI_EMBEDDING2_API_KEYS`.
+All Google Gemini stages share one comma-separated API-key pool: `GEMINI_API_KEY=key1,key2`. The runtime maps this pool to each stage internally while keeping independent rotation state per stage. The stage-specific `*_API_KEYS` variables are no longer required for setup.
 
 `GEMINI1_SYSTEM_PROMPT_FILE` points to the editable Gemini 1 character/system prompt. Default: `./src/gemini/prompts/isla.md`.
 
