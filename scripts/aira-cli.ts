@@ -2,16 +2,17 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-export type AiraCommand = "help" | "start" | "stop" | "restart" | "status" | "log";
+export type AiraCommand = "help" | "start" | "stop" | "restart" | "status" | "log" | "register_commands";
 
 const root = resolve(import.meta.dir, "..");
 const supervisor = resolve(import.meta.dir, "supervisor.ts");
+const registerCommands = resolve(import.meta.dir, "register-commands.ts");
 const logFile = resolve(root, ".aira/logs/aira.log");
 
 export function buildCommand(args: string[]): { command: AiraCommand } {
   const value = args[0] ?? "help";
   if (value === "logs") return { command: "log" };
-  if (["help", "start", "stop", "restart", "status", "log"].includes(value)) {
+  if (["help", "start", "stop", "restart", "status", "log", "register_commands"].includes(value)) {
     return { command: value as AiraCommand };
   }
   throw new Error(`Unknown command: ${value}`);
@@ -30,6 +31,19 @@ function supervisorCommand(command: "start" | "stop"): number {
   return result.status ?? 1;
 }
 
+function registerDiscordCommands(): number {
+  const result = spawnSync(process.execPath, ["run", registerCommands], {
+    cwd: root,
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (result.error) {
+    console.error(`[AIRA] Failed to register Discord commands: ${result.error.message}`);
+    return 1;
+  }
+  return result.status ?? 1;
+}
+
 export function readStatus(projectRoot: string): { pid?: number; running: boolean } {
   const file = resolve(projectRoot, ".aira/supervisor.pid");
   if (!existsSync(file)) return { running: false };
@@ -39,7 +53,7 @@ export function readStatus(projectRoot: string): { pid?: number; running: boolea
     process.kill(pid, 0);
     return { pid, running: true };
   } catch {
-    return { pid, running: false };
+    return { running: false };
   }
 }
 
@@ -71,7 +85,7 @@ function printLog(): void {
 }
 
 function usage(): void {
-  console.log(`Usage: aira <command>\n\nCommands:\n  start    Start Aira\n  stop     Stop Aira\n  restart  Restart Aira\n  status   Show status\n  log      Show the last 100 log lines\n  logs     Alias for log\n  help     Show this help`);
+  console.log(`Usage: aira <command>\n\nCommands:\n  start              Start Aira\n  stop               Stop Aira\n  restart            Restart Aira\n  status             Show status\n  register_commands  Register/update Discord slash commands\n  log                Show the last 100 log lines\n  logs               Alias for log\n  help               Show this help`);
 }
 
 export function main(args: string[] = process.argv.slice(2)): number {
@@ -99,6 +113,8 @@ export function main(args: string[] = process.argv.slice(2)): number {
     case "status":
       printStatus();
       return 0;
+    case "register_commands":
+      return registerDiscordCommands();
     case "log":
       printLog();
       return 0;
