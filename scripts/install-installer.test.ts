@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const installer = readFileSync(resolve(import.meta.dir, "../install.sh"), "utf8");
-
 assert.match(installer, /^#!\/usr\/bin\/env bash/m);
 assert.match(installer, /git clone --depth 1/);
 assert.match(installer, /gh repo clone/);
@@ -18,5 +17,4 @@ assert.match(installer, /If this repository is private, run 'gh auth login' and 
 assert.match(installer, /CLI is available in the current shell/);
 assert.match(installer, /CLI was installed at/);
 assert.match(installer, /CLI installation could not be verified/);
-
 console.log("installer tests: OK");
