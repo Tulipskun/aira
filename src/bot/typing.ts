@@ -56,6 +56,13 @@ export type TypingIndicator = {
    * `intervalMs` for the next tick.
    */
   poke: () => void;
+  /**
+   * Pause new typing sends and wait until any already-started typing request settles.
+   * Use this immediately before sending the reply that should end the indicator.
+   */
+  pause: () => Promise<void>;
+  /** Resume typing sends after a reply has been sent. */
+  resume: () => void;
 };
 
 /**
@@ -70,9 +77,11 @@ export function startTypingLoop(client: Client, options: TypingLoopOptions): Typ
   let lastSentAt = 0;
   let lastErrorLoggedAt = 0;
   let stopped = false;
+  let pauseDepth = 0;
+  const pendingSends = new Set<Promise<void>>();
 
   const attempt = (minGapMs: number): void => {
-    if (stopped) return;
+    if (stopped || pauseDepth > 0) return;
     let active: boolean;
     try {
       active = options.isActive();
@@ -89,7 +98,7 @@ export function startTypingLoop(client: Client, options: TypingLoopOptions): Typ
     if (!channelId) return;
 
     lastSentAt = at;
-    void send(channelId)
+    const pending = send(channelId)
       .then((result) => {
         if (result.ok) return;
         // A failing channel (no permission, deleted, rate limited) must not spam the log.
@@ -104,6 +113,8 @@ export function startTypingLoop(client: Client, options: TypingLoopOptions): Typ
         lastErrorLoggedAt = at;
         console.warn(`[TYPING] sendTyping threw: ${String((error as Error)?.message ?? error)}`);
       });
+    pendingSends.add(pending);
+    void pending.finally(() => pendingSends.delete(pending));
   };
 
   const timer = setInterval(() => attempt(0), intervalMs);
@@ -117,5 +128,16 @@ export function startTypingLoop(client: Client, options: TypingLoopOptions): Typ
       clearInterval(timer);
     },
     poke: () => attempt(TYPING_MIN_GAP_MS),
+    pause: async () => {
+      if (stopped) return;
+      pauseDepth++;
+      if (!pendingSends.size) return;
+      await Promise.allSettled([...pendingSends]);
+    },
+    resume: () => {
+      if (stopped || pauseDepth === 0) return;
+      pauseDepth--;
+      if (pauseDepth === 0) attempt(TYPING_MIN_GAP_MS);
+    },
   };
 }
