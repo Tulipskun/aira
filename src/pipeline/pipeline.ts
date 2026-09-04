@@ -29,6 +29,7 @@ import {
   applyTurnState,
   APPROVAL_NAMES,
   bondDescription,
+  forceBond,
   getUserProfile,
   upsertUserProfile,
   type UserProfile,
@@ -51,6 +52,7 @@ import { loadPromptTemplate, renderPrompt, type CachedPrompt, type PromptValues 
 import type { Interactions } from "@google/genai";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..");
+const CRUSH_XP_THRESHOLD = 500;
 const FLIRT_XP_BONUS = 25;
 export type IncomingMessage = {
   userId: string;
@@ -165,6 +167,7 @@ export function stateBlock(profile: UserProfile | null): string {
     `bond: ${bond} (${bondLabel(bond)}, ระดับ ${bondLevel(bond)})`,
     `xp: ${profile?.xp ?? 0}`,
     `flirt_count: ${profile?.flirtCount ?? 0} (ต้องได้อย่างน้อย ${FLIRT_REQUIREMENT} ครั้งจึงจะเป็น crush ได้)`,
+    `crush_xp_threshold: ${CRUSH_XP_THRESHOLD}`,
     `flirt_xp_bonus: +${FLIRT_XP_BONUS} xp เมื่อ is_flirt=true`,
     `approved_pending: ${pending.length ? pending.join(", ") : "-"}`,
     `xp ที่ต้องมีก่อนเลื่อนระดับจากการตอบตกลง: ${PROPOSAL_XP}`,
@@ -217,16 +220,28 @@ export async function applyState(
     if (added) console.log(`[PIPELINE] ${userId}: +${added} nickname(s)`);
   }
 
-  const after = getUserProfile(userId) ?? result.profile;
+  let after = getUserProfile(userId) ?? result.profile;
+  let statusBond = after?.bond ?? result.after;
+  let bondUnlocked = result.bondUnlocked;
+  if (result.after === "crush" && result.xp < CRUSH_XP_THRESHOLD) {
+    // The legacy ladder used the same threshold as close_friend. Keep the writer as the single
+    // state owner while enforcing the new crush gate until the ladder source is updated.
+    forceBond(userId, "close_friend", userName);
+    after = getUserProfile(userId) ?? after;
+    statusBond = after?.bond ?? "close_friend";
+    bondUnlocked = false;
+    console.warn(`[PIPELINE] ${userId}: blocked crush below ${CRUSH_XP_THRESHOLD} xp (xp=${result.xp})`);
+  }
+
   return {
     ...(state.selectImage ? { image: state.selectImage } : {}),
     status: {
       userName: after?.userName ?? userName,
-      bond: after?.bond ?? result.after,
+      bond: statusBond,
       xp: after?.xp ?? result.xp,
       xpDelta: state.affinity + (state.isFlirt === true ? FLIRT_XP_BONUS : 0),
       flirtDelta: result.flirtDelta,
-      bondUnlocked: result.bondUnlocked,
+      bondUnlocked,
       nickname: after?.nickname ?? [],
     },
   };
