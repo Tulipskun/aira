@@ -86,7 +86,36 @@ function runOrThrow(runner: CommandRunner, command: string, args: string[], labe
   }
 }
 
+function ensureSystemPip(platform: NodeJS.Platform, systemPython: string, runner: CommandRunner): string {
+  const check = runner(systemPython, ["-m", "pip", "--version"]);
+  if (check.status === 0) return systemPython;
+
+  const packageManager = detectPackageManager(platform, runner);
+  if (!packageManager) {
+    throw new Error(
+      `The Chroma virtual environment has no pip and system Python has no pip. No supported package manager was found; install Python 3 with venv/pip support, then run 'aira start' again.`,
+    );
+  }
+
+  installPython(packageManager, runner);
+  const refreshedPython = findPython(platform, runner);
+  if (!refreshedPython) {
+    throw new Error(
+      `Installing Python support via ${packageManager} completed, but python3 was not found on PATH. Restart the shell or add Python to PATH, then run 'aira start' again.`,
+    );
+  }
+
+  const refreshedPip = runner(refreshedPython, ["-m", "pip", "--version"]);
+  if (refreshedPip.status !== 0) {
+    throw new Error(
+      `The Chroma virtual environment has no pip and system pip is still unavailable after installing Python support: ${refreshedPip.stderr.trim() || `exit ${refreshedPip.status}`}. Install Python with venv/pip support, then run 'aira start' again.`,
+    );
+  }
+  return refreshedPython;
+}
+
 function ensureVenvPip(
+  platform: NodeJS.Platform,
   runner: CommandRunner,
   systemPython: string,
   venvPython: string,
@@ -100,21 +129,12 @@ function ensureVenvPip(
     return;
   }
 
-  const systemPip = runner(systemPython, ["-m", "pip", "--version"]);
-  if (systemPip.status === 0) {
-    runOrThrow(
-      runner,
-      systemPython,
-      ["-m", "pip", "--python", venvPython, "install", "pip"],
-      "Installing pip into the Chroma virtual environment",
-    );
-    return;
-  }
-
-  throw new Error(
-    `The Chroma virtual environment has no pip and neither ensurepip nor system pip is available: ${
-      bootstrap.stderr.trim() || `exit ${bootstrap.status}`
-    }. Install Python with venv/pip support, then run 'aira start' again.`,
+  const pipPython = ensureSystemPip(platform, systemPython, runner);
+  runOrThrow(
+    runner,
+    pipPython,
+    ["-m", "pip", "--python", venvPython, "install", "pip"],
+    "Installing pip into the Chroma virtual environment",
   );
 }
 
@@ -155,7 +175,7 @@ export async function ensureChroma(
   }
 
   const venvPython = resolve(venv, "bin/python");
-  ensureVenvPip(runner, python, venvPython);
+  ensureVenvPip(platform, runner, python, venvPython);
   runOrThrow(runner, venvPython, ["-m", "pip", "install", "chromadb"], "Installing Chroma");
 
   if (!existsSync(chroma)) {
