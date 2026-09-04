@@ -1,3 +1,4 @@
+import { embeddingTaskType } from "../src/memory/embedding.js";
 import { buildEpisode, episodeDate, episodeId, episodePeriod, temporalQuery } from "../src/memory/episodic.js";
 
 let failures = 0;
@@ -11,6 +12,8 @@ const afternoon = "2026-09-04T06:00:00.000Z";
 const evening = "2026-09-04T12:00:00.000Z";
 const night = "2026-09-04T17:00:00.000Z";
 
+check("Gemini query task maps to RETRIEVAL_QUERY", embeddingTaskType("query") === "RETRIEVAL_QUERY");
+check("Gemini document task maps to RETRIEVAL_DOCUMENT", embeddingTaskType("document") === "RETRIEVAL_DOCUMENT");
 check("morning period", episodePeriod(morning) === "morning");
 check("afternoon period", episodePeriod(afternoon) === "afternoon");
 check("evening period", episodePeriod(evening) === "evening");
