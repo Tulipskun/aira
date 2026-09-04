@@ -47,11 +47,23 @@ Memory timestamps distinguish the source event time from the record creation tim
 
 ## Installation
 
-Copy `.env.example` to `.env` and fill in `ISLA_TOKEN` (the bot's Discord token), owner ID, and Gemini API key(s). Gemini 1 defaults to `gemini-3.1-flash-lite` and Gemini 2 defaults to `gemini-3.5-flash-lite`; both can still be overridden with `.env`.
+The recommended installation is a single bootstrap command:
 
-`aira start` automatically checks for the private Chroma environment. If Python 3 is missing, Aira installs it using a supported system package manager (`apt-get`, `dnf`, `pacman`, or `brew`), creates `.aira/chroma-venv`, and installs Chroma there. Existing installations are reused. Chroma data stays in `.aira/chroma/`.
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tulipskun/aira/main/install.sh | bash
+```
 
-For a normal installation, run:
+The installer prepares Bun when needed, downloads Aira into `~/.local/share/aira`, installs dependencies, creates `.env` from `.env.example`, and installs the `aira` command into an existing writable directory already present in `PATH` whenever possible. This means no `source ~/.bashrc` is required for normal installations.
+
+After installation, fill in `~/.local/share/aira/.env` with `ISLA_TOKEN`, `DISCORD_OWNER_ID`, and Gemini API key(s), then run:
+
+```bash
+aira start
+```
+
+If the installer cannot find a writable directory already in `PATH`, it falls back to `~/.local/bin`, updates the appropriate shell startup file, and prints the required `source` command.
+
+For development or an existing checkout, the manual installation remains available:
 
 ```bash
 bun install
@@ -60,6 +72,8 @@ cp .env.example .env
 # Edit .env
 aira start
 ```
+
+`aira start` automatically checks for the private Chroma environment. If Python 3 is missing, Aira installs it using a supported system package manager (`apt-get`, `dnf`, `pacman`, or `brew`), creates `.aira/chroma-venv`, and installs Chroma there. Existing installations are reused. Chroma data stays in `.aira/chroma/`.
 
 ## Development / Verification
 
