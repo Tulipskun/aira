@@ -45,12 +45,18 @@ export function selectBinDir(env: NodeJS.ProcessEnv = process.env): string | und
 
   const preferred = [
     prefix ? join(prefix, "bin") : undefined,
+    "/usr/local/bin",
+    "/usr/bin",
     home ? join(home, ".local", "bin") : undefined,
     home ? join(home, "bin") : undefined,
   ].filter((entry): entry is string => Boolean(entry));
 
-  for (const entry of [...preferred, ...entries]) {
+  for (const entry of preferred) {
     if (entries.includes(entry) && isCreatableDirectory(entry)) return entry;
+  }
+
+  for (const entry of entries) {
+    if (isCreatableDirectory(entry)) return entry;
   }
 
   return undefined;
