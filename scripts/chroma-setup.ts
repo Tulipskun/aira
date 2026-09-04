@@ -113,7 +113,7 @@ export async function ensureChroma(
     installPython(packageManager, runner);
     python = findPython(platform, runner);
     if (!python) {
-      throw new Error(`Python installation via ${packageManager} completed, but python3 was not found on PATH. Restart the shell or add Python to PATH, then run `aira start` again.`);
+      throw new Error(`Python installation via ${packageManager} completed, but python3 was not found on PATH. Restart the shell or add Python to PATH, then run 'aira start' again.`);
     }
   }
 
