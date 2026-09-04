@@ -15,9 +15,6 @@ assert.equal(selectBinDir({ HOME: root, PATH: `${missingBin}:/usr/bin` }), missi
 
 const prefixBin = join(root, "prefix", "bin");
 mkdirSync(prefixBin, { recursive: true });
-assert.equal(
-  selectBinDir({ HOME: root, PREFIX: join(root, "prefix"), PATH: `${prefixBin}:/usr/bin` }),
-  prefixBin,
-);
+assert.equal(selectBinDir({ HOME: root, PREFIX: join(root, "prefix"), PATH: `${prefixBin}:/usr/bin` }), prefixBin);
 
 console.log("install-cli path tests: OK");
