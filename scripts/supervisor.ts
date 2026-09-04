@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { config } from "../src/config.js";
 import { waitForBotReady } from "./start-readiness.js";
+import { parseProcessTable, selectAiraProcesses, type AiraProcess } from "./stop-all-instances.js";
 
 const root = resolve(import.meta.dir, "..");
 const daemon = resolve(import.meta.dir, "daemon.ts");
@@ -10,6 +11,44 @@ const pidFile = resolve(root, ".aira/supervisor.pid");
 
 function running(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function findAiraProcesses(): AiraProcess[] {
+  try {
+    const table = execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8" });
+    return selectAiraProcesses(parseProcessTable(table));
+  } catch {
+    return [];
+  }
+}
+
+async function stopAllAiraProcesses(): Promise<number> {
+  const processes = findAiraProcesses();
+  if (processes.length === 0) {
+    try { await Bun.write(pidFile, ""); } catch {}
+    return 0;
+  }
+
+  const unique = new Map<number, AiraProcess>();
+  for (const process of processes) unique.set(process.pid, process);
+
+  for (const process of unique.values()) {
+    try { process.kill(process.pid, "SIGTERM"); } catch {}
+  }
+
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (!findAiraProcesses().some((process) => unique.has(process.pid))) break;
+    await Bun.sleep(100);
+  }
+
+  const remaining = findAiraProcesses().filter((process) => unique.has(process.pid));
+  for (const process of remaining) {
+    try { process.kill(process.pid, "SIGKILL"); } catch {}
+  }
+
+  try { await Bun.write(pidFile, ""); } catch {}
+  return processes.length;
 }
 
 const command = process.argv[2] ?? "start";
@@ -67,15 +106,10 @@ if (command === "start") {
 }
 
 if (command === "stop") {
-  if (!existsSync(pidFile)) { console.log("[SUPERVISOR] Not running"); process.exit(0); }
-  const pid = Number(await Bun.file(pidFile).text());
-  if (!Number.isInteger(pid) || pid <= 0 || !running(pid)) {
-    try { await Bun.write(pidFile, ""); } catch {}
-    console.log("[SUPERVISOR] Not running");
-    process.exit(0);
-  }
-  process.kill(pid, "SIGTERM");
-  console.log(`[SUPERVISOR] Stop requested (pid ${pid})`);
+  const count = await stopAllAiraProcesses();
+  console.log(count === 0
+    ? "[SUPERVISOR] Not running"
+    : `[SUPERVISOR] Stopped ${count} Aira process(es)`);
   process.exit(0);
 }
 
