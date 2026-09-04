@@ -30,21 +30,21 @@ async function stopAllAiraProcesses(): Promise<number> {
   }
 
   const unique = new Map<number, AiraProcess>();
-  for (const process of processes) unique.set(process.pid, process);
+  for (const entry of processes) unique.set(entry.pid, entry);
 
-  for (const process of unique.values()) {
-    try { process.kill(process.pid, "SIGTERM"); } catch {}
+  for (const entry of unique.values()) {
+    try { globalThis.process.kill(entry.pid, "SIGTERM"); } catch {}
   }
 
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (!findAiraProcesses().some((process) => unique.has(process.pid))) break;
+    if (!findAiraProcesses().some((entry) => unique.has(entry.pid))) break;
     await Bun.sleep(100);
   }
 
-  const remaining = findAiraProcesses().filter((process) => unique.has(process.pid));
-  for (const process of remaining) {
-    try { process.kill(process.pid, "SIGKILL"); } catch {}
+  const remaining = findAiraProcesses().filter((entry) => unique.has(entry.pid));
+  for (const entry of remaining) {
+    try { globalThis.process.kill(entry.pid, "SIGKILL"); } catch {}
   }
 
   try { await Bun.write(pidFile, ""); } catch {}
