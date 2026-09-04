@@ -90,7 +90,7 @@ profile.upsertUserProfile({ userId: "300", userName: "third", xp: 900, flirtCoun
   assert.match(description, /3\. \*\*third\*\* \(เพื่อนสนิท\)/);
 }
 
-// Payload must contain exactly the supported public slash subcommands. `/isla say` is retired.
+// Payload must contain exactly the supported public slash subcommands; /isla say is retired.
 const payload = islaCommandPayload();
 assert.equal(payload.name, ISLA_COMMAND_NAME);
 assert.deepEqual(payload.options.map((option) => option.name), [
@@ -100,7 +100,6 @@ assert.deepEqual(payload.options.map((option) => option.name), [
   "leaderboard",
 ]);
 assert.equal(Object.values(ISLA_SUBCOMMANDS).length, 4);
-assert.ok(!payload.options.some((option) => option.name === "say"));
 assert.ok(payload.options.every((option) => option.type === 1));
 assert.ok(payload.options.every((option) => typeof option.description === "string" && /[ก-๙]/.test(option.description)));
 
