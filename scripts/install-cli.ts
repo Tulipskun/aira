@@ -10,24 +10,14 @@ export function shellRcPath(home: string, shell: string): string {
 
 export function ensurePathLine(rcPath: string, pathLine: string): void {
   let content = "";
-  try {
-    content = readFileSync(rcPath, "utf8");
-  } catch {
-    // The shell config does not exist yet; it will be created below.
-  }
-
+  try { content = readFileSync(rcPath, "utf8"); } catch {}
   if (content.split("\n").some((line) => line.trim() === pathLine)) return;
-
   const prefix = content.length > 0 && !content.endsWith("\n") ? `${content}\n` : content;
   writeFileSync(rcPath, `${prefix}${pathLine}\n`);
 }
 
 function isWritableDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory() && (accessSync(path, constants.W_OK), true);
-  } catch {
-    return false;
-  }
+  try { return statSync(path).isDirectory() && (accessSync(path, constants.W_OK), true); } catch { return false; }
 }
 
 function isCreatableDirectory(path: string): boolean {
@@ -38,11 +28,7 @@ function isCreatableDirectory(path: string): boolean {
 export function selectBinDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const home = env.HOME;
   const prefix = env.PREFIX;
-  const entries = (env.PATH ?? "")
-    .split(":")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry && isAbsolute(entry));
-
+  const entries = (env.PATH ?? "").split(":").map((entry) => entry.trim()).filter((entry) => entry && isAbsolute(entry));
   const preferred = [
     prefix ? join(prefix, "bin") : undefined,
     "/usr/local/bin",
@@ -51,14 +37,8 @@ export function selectBinDir(env: NodeJS.ProcessEnv = process.env): string | und
     home ? join(home, "bin") : undefined,
   ].filter((entry): entry is string => Boolean(entry));
 
-  for (const entry of preferred) {
-    if (entries.includes(entry) && isCreatableDirectory(entry)) return entry;
-  }
-
-  for (const entry of entries) {
-    if (isCreatableDirectory(entry)) return entry;
-  }
-
+  for (const entry of preferred) if (entries.includes(entry) && isCreatableDirectory(entry)) return entry;
+  for (const entry of entries) if (isCreatableDirectory(entry)) return entry;
   return undefined;
 }
 
@@ -72,7 +52,6 @@ export function installCli(root: string, env: NodeJS.ProcessEnv = process.env): 
   mkdirSync(binDir, { recursive: true });
   writeFileSync(target, `#!/bin/sh\nexec ${JSON.stringify(bun)} run ${JSON.stringify(join(root, "scripts/aira-cli.ts"))} "$@"\n`);
   chmodSync(target, 0o755);
-
   console.log(`[AIRA] Installed CLI: ${target}`);
 
   if (immediateBinDir) return;
