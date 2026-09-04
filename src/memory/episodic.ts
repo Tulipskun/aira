@@ -2,6 +2,7 @@ import { ChromaClient, type Where } from "chromadb";
 import { embed } from "./embedding.js";
 import { config } from "../config.js";
 import { getHistory, type HistoryMessage } from "../sql/history.js";
+import { thaiTimestamp } from "../gemini/time.js";
 
 export type EpisodePeriod = "morning" | "afternoon" | "evening" | "night";
 
@@ -207,7 +208,7 @@ export function episodePromptMemory(episode: Episode): {
 } {
   return {
     text: episode.text,
-    timestamp: episode.startTime,
+    timestamp: thaiTimestamp(episode.startTime),
     relevance: Number((episode.score ?? 1).toFixed(2)),
     type: "episodic",
     period: episode.period,
