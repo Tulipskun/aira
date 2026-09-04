@@ -128,7 +128,7 @@ export function deriveBond(from: string | null | undefined, xp: number, signals:
     if (!capped) {
       if (approvals.soulmate && current === "lover") return { bond: "soulmate", xp, reason: `marriage accepted while lover (xp ${xp})`, changed: true, consumed: ["soulmate"] };
       if (approvals.soulmate && current === "crush") return { bond: "lover", xp, reason: `marriage accepted while crush — grants lover first, soulmate stays pending (xp ${xp})`, changed: true, consumed: [] };
-      if (approvals.lover && current === "crush") return { bond: "lover", xp, reason: `lover proposal accepted while crush (xp ${xp})`, changed: true, consumed: ["lover"] };
+      if (approvals.lover && current === "crush" && xp >= CRUSH_XP_THRESHOLD && signals.flirtCount >= FLIRT_REQUIREMENT) return { bond: "lover", xp, reason: `lover proposal accepted while crush (xp ${xp}, flirts ${signals.flirtCount})`, changed: true, consumed: ["lover"] };
     }
   }
   const pending = (["family", "sibling", "soulmate", "lover"] as ApprovalName[]).filter((name) => approvals[name] && BOND_LEVELS[current].level < BOND_LEVELS[name].level);
