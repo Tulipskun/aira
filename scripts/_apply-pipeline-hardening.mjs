@@ -10,7 +10,33 @@ if (!src.includes(oldImport)) throw new Error("profile import anchor not found")
 src = src.replace(oldImport, newImport);
 
 const stateRe = /export async function applyState\(state: IslaState, userId: string, timestamp: string, userName: string, _sessionKey\?: string\): Promise<TurnApplyResult> \{.*?\n?\}\nexport async function ingestMemoryBackground/s;
-const replacement = `export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string, sessionKey = ""): Promise<TurnApplyResult> {\n  if (!sessionKey) throw new Error("sessionKey is required for atomic turn state application");\n  const xpDelta = state.affinity + (state.isFlirt === true ? FLIRT_XP_BONUS : 0);\n  const result = applyTurnStateAtomic({\n    userId,\n    userName,\n    affinity: xpDelta,\n    isFlirt: state.isFlirt,\n    approvals: { lover: state.approveLover === true, soulmate: state.approveSoulmate === true, sibling: state.approveSibling === true, family: state.approveFamily === true },\n  }, state.addFacts, state.addNicknames, timestamp, sessionKey);\n  if (!result.duplicate) {\n    if (result.derivation.changed) console.log(\\`[PIPELINE] \\${userId}: bond \\${result.before} -> \\${result.after} (\\${result.derivation.reason})\\`);\n    if (result.factsAdded) console.log(\\`[PIPELINE] \\${userId}: +\\${result.factsAdded} fact(s)\\`);\n    if (result.nicknamesAdded) console.log(\\`[PIPELINE] \\${userId}: +\\${result.nicknamesAdded} nickname(s)\\`);\n  } else {\n    console.log(\\`[PIPELINE] \\${userId}: skipped duplicate state application for \\${timestamp}\\`);\n  }\n  const after = result.profile ?? getUserProfile(userId);\n  const effectiveXpDelta = result.duplicate ? 0 : xpDelta;\n  return {\n    ...(state.selectImage ? { image: state.selectImage } : {}),\n    status: { userName: after?.userName ?? userName, bond: after?.bond ?? result.after, xp: after?.xp ?? result.xp, xpDelta: effectiveXpDelta, flirtDelta: result.flirtDelta, bondUnlocked: result.bondUnlocked, nickname: after?.nickname ?? [] },\n  };\n}\nexport async function ingestMemoryBackground`;
+const replacement = [
+  'export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string, sessionKey = ""): Promise<TurnApplyResult> {',
+  '  if (!sessionKey) throw new Error("sessionKey is required for atomic turn state application");',
+  '  const xpDelta = state.affinity + (state.isFlirt === true ? FLIRT_XP_BONUS : 0);',
+  '  const result = applyTurnStateAtomic({',
+  '    userId,',
+  '    userName,',
+  '    affinity: xpDelta,',
+  '    isFlirt: state.isFlirt,',
+  '    approvals: { lover: state.approveLover === true, soulmate: state.approveSoulmate === true, sibling: state.approveSibling === true, family: state.approveFamily === true },',
+  '  }, state.addFacts, state.addNicknames, timestamp, sessionKey);',
+  '  if (!result.duplicate) {',
+  '    if (result.derivation.changed) console.log("[PIPELINE] " + userId + ": bond " + result.before + " -> " + result.after + " (" + result.derivation.reason + ")");',
+  '    if (result.factsAdded) console.log("[PIPELINE] " + userId + ": +" + result.factsAdded + " fact(s)");',
+  '    if (result.nicknamesAdded) console.log("[PIPELINE] " + userId + ": +" + result.nicknamesAdded + " nickname(s)");',
+  '  } else {',
+  '    console.log("[PIPELINE] " + userId + ": skipped duplicate state application for " + timestamp);',
+  '  }',
+  '  const after = result.profile ?? getUserProfile(userId);',
+  '  const effectiveXpDelta = result.duplicate ? 0 : xpDelta;',
+  '  return {',
+  '    ...(state.selectImage ? { image: state.selectImage } : {}),',
+  '    status: { userName: after?.userName ?? userName, bond: after?.bond ?? result.after, xp: after?.xp ?? result.xp, xpDelta: effectiveXpDelta, flirtDelta: result.flirtDelta, bondUnlocked: result.bondUnlocked, nickname: after?.nickname ?? [] },',
+  '  };',
+  '}',
+  'export async function ingestMemoryBackground',
+].join("\n");
 if (!stateRe.test(src)) throw new Error("applyState anchor not found");
 src = src.replace(stateRe, replacement);
 
