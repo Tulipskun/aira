@@ -52,6 +52,12 @@ const brokenCommands: string[] = [];
 let pipReady = false;
 const brokenRunner: CommandRunner = (command, args) => {
   brokenCommands.push(`${command} ${args.join(" ")}`);
+  if (command === "sh" && args[0] === "-lc") {
+    const name = args[1].match(/command -v '([^']+)'/)?.[1];
+    return name === "python3"
+      ? { status: 0, stdout: "/usr/bin/python3\n", stderr: "" }
+      : { status: 1, stdout: "", stderr: "" };
+  }
   if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "pip" && args[2] === "--version") {
     return pipReady
       ? { status: 0, stdout: "pip 25.0\n", stderr: "" }
@@ -97,7 +103,6 @@ const fallbackRunner: CommandRunner = (command, args) => {
     return { status: 1, stdout: "", stderr: "ensurepip is disabled" };
   }
   if (command === "/usr/bin/python3" && args[0] === "-m" && args[1] === "pip" && args[2] === "--python") {
-    pipReady = true;
     return { status: 0, stdout: "Successfully installed pip\n", stderr: "" };
   }
   if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "pip" && args[2] === "install") {
