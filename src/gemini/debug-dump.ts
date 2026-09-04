@@ -7,7 +7,7 @@ import { config } from "../config.js";
 // default; set it to 0/false/off/no to disable it.
 export type DebugStage = "gemini1" | "gemini2";
 export type DebugEvent = "request" | "response" | "error";
-export type DebugContext = { userId?: string; userName?: string };
+export type DebugContext = { userId?: string; userName?: string; turnId?: string };
 
 type DumpRecord = {
   ts: string;
@@ -17,6 +17,7 @@ type DumpRecord = {
   attempt?: number;
   userId?: string;
   userName?: string;
+  turnId?: string;
   payload?: unknown;
   response?: unknown;
   error?: { name?: string; status?: number; message: string };
@@ -25,6 +26,8 @@ type DumpRecord = {
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 const FALSY = new Set(["0", "false", "no", "off"]);
 const MAX_RECORDS = 6; // request + response/error for the latest ~3 Gemini calls/turns.
+const AUTO_TURN_TTL_MS = 10 * 60_000;
+const activeTurns = new Map<string, { id: string; lastSeen: number }>();
 
 export function debugDumpEnabled(): boolean {
   const raw = process.env.GEMINI_DEBUG_PAYLOAD;
@@ -64,6 +67,34 @@ function dumpFile(): string {
   return process.env.GEMINI_DEBUG_PAYLOAD_FILE?.trim() || config.paths.geminiPayloadDump;
 }
 
+function turnKey(record: DumpRecord): string | null {
+  return record.userId || record.userName || null;
+}
+
+function resolveTurnId(record: DumpRecord): string {
+  if (record.turnId) return record.turnId;
+  const key = turnKey(record);
+  const now = Date.now();
+  if (!key) return crypto.randomUUID();
+
+  const active = activeTurns.get(key);
+  const isNewTurn = record.stage === "gemini1" && record.event === "request" && (record.attempt ?? 1) === 1;
+  if (!active || now - active.lastSeen > AUTO_TURN_TTL_MS || isNewTurn) {
+    const id = crypto.randomUUID();
+    activeTurns.set(key, { id, lastSeen: now });
+    return id;
+  }
+
+  active.lastSeen = now;
+  if (record.stage === "gemini2" && record.event === "response") activeTurns.delete(key);
+  return active.id;
+}
+
+function withTurnId(record: DumpRecord): DumpRecord {
+  const turnId = resolveTurnId(record);
+  return { ...record, turnId };
+}
+
 function parseRecords(raw: string): unknown[] | null {
   const trimmed = raw.trim();
   if (!trimmed) return [];
@@ -98,7 +129,7 @@ function serialize(records: unknown[]): string {
 
 function readRecords(file: string): unknown[] {
   if (!existsSync(file)) return [];
-  return parseRecords(readFileSync(file, "utf8")) ?? [];
+  return parseRecords(readFileSync(file, "utf8")) as DumpRecord[] ?? [];
 }
 
 function writeRecords(file: string, records: unknown[]): void {
@@ -138,7 +169,7 @@ function appendRecord(file: string, record: DumpRecord): void {
 export function debugDump(record: DumpRecord): void {
   if (!debugDumpEnabled()) return;
   try {
-    appendRecord(dumpFile(), redact(record) as DumpRecord);
+    appendRecord(dumpFile(), redact(withTurnId(record)) as DumpRecord);
   } catch (error) {
     warnOnce(error);
   }
