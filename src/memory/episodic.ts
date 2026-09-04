@@ -24,7 +24,6 @@ const client = new ChromaClient({
   port: Number(parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80)),
   ssl: parsedUrl.protocol === "https:",
 });
-const collectionName = process.env.ISLA_EPISODE_COLLECTION ?? "aira_episodes";
 
 function localParts(timestamp: string): { date: string; hour: number } {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -70,12 +69,13 @@ export function episodeId(sessionKey: string, startTime: string, endTime: string
 export function temporalQuery(text: string, now = new Date()): { date?: string; period?: EpisodePeriod } {
   const query = text.toLowerCase();
   const today = episodeDate(now.toISOString());
-  if (/(เมื่อวาน|วานนี้|yesterday)/u.test(query)) return { date: shiftLocalDate(today, -1) };
-  if (/(วันนี้|วันนี้เอง|today)/u.test(query)) return { date: today };
   if (/(เมื่อเช้า|ตอนเช้า|เช้านี้|this morning)/u.test(query)) return { date: today, period: "morning" };
   if (/(เมื่อบ่าย|ตอนบ่าย|บ่ายนี้|this afternoon)/u.test(query)) return { date: today, period: "afternoon" };
   if (/(เมื่อเย็น|ตอนเย็น|เย็นนี้|this evening)/u.test(query)) return { date: today, period: "evening" };
-  if (/(เมื่อคืน|ตอนกลางคืน|คืนนี้|last night|tonight)/u.test(query)) return { period: "night", date: query.includes("เมื่อคืน") || query.includes("last night") ? shiftLocalDate(today, -1) : today };
+  if (/(เมื่อคืน|ตอนกลางคืน|last night)/u.test(query)) return { date: shiftLocalDate(today, -1), period: "night" };
+  if (/(คืนนี้|คืนนี้เอง|tonight)/u.test(query)) return { date: today, period: "night" };
+  if (/(เมื่อวาน|วานนี้|yesterday)/u.test(query)) return { date: shiftLocalDate(today, -1) };
+  if (/(วันนี้|วันนี้เอง|today)/u.test(query)) return { date: today };
   return {};
 }
 
@@ -103,10 +103,9 @@ export function buildEpisode(
   const last = selected[selected.length - 1]!;
   const period = episodePeriod(last.timestamp);
   const date = episodeDate(last.timestamp);
-  const text = selected.map((item) => item.summary.trim()).join(" ");
   return {
     id: episodeId(sessionKey, first.timestamp, last.timestamp),
-    text,
+    text: selected.map((item) => item.summary.trim()).join(" "),
     sessionKey,
     date,
     period,
@@ -116,7 +115,7 @@ export function buildEpisode(
 }
 
 async function collection() {
-  return client.getOrCreateCollection({ name: collectionName, embeddingFunction: null });
+  return client.getOrCreateCollection({ name: config.episode.collection, embeddingFunction: null });
 }
 
 function similarityOf(distance: number | null | undefined): number {
