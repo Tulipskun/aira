@@ -10,6 +10,7 @@ assert.deepEqual(buildCommand(["log"]), { command: "log" });
 assert.deepEqual(buildCommand(["logs"]), { command: "log" });
 assert.deepEqual(buildCommand(["restart"]), { command: "restart" });
 assert.deepEqual(buildCommand(["status"]), { command: "status" });
+assert.deepEqual(buildCommand(["register_commands"]), { command: "register_commands" });
 
 const root = mkdtempSync(join(tmpdir(), "aira-cli-"));
 const runtime = join(root, ".aira");
