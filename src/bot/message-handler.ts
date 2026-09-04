@@ -11,6 +11,7 @@ import { fetchEmotionImage } from "./images.js";
 import { buildFooterText, type UserStatus } from "./embed-footer.js";
 import { mediaSourcesOf } from "./media.js";
 import { sessionKeyFor } from "../sql/sessions.js";
+import { isUserSession } from "../session-keys.js";
 import { getResponseChannelId } from "./discord-config.js";
 
 export function displayNameOf(message: Message): string {
@@ -22,31 +23,12 @@ export function displayNameOf(message: Message): string {
 /** What the model is told when a turn carries media but no words at all. */
 export const MEDIA_ONLY_TEXT = "(ไม่มีข้อความแนบมา)";
 
-/**
- * The text the AI reads and history stores.
- *
- * Discord writes mentions into `message.content` as raw snowflakes — `<@1540705689318592632>` — so
- * handing `content` to Gemini pointed the model at a 19-digit number instead of a person.
- * `cleanContent` turns them into words: `@DisplayName` (guild nickname -> global name -> username,
- * the same order as `displayNameOf()`), `@RoleName`, `#channel-name`, `/command`; custom emoji
- * become `:name:`. Mentioned users need no GUILD_MEMBERS intent: `MessageMentions` adds
- * MESSAGE_CREATE's own mention payload to the member/user caches before this getter reads them.
- *
- * Raw `content` remains what `mediaSourcesOf()` parses, because `cleanContent` rewrites
- * `<:DeepSeek:123456789012345678>` to `:DeepSeek:` and `parseCustomEmojis()` needs the id to build
- * the CDN URL. The two sources must stay separate — see project_knowledge "Keep raw content".
- *
- * `cleanContent` is null when a message has no channel object and absent on hand-built messages
- * (tests, replays), so fall back to raw content rather than losing the turn.
- */
 export function textForModel(message: Message): string {
   return message.cleanContent ?? message.content ?? "";
 }
 
 export function toScheduledMessage(message: Message): ScheduledMessage | null {
   const text = textForModel(message).trim();
-  // Sources are only URLs — resolving them costs no network, so this stays cheap enough for the
-  // receive path. A sticker-only message has empty content but is still worth answering.
   const media = mediaSourcesOf(message);
   if (!text && !media.length) return null;
 
@@ -58,40 +40,15 @@ export function toScheduledMessage(message: Message): ScheduledMessage | null {
     fileName: message.attachments.first()?.name ?? undefined,
     channelId: message.channelId,
     messageId: message.id,
-    // One indexed primary-key lookup, on the receive path, before the debounce window even opens.
-    // Resolved here rather than at flush time so a join/leave mid-batch cannot change which stream
-    // messages that were already queued belong to.
     sessionKey: sessionKeyFor(message.author.id, message.channelId),
     ...(media.length && { media }),
   };
 }
 
-/**
- * `reply` in discord.js v14 takes `messageReference`, not the plain `messageId` other libraries
- * use — the wrong key sends the message with no reference and no error, so it fails silently.
- *
- * `failIfNotExists: false` matters here: the pipeline runs for tens of seconds before this send,
- * and if the user deleted their message meanwhile we want a plain message, not a 400.
- */
 export function replyReference(messageId?: string): { reply: ReplyOptions } | Record<string, never> {
   return messageId ? { reply: { messageReference: messageId, failIfNotExists: false } } : {};
 }
 
-/**
- * Which message of a flushed batch to reply to.
- *
- * The scheduler merges everything sent inside the debounce window (5s, capped at 12s) into ONE turn,
- * so a reply would otherwise point at the oldest message while the newest, most relevant one sits
- * unquoted. We anchor on the last message.
- *
- * It used to be conditional on the whole batch sharing one author, because a private turn is handed
- * to `processMessage()` as one person's merged text and quoting somebody else would misattribute it.
- * That is now guaranteed by the batching key itself: a batch is one *session*, and a private session
- * has exactly one member. A group session deliberately mixes authors, and there the last message is
- * the right thing to quote — it is the message she is answering. The session check stays as the
- * guard instead of the author check, so a scheduler bug shows up as an unanchored reply rather than
- * a quote of the wrong person.
- */
 export function replyAnchorOf(messages: ScheduledMessage[]): string | undefined {
   if (!messages.length) return undefined;
   const last = messages[messages.length - 1];
@@ -108,40 +65,25 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
     if (!responseChannelId) return;
     if (messages[0].channelId !== responseChannelId) return;
 
-    // Merge the batch into one turn. Media is concatenated in arrival order and capped later
-    // by collectMedia, so the first few items of a burst are what the model actually sees.
     const mediaSources = messages.flatMap((message) => message.media ?? []);
-    // A message with only media has no words to merge. Naming the attachment is what the turn
-    // consists of, so say so instead of leaving "user: " dangling — this text is also what gets
-    // embedded, and the embedding endpoint rejects an empty part.
     const input = messages
       .map((message) => `${message.user}: ${message.text || (message.media?.length ? MEDIA_ONLY_TEXT : "")}`)
       .join("\n");
 
     const first = messages[0];
     const last = messages[messages.length - 1];
-    // Everyone who spoke, in arrival order, deduped by id: a group batch interleaves people and the
-    // pipeline needs each of their profiles, while a private batch collapses to one entry.
     const speakers: TurnSpeaker[] = [];
     for (const message of messages) {
       if (!speakers.some((speaker) => speaker.userId === message.userId)) {
         speakers.push({ userId: message.userId, user: message.user });
       }
     }
-    // Everything the user sent inside the debounce window became ONE turn, so the reply is
-    // anchored on their LAST message — see replyAnchorOf().
     const anchor = replyAnchorOf(messages);
-    // From here the pipeline runs (tens of seconds) and the reply is then assembled and
-    // sent, so the indicator must stay lit through all of it. `finally` guarantees the
-    // busy flag is released exactly once, even on unexpected throws — otherwise the
-    // in-flight counter in bot.ts would leak and "typing" would never stop.
     onBusy(true);
     try {
       let result: ProcessMessageResult;
       try {
         result = await processMessage({
-          // The person this turn is *about*: the last speaker, same rule as the quote anchor and as
-          // turnOwner() in the pipeline. `first` stays the batch's timestamp/fileName carrier.
           userId: last.userId,
           user: last.user,
           text: input,
@@ -152,8 +94,6 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
           speakers,
         });
       } catch (error) {
-        // The scheduler calls onFlush without awaiting it, so an escaping rejection would
-        // surface as an unhandled rejection and take the whole bot (and Chroma) down.
         console.error(`[PIPELINE] processMessage failed for ${first.userId}: ${String((error as Error)?.stack ?? error)}`);
         await sendFailureNotice(client, responseChannelId, anchor);
         return;
@@ -164,8 +104,6 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
 
       const imageBuffer = await fetchEmotionImage(result.image);
       if (result.image && !imageBuffer) {
-        // Gemini 2 named a picture we could not attach. The reply still goes out — but say so,
-        // because a missing image is otherwise indistinguishable from her choosing none.
         console.warn(`[DISCORD] ${last.user}: select_image "${result.image}" produced no bytes -- embed sent without a picture`);
       }
 
@@ -178,23 +116,13 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
             ...(result.color !== undefined ? { color: result.color } : {}),
             status: result.status,
             replyTo: anchor,
+            privateSession: isUserSession(first.sessionKey),
           }),
         );
-        // Discord REST (fetching the message back) is Cloudflare-blocked from this host, so the log is
-        // the only proof a quote went out. `sent.reference` is what the API echoed back in the
-        // MESSAGE response — `quote=none` or a mismatch means it landed as a plain message, which is
-        // exactly the silent failure replyReference() exists to avoid.
         const echoed = sent.reference?.messageId;
-        // `mood`/`color` are what she actually painted the embed with. `color=none` means she sent
-        // no usable hex (see the [PIPELINE] warn) and the bar stayed Discord grey.
         const embedColor = result.color === undefined ? "none" : `#${result.color.toString(16).padStart(6, "0")}`;
-        // `image=` is what the model picked vs what actually shipped — a name on the left with no
-        // attachment is a catalog mismatch, not her opting out. `footer=` is the rendered card, so
-        // "the footer looks wrong in Discord" is answerable from the log without re-running a turn.
-        // It is a debug aid only: no test asserts this line, and the footer itself is covered by
-        // test-profile.ts §11 and test-mood-e2e.ts.
         console.log(
-          `[DISCORD] ${last.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}, mood=${result.mood ?? "none"}, color=${embedColor}, image=${result.image ?? "none"}, session=${first.sessionKey}, footer=${JSON.stringify(buildFooterText({ ...result.status, mood: result.mood }))}`,
+          `[DISCORD] ${last.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}, mood=${result.mood ?? "none"}, color=${embedColor}, image=${result.image ?? "none"}, session=${first.sessionKey}, footer=${JSON.stringify(buildFooterText({ ...result.status, mood: result.mood, privateSession: isUserSession(first.sessionKey) }))}`,
         );
       } catch (error) {
         console.error(`[DISCORD] Failed to send reply: ${String((error as Error)?.message ?? error)}`);
@@ -205,44 +133,24 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
   };
 }
 
-/**
- * The exact object handed to `channel.send()`. Split out so tests can assert the reply reference
- * really is keyed `messageReference` and survives the other spreads — importing `createOnFlush`
- * would otherwise pull in the pipeline (Gemini keys, Chroma, SQLite).
- */
 export function buildReplyPayload(options: {
   text: string;
   image?: { buffer: Buffer; name: string };
-  /** Isla's mood in Thai -- second line of the embed footer. */
   mood?: string;
-  /** 24-bit RGB accent colour for the embed bar. */
   color?: number;
-  /** The relationship card -- first line of the footer. Absent (a turn with no profile) leaves the
-   * footer as mood-only, or the plain fallback when there is no mood either. */
   status?: UserStatus;
   replyTo?: string;
-  /**
-   * The moment this reply refers to. Defaults to *now* — deliberately not the incoming message's
-   * timestamp: the pipeline runs for tens of seconds, and Discord draws `timestamp` as "today at
-   * HH:MM" on the reply itself, so an old timestamp would claim the answer arrived before it did.
-   */
+  /** True for the private `user:<id>` session; global/group sessions leave the relationship emoji unchanged. */
+  privateSession?: boolean;
   timestamp?: Date | string | number;
 }): MessageCreateOptions {
-  // Discord rejects an embed whose description is empty (it surfaced as "Missing
-  // Permissions" in the log). A media-only turn can legitimately produce a text-free reply.
   const embed = new EmbedBuilder()
     .setDescription(options.text || "…")
-    .setFooter({ text: buildFooterText({ ...options.status, mood: options.mood }) });
+    .setFooter({ text: buildFooterText({ ...options.status, mood: options.mood, privateSession: options.privateSession }) });
 
-  // setTimestamp() takes a Date or an epoch number only (a *string* is rejected by the builder's
-  // validator even when it is a valid ISO date), so normalise here. Anything unparseable — and
-  // epoch 0, which is what a missing/legacy timestamp decays to — is dropped rather than costing
-  // the reply or stamping it with 1970.
   const stamp = options.timestamp === undefined ? new Date() : new Date(options.timestamp);
   if (stamp.getTime() > 0) embed.setTimestamp(stamp);
 
-  // setColor() takes a 24-bit integer only (a hex *string* is rejected by the builder's
-  // validator), and an absent colour falls back to Discord's default grey.
   if (options.color !== undefined) embed.setColor(options.color);
   if (options.image) embed.setImage(`attachment://${options.image.name}`);
 
