@@ -49,12 +49,16 @@ const brokenRoot = mkdtempSync(join(tmpdir(), "aira-chroma-no-pip-"));
 mkdirSync(resolve(brokenRoot, ".aira/chroma-venv/bin"), { recursive: true });
 writeFileSync(resolve(brokenRoot, ".aira/chroma-venv/bin/python"), "fake-python");
 const brokenCommands: string[] = [];
+let pipReady = false;
 const brokenRunner: CommandRunner = (command, args) => {
   brokenCommands.push(`${command} ${args.join(" ")}`);
   if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "pip" && args[2] === "--version") {
-    return { status: 1, stdout: "", stderr: "No module named pip" };
+    return pipReady
+      ? { status: 0, stdout: "pip 25.0\n", stderr: "" }
+      : { status: 1, stdout: "", stderr: "No module named pip" };
   }
   if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "ensurepip") {
+    pipReady = true;
     return { status: 0, stdout: "Successfully installed pip\n", stderr: "" };
   }
   if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "pip" && args[2] === "install") {
@@ -68,6 +72,7 @@ const brokenRunner: CommandRunner = (command, args) => {
 const recovered = await ensureChroma(brokenRoot, { platform: "linux", runner: brokenRunner });
 assert.equal(recovered, chromaExecutable(brokenRoot));
 assert.ok(brokenCommands.some((value) => value.includes("-m ensurepip --upgrade")));
+assert.ok(brokenCommands.some((value) => value.includes("-m pip --version")));
 assert.ok(brokenCommands.some((value) => value.includes("-m pip install chromadb")));
 
 await assert.rejects(
