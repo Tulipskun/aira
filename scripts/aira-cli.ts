@@ -6,9 +6,7 @@ export type AiraCommand = "help" | "start" | "stop" | "restart" | "status" | "lo
 
 const root = resolve(import.meta.dir, "..");
 const supervisor = resolve(import.meta.dir, "supervisor.ts");
-const runtime = resolve(root, ".aira");
-const pidFile = resolve(runtime, "supervisor.pid");
-const logFile = resolve(runtime, "logs/aira.log");
+const logFile = resolve(root, ".aira/logs/aira.log");
 
 export function buildCommand(args: string[]): { command: AiraCommand } {
   const value = args[0] ?? "help";
