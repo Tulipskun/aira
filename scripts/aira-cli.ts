@@ -6,9 +6,11 @@ export type AiraCommand = "help" | "setup" | "start" | "stop" | "restart" | "sta
 
 type GitPullResult = { code: number; before: string; after: string };
 type UpdateDeps = {
+  isRunning: () => boolean;
+  stop: () => number;
+  start: () => number;
   gitPull: () => GitPullResult;
   registerCommands: () => number;
-  restart: () => number;
 };
 
 const root = resolve(import.meta.dir, "..");
@@ -117,20 +119,48 @@ export function hasRevisionChanged(before: string, after: string): boolean {
 }
 
 export async function runUpdate(_projectRoot: string, deps: UpdateDeps): Promise<number> {
+  const wasRunning = deps.isRunning();
+  if (wasRunning) {
+    console.log("[AIRA] Stopping Aira before update...");
+    const stopCode = deps.stop();
+    if (stopCode !== 0) return stopCode;
+  }
+
   const pulled = deps.gitPull();
-  if (pulled.code !== 0) return pulled.code;
+  if (pulled.code !== 0) {
+    if (wasRunning) {
+      console.log("[AIRA] Update failed; starting Aira again...");
+      deps.start();
+    }
+    return pulled.code;
+  }
 
   if (!hasRevisionChanged(pulled.before, pulled.after)) {
     console.log("[AIRA] Already up to date.");
+    if (wasRunning) {
+      console.log("[AIRA] Starting Aira again...");
+      return deps.start();
+    }
     return 0;
   }
 
   console.log("[AIRA] Update detected; registering Discord commands...");
   const registerCode = deps.registerCommands();
-  if (registerCode !== 0) return registerCode;
+  if (registerCode !== 0) {
+    if (wasRunning) {
+      console.log("[AIRA] Command registration failed; starting Aira again...");
+      deps.start();
+    }
+    return registerCode;
+  }
 
-  console.log("[AIRA] Restarting Aira...");
-  return deps.restart();
+  if (!wasRunning) {
+    console.log("[AIRA] Update complete; Aira was stopped and remains stopped.");
+    return 0;
+  }
+
+  console.log("[AIRA] Update complete; starting Aira...");
+  return deps.start();
 }
 
 export function readStatus(projectRoot: string): { pid?: number; running: boolean } {
@@ -201,9 +231,11 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<numb
       return restartAira();
     case "update":
       return runUpdate(root, {
+        isRunning: () => readStatus(root).running,
+        stop: () => supervisorCommand("stop"),
+        start: () => supervisorCommand("start"),
         gitPull: () => pullGitHub(root),
         registerCommands: registerDiscordCommands,
-        restart: restartAira,
       });
     case "status":
       printStatus();
