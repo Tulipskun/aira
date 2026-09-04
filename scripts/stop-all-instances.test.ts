@@ -13,6 +13,7 @@ const table = `
 const processes = parseProcessTable(table);
 assert.deepEqual(selectAiraProcesses(processes), [
   { pid: 7318, kind: "daemon" },
+  { pid: 8170, kind: "chroma" },
   { pid: 8198, kind: "bot" },
   { pid: 9201, kind: "daemon" },
   { pid: 9250, kind: "bot" },
