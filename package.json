@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test:cli": "bun run scripts/aira-cli.test.ts",
     "start": "bun run scripts/supervisor.ts start",
     "stop": "bun run scripts/supervisor.ts stop",
     "logs": "bun run scripts/supervisor.ts logs",
