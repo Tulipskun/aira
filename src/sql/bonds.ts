@@ -88,10 +88,7 @@ export function bondLadderWithThresholds(partner?: string | null): string {
       case "xp": return `${head} — xp >= ${XP_THRESHOLDS[info.level]}`;
       case "xpWithFlirts": return `${head} — xp >= ${CRUSH_XP_THRESHOLD} และ${who ? `${who}ถูก` : "ถูก"}จีบสะสม >= ${FLIRT_REQUIREMENT} ครั้ง`;
       case "proposal": return `${head} — ต้องเป็น ${info.reachAfter} ก่อน +${who || " อีกฝ่าย"}${info.ask} + Isla ตอบตกลง (xp >= ${PROPOSAL_XP})`;
-      case "proposalCapped": {
-        const above = ASCENDING.find((rung) => BOND_LEVELS[rung].level > (info.maxLevel ?? info.level));
-        return `${head} — xp >= ${PROPOSAL_XP} + ${info.ask} + Isla ตอบตกลง${above ? ` (ไประดับ ${BOND_LEVELS[above].level} ไม่ได้)` : ""}`;
-      }
+      case "proposalCapped": return `${head} — xp >= ${SPECIAL_XP} + ${info.ask} + Isla ตอบตกลง (ไประดับ lover ไม่ได้)`;
       case "enemy": return `${head} — xp ${xpBandRange("enemy")}${info.jumpTo ? ` (กลับมาปกติต้องไปที่ ${info.jumpTo} เท่านั้น)` : ""}`;
       default: return head;
     }
@@ -99,9 +96,10 @@ export function bondLadderWithThresholds(partner?: string | null): string {
 }
 
 export const CRUSH_XP_THRESHOLD = 500;
-export const XP_THRESHOLDS: Record<number, number> = { [-1]: -150, 0: -149, 1: 50, 2: 150, 3: 300, 4: CRUSH_XP_THRESHOLD, 5: 300, 6: 300 };
+export const XP_THRESHOLDS: Record<number, number> = { [-1]: -150, 0: -149, 1: 50, 2: 150, 3: 300, 4: CRUSH_XP_THRESHOLD, 5: 700, 6: 1000 };
 export const FLIRT_REQUIREMENT = 5;
 export const FLIRT_XP_BONUS = 25;
+export const SPECIAL_XP = 500;
 const CAPPED: BondLevel[] = ["sibling", "family"];
 export function isCappedBond(bond: BondLevel): boolean { return CAPPED.includes(bond); }
 export function bondForXp(xp: number): BondLevel {
@@ -114,22 +112,19 @@ export function bondForXp(xp: number): BondLevel {
 
 export type BondDerivation = { bond: BondLevel; xp: number; reason: string; changed: boolean; consumed: ApprovalName[] };
 export type ApprovalName = "lover" | "soulmate" | "sibling" | "family";
-export const PROPOSAL_XP = XP_THRESHOLDS[3];
+export const PROPOSAL_XP = XP_THRESHOLDS[5];
 export type BondSignals = { flirtCount: number; approvals?: Partial<Record<ApprovalName, boolean>> };
 
 export function deriveBond(from: string | null | undefined, xp: number, signals: BondSignals): BondDerivation {
   const current: BondLevel = isBond(from) ? from : "stranger";
   const capped = isCappedBond(current);
   const approvals = signals.approvals ?? {};
-  const enoughXp = xp >= PROPOSAL_XP;
-  if (enoughXp) {
-    if (approvals.family) return { bond: "family", xp, reason: `family accepted (xp ${xp})`, changed: current !== "family", consumed: ["family"] };
-    if (approvals.sibling) return { bond: "sibling", xp, reason: `sibling accepted (xp ${xp})`, changed: current !== "sibling", consumed: ["sibling"] };
-    if (!capped) {
-      if (approvals.soulmate && current === "lover") return { bond: "soulmate", xp, reason: `marriage accepted while lover (xp ${xp})`, changed: true, consumed: ["soulmate"] };
-      if (approvals.soulmate && current === "crush") return { bond: "lover", xp, reason: `marriage accepted while crush — grants lover first, soulmate stays pending (xp ${xp})`, changed: true, consumed: [] };
-      if (approvals.lover && current === "crush" && xp >= CRUSH_XP_THRESHOLD && signals.flirtCount >= FLIRT_REQUIREMENT) return { bond: "lover", xp, reason: `lover proposal accepted while crush (xp ${xp}, flirts ${signals.flirtCount})`, changed: true, consumed: ["lover"] };
-    }
+  if (approvals.family && xp >= SPECIAL_XP) return { bond: "family", xp, reason: `family accepted (xp ${xp})`, changed: current !== "family", consumed: ["family"] };
+  if (approvals.sibling && xp >= SPECIAL_XP) return { bond: "sibling", xp, reason: `sibling accepted (xp ${xp})`, changed: current !== "sibling", consumed: ["sibling"] };
+  if (!capped) {
+    if (approvals.soulmate && current === "lover" && xp >= XP_THRESHOLDS[6]) return { bond: "soulmate", xp, reason: `marriage accepted while lover (xp ${xp})`, changed: true, consumed: ["soulmate"] };
+    if (approvals.soulmate && current === "crush" && xp >= XP_THRESHOLDS[5]) return { bond: "lover", xp, reason: `marriage accepted while crush — grants lover first, soulmate stays pending (xp ${xp})`, changed: true, consumed: [] };
+    if (approvals.lover && current === "crush" && xp >= CRUSH_XP_THRESHOLD && xp >= XP_THRESHOLDS[5] && signals.flirtCount >= FLIRT_REQUIREMENT) return { bond: "lover", xp, reason: `lover proposal accepted while crush (xp ${xp}, flirts ${signals.flirtCount})`, changed: true, consumed: ["lover"] };
   }
   const pending = (["family", "sibling", "soulmate", "lover"] as ApprovalName[]).filter((name) => approvals[name] && BOND_LEVELS[current].level < BOND_LEVELS[name].level);
   if (xp <= XP_THRESHOLDS[-1]) return { bond: "enemy", xp, reason: `xp ${xp} <= ${XP_THRESHOLDS[-1]}`, changed: current !== "enemy", consumed: [] };
