@@ -11,7 +11,8 @@ import { isDuplicateMemory, recallMemories, saveMemoryVector } from "../memory/c
 import { buildRecentEpisode, episodePromptMemory, recallEpisodes, saveEpisode } from "../memory/episodic.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
 import { isGroupSession } from "../sql/sessions.js";
-import { addFacts, addNicknames, applyTurnState, APPROVAL_NAMES, bondDescription, getUserProfile, upsertUserProfile, type UserProfile } from "../sql/profile.js";
+import { APPROVAL_NAMES, bondDescription, getUserProfile, upsertUserProfile, type UserProfile } from "../sql/profile.js";
+import { applyTurnStateAtomic } from "../sql/turn-transaction.js";
 import { BOND_LEVELS, CRUSH_XP_THRESHOLD, FLIRT_REQUIREMENT, FLIRT_XP_BONUS, bondLabel, bondLadderWithThresholds, bondLevel, bondRecoveryFrom, PROPOSAL_XP, XP_THRESHOLDS, xpBandsText } from "../sql/bonds.js";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -33,7 +34,30 @@ export function identityBlockFor(identities: TurnIdentity[], group: boolean, own
 export function turnTranscript(speakers: TurnSpeaker[], text: string): string { const breakAt = text.indexOf("\n"); const firstLine = breakAt === -1 ? text : text.slice(0, breakAt); if (speakers.some((speaker) => firstLine.startsWith(`${speaker.user}: `))) return text; const only = speakers[speakers.length - 1]; return `${only?.user ?? DEFAULT_ADDRESSEE}: ${text}`; }
 export function stateBlock(profile: UserProfile | null): string { const bond = profile?.bond ?? "stranger"; const pending = APPROVAL_NAMES.filter((name) => profile?.approvals[name]); return ["<current_state>", `bond: ${bond} (${bondLabel(bond)}, ระดับ ${bondLevel(bond)})`, `xp: ${profile?.xp ?? 0}`, `flirt_count: ${profile?.flirtCount ?? 0} (ต้องได้อย่างน้อย ${FLIRT_REQUIREMENT} ครั้งจึงจะเป็น crush ได้)`, `crush_xp_threshold: ${CRUSH_XP_THRESHOLD}`, `flirt_xp_bonus: +${FLIRT_XP_BONUS} xp เมื่อ is_flirt=true`, `approved_pending: ${pending.length ? pending.join(", ") : "-"}`, `xp ที่ต้องมีก่อนเลื่อนระดับจากการตอบตกลง: ${PROPOSAL_XP}`, `ขอบเขต xp: ${xpBandsText()}`, `ฟิลด์ที่จำเป็นต้องตอบในเทิร์นนี้: ${requiredFieldsFor(bond).join(", ")}`, romanticallyAvailable(bond) ? `ระดับนี้พัฒนาเป็นเชิงชู้สาวได้ — ตอบ is_flirt ด้วย` : `ระดับนี้ไม่สามารถพัฒนาเป็นเชิงชู้สาวได้ — ไม่ต้องส่ง is_flirt`, `</current_state>`].join("\n"); }
 export type TurnApplyResult = { image?: string; status: UserStatus };
-export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string, _sessionKey?: string): Promise<TurnApplyResult> { const xpDelta = state.affinity + (state.isFlirt === true ? FLIRT_XP_BONUS : 0); const result = applyTurnState({ userId, userName, affinity: xpDelta, isFlirt: state.isFlirt, approvals: { lover: state.approveLover === true, soulmate: state.approveSoulmate === true, sibling: state.approveSibling === true, family: state.approveFamily === true } }); if (result.derivation.changed) console.log(`[PIPELINE] ${userId}: bond ${result.before} -> ${result.after} (${result.derivation.reason})`); if (state.addFacts.length) { const added = addFacts(userId, state.addFacts, timestamp, userName); if (added) console.log(`[PIPELINE] ${userId}: +${added} fact(s)`); } if (state.addNicknames.length) { const added = addNicknames(userId, state.addNicknames, userName); if (added) console.log(`[PIPELINE] ${userId}: +${added} nickname(s)`); } const after = getUserProfile(userId) ?? result.profile; return { ...(state.selectImage ? { image: state.selectImage } : {}), status: { userName: after?.userName ?? userName, bond: after?.bond ?? result.after, xp: after?.xp ?? result.xp, xpDelta, flirtDelta: result.flirtDelta, bondUnlocked: result.bondUnlocked, nickname: after?.nickname ?? [] } }; }
+export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string, sessionKey = ""): Promise<TurnApplyResult> {
+  if (!sessionKey) throw new Error("sessionKey is required for atomic turn state application");
+  const xpDelta = state.affinity + (state.isFlirt === true ? FLIRT_XP_BONUS : 0);
+  const result = applyTurnStateAtomic({
+    userId,
+    userName,
+    affinity: xpDelta,
+    isFlirt: state.isFlirt,
+    approvals: { lover: state.approveLover === true, soulmate: state.approveSoulmate === true, sibling: state.approveSibling === true, family: state.approveFamily === true },
+  }, state.addFacts, state.addNicknames, timestamp, sessionKey);
+  if (!result.duplicate) {
+    if (result.derivation.changed) console.log("[PIPELINE] " + userId + ": bond " + result.before + " -> " + result.after + " (" + result.derivation.reason + ")");
+    if (result.factsAdded) console.log("[PIPELINE] " + userId + ": +" + result.factsAdded + " fact(s)");
+    if (result.nicknamesAdded) console.log("[PIPELINE] " + userId + ": +" + result.nicknamesAdded + " nickname(s)");
+  } else {
+    console.log("[PIPELINE] " + userId + ": skipped duplicate state application for " + timestamp);
+  }
+  const after = result.profile ?? getUserProfile(userId);
+  const effectiveXpDelta = result.duplicate ? 0 : xpDelta;
+  return {
+    ...(state.selectImage ? { image: state.selectImage } : {}),
+    status: { userName: after?.userName ?? userName, bond: after?.bond ?? result.after, xp: after?.xp ?? result.xp, xpDelta: effectiveXpDelta, flirtDelta: result.flirtDelta, bondUnlocked: result.bondUnlocked, nickname: after?.nickname ?? [] },
+  };
+}
 export async function ingestMemoryBackground(text: string | undefined, userId: string, eventTimestamp: string, sessionKey: string): Promise<void> { if (!text?.trim()) return; try { const vector = await embed(text, "document"); const twin = await isDuplicateMemory(vector, sessionKey); if (twin) { console.log(`[MEMORY] ${userId}: skipped duplicate \"${twin.text.slice(0, 40)}\" (${(twin.score ?? 0).toFixed(2)})`); return; } const createdAt = new Date().toISOString(); await saveMemoryVector({ id: crypto.randomUUID(), text, userId, timestamp: eventTimestamp, sessionKey, metadata: { eventTimestamp, createdAt } }, vector); } catch (error) { console.warn(`[MEMORY] ${userId}: background ingestion failed: ${error instanceof Error ? error.message : String(error)}`); } }
 export async function persistEpisodeBackground(sessionKey: string): Promise<void> { try { const episode = await buildRecentEpisode(sessionKey); if (episode) await saveEpisode(episode); } catch (error) { console.warn(`[MEMORY] ${sessionKey}: background episode ingestion failed: ${error instanceof Error ? error.message : String(error)}`); } }
 async function runGemini2(message: IncomingMessage, responseText: string, summery: string, profile: UserProfile | null, media: Interactions.Content[], speakers: TurnSpeaker[], owner: TurnSpeaker): Promise<IslaState> { const analysisInput = [turnTranscript(speakers, message.text), `Isla: ${responseText}`, ...(summery ? [`(สรุปของข้อความนี้: ${summery})`] : []), ``, `สถานะด้านล่างคือของ ${owner.user} (id: ${owner.userId}) — ผู้พูดคนสุดท้ายของเทิร์นนี้`, stateBlock(profile)].join("\n"); const request: GeminiRequest = { messages: [{ role: "user", userId: message.userId, user: message.user, text: analysisInput, timestamp: new Date().toISOString(), ...(media.length && { media }) }] }; const result = await sendRequestGemini(request, { stage: "gemini2", systemInstruction: gemini2SystemPrompt(owner.user), responseFormat: { type: "text", mime_type: "application/json", schema: fillPartnerIn(ISLA_STATE_SCHEMA, owner.user) }, debug: { userId: message.userId, userName: message.user } }); const state = parseIslaState(typeof result === "string" ? result : "", profile?.bond ?? "stranger"); for (const warning of state.warnings) console.warn(`[PIPELINE] ${message.userId}: gemini2 ${warning}`); return state; }
