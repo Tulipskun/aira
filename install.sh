@@ -100,8 +100,15 @@ else
     bash) rc_path="${HOME}/.bashrc" ;;
     *) rc_path="${HOME}/.profile" ;;
   esac
-  printf '[AIRA] CLI was installed, but the current shell has not reloaded its PATH.\n'
-  printf '[AIRA] Run: source %s\n' "$rc_path"
-  printf '[AIRA] Then run: aira setup\n'
-  printf '[AIRA] Then run: aira start\n'
+  cli_path="${HOME}/.local/bin/aira"
+  if [ -x "$cli_path" ]; then
+    printf '[AIRA] CLI was installed at %s.\n' "$cli_path"
+    printf '[AIRA] The current shell has not reloaded its PATH.\n'
+    printf '[AIRA] Run: source %s\n' "$rc_path"
+    printf '[AIRA] Then run: aira setup\n'
+    printf '[AIRA] Then run: aira start\n'
+  else
+    printf '[AIRA] CLI installation could not be verified.\n' >&2
+    exit 1
+  fi
 fi
