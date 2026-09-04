@@ -41,17 +41,31 @@ Unknown `!` commands are ignored and do not enter the AI pipeline. Normal messag
 
 Memory timestamps distinguish the source event time from the record creation time. Episodes also retain participant IDs so group-session memories do not lose identity context.
 
-## Setup
+## Installation
 
 Copy `.env.example` to `.env` and fill in `ISLA_TOKEN` (the bot's Discord token), owner ID, and Gemini API key(s). Gemini 1 defaults to `gemini-3.1-flash-lite` and Gemini 2 defaults to `gemini-3.5-flash-lite`; both can still be overridden with `.env`.
 
 `aira start` automatically checks for the private Chroma environment. If Python 3 is missing, Aira installs it using a supported system package manager (`apt-get`, `dnf`, `pacman`, or `brew`), creates `.aira/chroma-venv`, and installs Chroma there. Existing installations are reused. Chroma data stays in `.aira/chroma/`.
 
+For a normal installation, run:
+
+```bash
+bun install
+bun run install-cli
+cp .env.example .env
+# Edit .env
+aira start
+```
+
+## Development / Verification
+
+These commands are for development and verification. They are not required for a normal end-user installation.
+
 ```bash
 bun install
 bun run typecheck
-bun run install-cli
-aira start
+bun run test:cli
+bun run test:chroma
 ```
 
 ## CLI
