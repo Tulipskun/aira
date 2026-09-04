@@ -13,7 +13,7 @@ import {
   sessionKeyFor,
 } from "../sql/sessions.js";
 import { listUserProfiles } from "../sql/profile.js";
-import { bondLabel } from "../sql/bonds.js";
+import { bondEmoji, bondLabel } from "../sql/bonds.js";
 import { getResponseChannelId } from "./discord-config.js";
 
 export const ISLA_COMMAND_NAME = "isla";
@@ -53,13 +53,6 @@ export function islaCommandPayload() {
       },
     ],
   };
-}
-
-const PREVIEW_MAX = 200;
-
-function preview(text: string): string {
-  const flat = text.replace(/[\r\n]+/g, " ").replace(/`/g, "'").trim();
-  return flat.length > PREVIEW_MAX ? `${flat.slice(0, PREVIEW_MAX - 1)}…` : flat;
 }
 
 export async function handleIslaCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -136,8 +129,10 @@ async function handleLeaderboard(interaction: ChatInputCommandInteraction): Prom
   const profiles = listUserProfiles(10);
   const description = profiles.length
     ? profiles.map((profile, index) => {
-        const name = preview(profile.userName || profile.userId);
-        return `${index + 1}. **${name}** (${bondLabel(profile.bond)}) ${bondEmoji(profile.bond)} ${profile.xp} [Flirt: ${profile.flirtCount}]`;
+        const name = profile.userName || profile.userId;
+        const relationship = bondLabel(profile.bond);
+        const emoji = bondEmoji(profile.bond);
+        return `${index + 1}. **${name}** (${relationship}) ${emoji} ${profile.xp} [Flirt: ${profile.flirtCount}]`;
       }).join("\n")
     : "ยังไม่มีข้อมูลผู้ใช้";
 
@@ -146,29 +141,8 @@ async function handleLeaderboard(interaction: ChatInputCommandInteraction): Prom
     .setDescription(description)
     .setFooter({ text: "จัดอันดับตาม XP" });
 
+  // Unlike join/leave/status, leaderboard is intentionally public.
   await interaction.reply({ embeds: [embed], allowedMentions: { parse: [] } });
-}
-
-function bondEmoji(bond: string): string {
-  switch (bond) {
-    case "lover":
-    case "soulmate":
-      return "❤️";
-    case "crush":
-      return "💗";
-    case "close_friend":
-      return "💙";
-    case "friend":
-      return "💛";
-    case "sibling":
-      return "💚";
-    case "family":
-      return "🧡";
-    case "enemy":
-      return "💢";
-    default:
-      return "";
-  }
 }
 
 async function reply(interaction: ChatInputCommandInteraction, content: string): Promise<void> {
