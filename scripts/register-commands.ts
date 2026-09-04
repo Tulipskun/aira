@@ -1,23 +1,17 @@
 /**
  * Register (or update) the bot's slash commands.
  *
- * `/isla` has existed since `c9c778f` but was created by a throwaway script, so a fresh deploy had
- * no way to recreate it — and a subcommand the handler knows about but Discord never offered is a
- * feature that does not exist. This script is the missing piece, and it is idempotent, so it can be
- * re-run after every change to `ISLA_SUBCOMMANDS`.
+ * Registration is intentionally a separate operation. Do not call this from bot startup/restart;
+ * Discord command registration is a deployment/configuration action, not a runtime action.
  *
  *   bun run scripts/register-commands.ts            # write
  *   bun run scripts/register-commands.ts --dry-run  # show what would change, touch nothing
  *
- * Two Discord rules this script exists to respect, both learned from a real 400:
- *  - `PUT /applications/{app.id}/commands` is **replace-all for global commands**, so every other
- *    command is carried over from the GET response instead of being deleted.
- *  - A subcommand option (type 1) is **mutually exclusive with every other option type**, so the
- *    original free-text `/isla <args>` cannot coexist with `/isla join-group`. The text moved under
- *    `/isla say <args>`; the bare form is gone, and `handleSay` still answers it if a client sends it.
+ * `PUT /applications/{app.id}/commands` is replace-all for global commands, so every other command
+ * is carried over from the GET response instead of being deleted.
  *
  * Access fields (`default_member_permissions`, `dm_permission`) are copied from whatever is live
- * rather than invented here: this script changes what the command *offers*, not who may use it.
+ * rather than invented here: this script changes what the command offers, not who may use it.
  */
 import "dotenv/config";
 import { ISLA_COMMAND_NAME, ISLA_SUBCOMMANDS, islaCommandPayload } from "../src/bot/interactions.js";
@@ -48,26 +42,6 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T> 
   return (await response.json()) as T;
 }
 
-/**
- * Only the fields this script owns, in a fixed key order.
- *
- * Two reasons this is not a `JSON.stringify` of the object:
- *  - Discord adds computed fields (`id`, `version`, `application_id`) we never send, and
- *  - Discord returns option keys in a **different order** than the payload was sent in (`type`
- *    before `name`), so a raw stringify of an identical command never compares equal and the script
- *    would PUT on every run.
- * Recursing into `options` is what makes a subcommand's own arguments part of the comparison.
- */
-function comparable(command: Record<string, unknown>): string {
-  return JSON.stringify({
-    name: command.name,
-    description: command.description,
-    default_member_permissions: command.default_member_permissions ?? null,
-    dm_permission: command.dm_permission ?? null,
-    options: ((command.options ?? []) as Record<string, unknown>[]).map(optionShape),
-  });
-}
-
 type OptionShape = {
   name: unknown;
   description: unknown;
@@ -86,6 +60,16 @@ function optionShape(option: Record<string, unknown>): OptionShape {
   };
 }
 
+function comparable(command: Record<string, unknown>): string {
+  return JSON.stringify({
+    name: command.name,
+    description: command.description,
+    default_member_permissions: command.default_member_permissions ?? null,
+    dm_permission: command.dm_permission ?? null,
+    options: ((command.options ?? []) as Record<string, unknown>[]).map(optionShape),
+  });
+}
+
 async function main(): Promise<void> {
   const dryRun = process.argv.includes("--dry-run");
   const application = await api<{ id: string }>("GET", "/applications/@me");
@@ -95,7 +79,6 @@ async function main(): Promise<void> {
 
   const command = {
     ...islaCommandPayload(),
-    // Preserve live access settings; a command registration should not quietly change permissions.
     default_member_permissions: current?.default_member_permissions ?? null,
     dm_permission: current?.dm_permission ?? true,
   };
@@ -107,7 +90,7 @@ async function main(): Promise<void> {
 
   console.log(
     `[COMMANDS] ${current ? "updating" : "creating"} /${ISLA_COMMAND_NAME} with ` +
-    `${(command.options ?? []).length} option(s)/subcommand(s)` +
+    `${(command.options ?? []).length} subcommand(s)` +
     `${others.length ? `, preserving ${others.length} other command(s)` : ""}`,
   );
   if (dryRun) {
@@ -116,7 +99,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Replace-all, so unknown commands must be carried over or they disappear.
   const written = await api<RemoteCommand[]>("PUT", `/applications/${application.id}/commands`, [...others, command]);
   const saved = written.find((item) => item.name === ISLA_COMMAND_NAME);
   console.log(`[COMMANDS] done: ${written.length} global command(s), /${ISLA_COMMAND_NAME} = ${saved?.id ?? "MISSING"}`);
