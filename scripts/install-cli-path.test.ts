@@ -13,4 +13,10 @@ assert.equal(
   pathBin,
 );
 
+const missingBin = join(root, "missing-bin");
+assert.equal(
+  selectBinDir({ HOME: root, PATH: `${missingBin}:/usr/bin` }),
+  missingBin,
+);
+
 console.log("install-cli path tests: OK");
