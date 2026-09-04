@@ -76,33 +76,35 @@ function usage(): void {
   console.log(`Usage: aira <command>\n\nCommands:\n  start    Start Aira\n  stop     Stop Aira\n  restart  Restart Aira\n  status   Show status\n  log      Show the last 100 log lines\n  logs     Alias for log\n  help     Show this help`);
 }
 
-const { command } = (() => {
+export function main(args: string[] = process.argv.slice(2)): number {
+  let command: AiraCommand;
   try {
-    return buildCommand(process.argv.slice(2));
+    command = buildCommand(args).command;
   } catch (error) {
     console.error(`[AIRA] ${error instanceof Error ? error.message : String(error)}`);
     usage();
-    process.exit(1);
+    return 1;
   }
-})();
 
-switch (command) {
-  case "help":
-    usage();
-    break;
-  case "start":
-    process.exit(supervisorCommand("start"));
-  case "stop":
-    process.exit(supervisorCommand("stop"));
-  case "restart": {
-    const stopCode = supervisorCommand("stop");
-    if (stopCode !== 0) process.exit(stopCode);
-    process.exit(supervisorCommand("start"));
+  switch (command) {
+    case "help":
+      usage();
+      return 0;
+    case "start":
+      return supervisorCommand("start");
+    case "stop":
+      return supervisorCommand("stop");
+    case "restart": {
+      const stopCode = supervisorCommand("stop");
+      return stopCode === 0 ? supervisorCommand("start") : stopCode;
+    }
+    case "status":
+      printStatus();
+      return 0;
+    case "log":
+      printLog();
+      return 0;
   }
-  case "status":
-    printStatus();
-    break;
-  case "log":
-    printLog();
-    break;
 }
+
+if (import.meta.main) process.exit(main());
