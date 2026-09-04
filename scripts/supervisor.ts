@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { config } from "../src/config.js";
 import { waitForBotReady } from "./start-readiness.js";
 
 const root = resolve(import.meta.dir, "..");
@@ -40,7 +41,7 @@ if (command === "start") {
   const result = await waitForBotReady(
     async () => {
       try {
-        const response = await fetch("http://127.0.0.1:${process.env.ISLA_HEALTH_PORT ?? "8091"}/health", {
+        const response = await fetch(`http://127.0.0.1:${config.health.port}/health`, {
           signal: AbortSignal.timeout(5_000),
         });
         if (!response.ok) return false;
