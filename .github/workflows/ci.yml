@@ -28,3 +28,4 @@ jobs:
       - run: bun run scripts/test-episodic.ts
       - run: bun run scripts/test-sessions.ts
       - run: bun run scripts/test-turn-transaction.ts
+      - run: bun run scripts/test-isla-dialogue-style.ts
