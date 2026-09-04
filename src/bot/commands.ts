@@ -12,16 +12,23 @@ export function isKnownCommand(text: string): boolean {
 }
 
 export async function handleCommand(message: Message, ownerId: string): Promise<void> {
-  if (message.author.id !== ownerId) return;
+  const name = commandName(message.content);
+  if (message.author.id !== ownerId) {
+    console.warn(`[DISCORD] Command ignored: ${name || "unknown"} (owner authorization failed)`);
+    return;
+  }
 
-  switch (commandName(message.content)) {
+  console.log(`[DISCORD] Owner command accepted: ${name}`);
+  switch (name) {
     case "islacomehere":
       await setResponseChannelId(message.channelId);
       await message.reply("Locked to this channel.");
+      console.log(`[DISCORD] Response channel locked: ${message.channelId}`);
       return;
     case "unset":
       await unsetResponseChannelId();
       await message.reply("Channel lock removed.");
+      console.log("[DISCORD] Response channel unlocked");
       return;
   }
 }
