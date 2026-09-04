@@ -40,7 +40,6 @@ import {
   bondLevel,
   bondRecoveryFrom,
   FLIRT_REQUIREMENT,
-  FLIRT_XP_BONUS,
   PROPOSAL_XP,
   XP_THRESHOLDS,
   xpBandsText,
@@ -52,6 +51,7 @@ import { loadPromptTemplate, renderPrompt, type CachedPrompt, type PromptValues 
 import type { Interactions } from "@google/genai";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..");
+const FLIRT_XP_BONUS = 25;
 export type IncomingMessage = {
   userId: string;
   user: string;
@@ -183,12 +183,13 @@ export type TurnApplyResult = {
   status: UserStatus;
 };
 
-export function applyState(
+export async function applyState(
   state: IslaState,
   userId: string,
   timestamp: string,
   userName: string,
-): TurnApplyResult {
+  _sessionKey?: string,
+): Promise<TurnApplyResult> {
   const result = applyTurnState({
     userId,
     userName,
@@ -385,16 +386,13 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const responseTimestamp = new Date().toISOString();
   saveMessage({ role: "model", text: responseText, summary: reply.summery || null, timestamp: responseTimestamp, sessionKey });
 
-  // Episode generation is an external Chroma write. It is intentionally outside the response path.
   if (reply.summery) void persistEpisodeBackground(sessionKey);
 
   const state = await runGemini2(message, responseText, reply.summery, profile, media.parts, speakers, owner);
   const gemini2Ms = lap();
-  const applied = applyState(state, owner.userId, message.timestamp, owner.user);
+  const applied = await applyState(state, owner.userId, message.timestamp, owner.user, sessionKey);
   const applyMs = lap();
 
-  // The response only depends on Gemini 1 + Gemini 2 + local SQLite state. Memory ingestion is
-  // best-effort background work and must never delay or fail the Discord response.
   void ingestMemoryBackground(state.ingestMemory, owner.userId, message.timestamp, sessionKey);
 
   console.log(`[PIPELINE] ${message.user}: total=${prepMs + embedMs + chromaMs + buildMs + gemini1Ms + gemini2Ms + applyMs}ms prep=${prepMs} embed=${embedMs} chroma=${chromaMs} build=${buildMs} gemini1=${gemini1Ms} gemini2=${gemini2Ms} apply=${applyMs}`);
