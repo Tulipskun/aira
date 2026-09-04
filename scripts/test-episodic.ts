@@ -1,4 +1,4 @@
-import { embeddingTaskType } from "../src/memory/embedding.js";
+import { prepareEmbeddingInput } from "../src/memory/embedding.js";
 import { buildEpisode, episodeDate, episodeId, episodePeriod, temporalQuery } from "../src/memory/episodic.js";
 
 let failures = 0;
@@ -12,8 +12,8 @@ const afternoon = "2026-09-04T06:00:00.000Z";
 const evening = "2026-09-04T12:00:00.000Z";
 const night = "2026-09-04T17:00:00.000Z";
 
-check("Gemini query task maps to RETRIEVAL_QUERY", embeddingTaskType("query") === "RETRIEVAL_QUERY");
-check("Gemini document task maps to RETRIEVAL_DOCUMENT", embeddingTaskType("document") === "RETRIEVAL_DOCUMENT");
+check("Gemini Embedding 2 query uses search instruction", prepareEmbeddingInput("เมื่อเช้าคุยอะไร", "query") === "task: search result | query: เมื่อเช้าคุยอะไร");
+check("Gemini Embedding 2 document uses document structure", prepareEmbeddingInput("คุยเรื่องเกม", "document") === "title: none | text: คุยเรื่องเกม");
 check("morning period", episodePeriod(morning) === "morning");
 check("afternoon period", episodePeriod(afternoon) === "afternoon");
 check("evening period", episodePeriod(evening) === "evening");
