@@ -22,7 +22,7 @@ import { embed } from "../memory/embedding.js";
 import { isDuplicateMemory, recallMemories, saveMemoryVector } from "../memory/chroma.js";
 import { buildRecentEpisode, episodePromptMemory, recallEpisodes, saveEpisode } from "../memory/episodic.js";
 import { getHistory, saveMessage, type HistoryMessage } from "../sql/history.js";
-import { groupChannelOf, isGroupSession, userOfSession } from "../sql/sessions.js";
+import { isGroupSession } from "../sql/sessions.js";
 import {
   addFacts,
   addNicknames,
@@ -40,6 +40,7 @@ import {
   bondLevel,
   bondRecoveryFrom,
   FLIRT_REQUIREMENT,
+  FLIRT_XP_BONUS,
   PROPOSAL_XP,
   XP_THRESHOLDS,
   xpBandsText,
@@ -57,35 +58,15 @@ export type IncomingMessage = {
   text: string;
   timestamp: string;
   fileName?: string;
-  /** Media URLs to fetch and attach to this turn. Fetched once, used by both stages. */
   mediaSources?: MediaSource[];
-  /**
-   * Which conversation stream this turn belongs to — see sql/sessions.ts. Required: history and
-   * memory are both scoped by it, so a turn without one would either read nobody's context or
-   * everybody's. `user:<userId>` is the default; `group:<channelId>` when the sender opted in.
-   */
   sessionKey: string;
-  /**
-   * Everyone who spoke inside this turn's debounce batch, in arrival order. A private session has
-   * one entry; a group session can carry several people whose messages were merged into one turn.
-   * When absent the turn is treated as `userId`/`user` alone.
-   */
   speakers?: TurnSpeaker[];
 };
 export type ProcessMessageResult = {
   text: string;
-  /** Expression image filename chosen by Gemini 2, already validated against `images/`. */
   image?: string;
-  /** Isla's mood in Thai, from Gemini 1 -- rendered in the embed footer. */
   mood?: string;
-  /** That mood as a 24-bit RGB integer -- the embed's accent colour. Undefined when she sent no
-   * usable colour, which must not cost us the reply. */
   color?: number;
-  /**
-   * The relationship card the embed footer is built from: who this user is to her right now, after
-   * this turn's xp landed. Read off the row `applyState()` just wrote, so the footer can never
-   * disagree with the database.
-   */
   status: UserStatus;
 };
 const systemPromptTemplate = readFileSync(join(PROJECT_ROOT, config.paths.gemini1SystemPrompt), "utf8").trim();
@@ -184,6 +165,7 @@ export function stateBlock(profile: UserProfile | null): string {
     `bond: ${bond} (${bondLabel(bond)}, ระดับ ${bondLevel(bond)})`,
     `xp: ${profile?.xp ?? 0}`,
     `flirt_count: ${profile?.flirtCount ?? 0} (ต้องได้อย่างน้อย ${FLIRT_REQUIREMENT} ครั้งจึงจะเป็น crush ได้)`,
+    `flirt_xp_bonus: +${FLIRT_XP_BONUS} xp เมื่อ is_flirt=true`,
     `approved_pending: ${pending.length ? pending.join(", ") : "-"}`,
     `xp ที่ต้องมีก่อนเลื่อนระดับจากการตอบตกลง: ${PROPOSAL_XP}`,
     `ขอบเขต xp: ${xpBandsText()}`,
@@ -201,18 +183,17 @@ export type TurnApplyResult = {
   status: UserStatus;
 };
 
-export async function applyState(
+export function applyState(
   state: IslaState,
   userId: string,
   timestamp: string,
   userName: string,
-  sessionKey?: string,
-): Promise<TurnApplyResult> {
+): TurnApplyResult {
   const result = applyTurnState({
     userId,
     userName,
-    affinity: state.affinity,
-    ...(state.isFlirt !== undefined && { isFlirt: state.isFlirt }),
+    affinity: state.affinity + (state.isFlirt === true ? FLIRT_XP_BONUS : 0),
+    isFlirt: state.isFlirt,
     approvals: {
       lover: state.approveLover === true,
       soulmate: state.approveSoulmate === true,
@@ -235,16 +216,6 @@ export async function applyState(
     if (added) console.log(`[PIPELINE] ${userId}: +${added} nickname(s)`);
   }
 
-  if (state.ingestMemory) {
-    const vector = await embed(state.ingestMemory, "document");
-    const twin = await isDuplicateMemory(vector, sessionKey);
-    if (twin) {
-      console.log(`[PIPELINE] ${userId}: memory skipped as duplicate of "${twin.text.slice(0, 40)}" (${(twin.score ?? 0).toFixed(2)})`);
-    } else {
-      await saveMemoryVector({ id: crypto.randomUUID(), text: state.ingestMemory, userId, timestamp, sessionKey }, vector);
-    }
-  }
-
   const after = getUserProfile(userId) ?? result.profile;
   return {
     ...(state.selectImage ? { image: state.selectImage } : {}),
@@ -252,12 +223,49 @@ export async function applyState(
       userName: after?.userName ?? userName,
       bond: after?.bond ?? result.after,
       xp: after?.xp ?? result.xp,
-      xpDelta: state.affinity,
+      xpDelta: state.affinity + (state.isFlirt === true ? FLIRT_XP_BONUS : 0),
       flirtDelta: result.flirtDelta,
       bondUnlocked: result.bondUnlocked,
       nickname: after?.nickname ?? [],
     },
   };
+}
+
+export async function ingestMemoryBackground(
+  text: string | undefined,
+  userId: string,
+  eventTimestamp: string,
+  sessionKey: string,
+): Promise<void> {
+  if (!text?.trim()) return;
+  try {
+    const vector = await embed(text, "document");
+    const twin = await isDuplicateMemory(vector, sessionKey);
+    if (twin) {
+      console.log(`[MEMORY] ${userId}: skipped duplicate "${twin.text.slice(0, 40)}" (${(twin.score ?? 0).toFixed(2)})`);
+      return;
+    }
+    const createdAt = new Date().toISOString();
+    await saveMemoryVector({
+      id: crypto.randomUUID(),
+      text,
+      userId,
+      timestamp: eventTimestamp,
+      sessionKey,
+      metadata: { eventTimestamp, createdAt },
+    }, vector);
+  } catch (error) {
+    console.warn(`[MEMORY] ${userId}: background ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export async function persistEpisodeBackground(sessionKey: string): Promise<void> {
+  try {
+    const episode = await buildRecentEpisode(sessionKey);
+    if (episode) await saveEpisode(episode);
+  } catch (error) {
+    console.warn(`[MEMORY] ${sessionKey}: background episode ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function runGemini2(
@@ -377,17 +385,18 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   const responseTimestamp = new Date().toISOString();
   saveMessage({ role: "model", text: responseText, summary: reply.summery || null, timestamp: responseTimestamp, sessionKey });
 
-  // Gemini 1's summary remains turn-level metadata. Build/upsert the current temporal episode from
-  // recent model summaries; it never becomes a fact and never replaces the raw message history.
-  if (reply.summery) {
-    const episode = await buildRecentEpisode(sessionKey);
-    if (episode) await saveEpisode(episode);
-  }
+  // Episode generation is an external Chroma write. It is intentionally outside the response path.
+  if (reply.summery) void persistEpisodeBackground(sessionKey);
 
   const state = await runGemini2(message, responseText, reply.summery, profile, media.parts, speakers, owner);
   const gemini2Ms = lap();
-  const applied = await applyState(state, owner.userId, message.timestamp, owner.user, sessionKey);
+  const applied = applyState(state, owner.userId, message.timestamp, owner.user);
   const applyMs = lap();
+
+  // The response only depends on Gemini 1 + Gemini 2 + local SQLite state. Memory ingestion is
+  // best-effort background work and must never delay or fail the Discord response.
+  void ingestMemoryBackground(state.ingestMemory, owner.userId, message.timestamp, sessionKey);
+
   console.log(`[PIPELINE] ${message.user}: total=${prepMs + embedMs + chromaMs + buildMs + gemini1Ms + gemini2Ms + applyMs}ms prep=${prepMs} embed=${embedMs} chroma=${chromaMs} build=${buildMs} gemini1=${gemini1Ms} gemini2=${gemini2Ms} apply=${applyMs}`);
   return {
     text: responseText,
