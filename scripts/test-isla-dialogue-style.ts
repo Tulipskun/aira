@@ -24,12 +24,12 @@ for (const text of required) {
   }
 }
 
-const examples = [
-  "ไม่ใช้รูปแบบประมาณ “สวัสดีค่ะ มีอะไรให้ฉันช่วยไหมคะ?”",
-  "ไม่ใช้รูปแบบประมาณ “ยินดีช่วยค่ะ บอกมาได้เลยนะคะ”",
+const forbiddenPatterns = [
+  "สวัสดีค่ะ มีอะไรให้ฉันช่วยไหมคะ?",
+  "ยินดีช่วยค่ะ บอกมาได้เลยนะคะ",
 ];
 
-for (const example of examples) {
+for (const example of forbiddenPatterns) {
   if (!prompt.includes(example)) {
     console.error(`❌ Missing concrete anti-pattern example: ${example}`);
     process.exit(1);
