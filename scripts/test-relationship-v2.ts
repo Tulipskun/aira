@@ -28,14 +28,14 @@ assert.equal(deriveBond("crush", 700, { flirtCount: 4, approvals: { lover: true 
 assert.equal(deriveBond("crush", 700, { flirtCount: 5, approvals: { lover: true } }).bond, "lover");
 
 // A soulmate proposal requires lover + 1000 XP + acceptance.
-assert.equal(deriveBond("lover", 999, { approvals: { soulmate: true } }).bond, "lover");
-assert.equal(deriveBond("lover", 1000, { approvals: { soulmate: true } }).bond, "soulmate");
+assert.equal(deriveBond("lover", 999, { flirtCount: 0, approvals: { soulmate: true } }).bond, "lover");
+assert.equal(deriveBond("lover", 1000, { flirtCount: 0, approvals: { soulmate: true } }).bond, "soulmate");
 
 // Sibling/family are capped special rungs and require 500 XP + acceptance.
-assert.equal(deriveBond("friend", 499, { approvals: { sibling: true } }).bond, "friend");
-assert.equal(deriveBond("friend", 500, { approvals: { sibling: true } }).bond, "sibling");
-assert.equal(deriveBond("friend", 499, { approvals: { family: true } }).bond, "friend");
-assert.equal(deriveBond("friend", 500, { approvals: { family: true } }).bond, "family");
+assert.equal(deriveBond("friend", 499, { flirtCount: 0, approvals: { sibling: true } }).bond, "friend");
+assert.equal(deriveBond("friend", 500, { flirtCount: 0, approvals: { sibling: true } }).bond, "sibling");
+assert.equal(deriveBond("friend", 499, { flirtCount: 0, approvals: { family: true } }).bond, "friend");
+assert.equal(deriveBond("friend", 500, { flirtCount: 0, approvals: { family: true } }).bond, "family");
 
 // A proposal cannot jump from a lower rung directly to lover/soulmate.
 assert.notEqual(deriveBond("stranger", 1000, { flirtCount: 5, approvals: { lover: true } }).bond, "lover");
