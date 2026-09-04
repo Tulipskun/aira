@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-export type AiraCommand = "help" | "start" | "stop" | "restart" | "status" | "log" | "register_commands" | "update";
+export type AiraCommand = "help" | "setup" | "start" | "stop" | "restart" | "status" | "log" | "register_commands" | "update";
 
 type GitPullResult = { code: number; before: string; after: string };
 type UpdateDeps = {
@@ -14,12 +14,13 @@ type UpdateDeps = {
 const root = resolve(import.meta.dir, "..");
 const supervisor = resolve(import.meta.dir, "supervisor.ts");
 const registerCommands = resolve(import.meta.dir, "register-commands.ts");
+const setup = resolve(import.meta.dir, "aira-setup.ts");
 const logFile = resolve(root, ".aira/logs/aira.log");
 
 export function buildCommand(args: string[]): { command: AiraCommand } {
   const value = args[0] ?? "help";
   if (value === "logs") return { command: "log" };
-  if (["help", "start", "stop", "restart", "status", "log", "register_commands", "update"].includes(value)) {
+  if (["help", "setup", "start", "stop", "restart", "status", "log", "register_commands", "update"].includes(value)) {
     return { command: value as AiraCommand };
   }
   throw new Error(`Unknown command: ${value}`);
@@ -46,6 +47,19 @@ function registerDiscordCommands(): number {
   });
   if (result.error) {
     console.error(`[AIRA] Failed to register Discord commands: ${result.error.message}`);
+    return 1;
+  }
+  return result.status ?? 1;
+}
+
+function runSetupCommand(): number {
+  const result = spawnSync(process.execPath, ["run", setup], {
+    cwd: root,
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (result.error) {
+    console.error(`[AIRA] Failed to run setup: ${result.error.message}`);
     return 1;
   }
   return result.status ?? 1;
@@ -160,7 +174,7 @@ function printLog(): void {
 }
 
 function usage(): void {
-  console.log(`Usage: aira <command>\n\nCommands:\n  start              Start Aira\n  stop               Stop Aira\n  restart            Restart Aira\n  update             Pull GitHub and restart when updated\n  status             Show status\n  register_commands  Register/update Discord slash commands\n  log                Show the last 100 log lines\n  logs               Alias for log\n  help               Show this help`);
+  console.log(`Usage: aira <command>\n\nCommands:\n  setup              Configure Discord and Gemini settings\n  start              Start Aira\n  stop               Stop Aira\n  restart            Restart Aira\n  update             Pull GitHub and restart when updated\n  status             Show status\n  register_commands  Register/update Discord slash commands\n  log                Show the last 100 log lines\n  logs               Alias for log\n  help               Show this help`);
 }
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<number> {
@@ -177,6 +191,8 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<numb
     case "help":
       usage();
       return 0;
+    case "setup":
+      return runSetupCommand();
     case "start":
       return supervisorCommand("start");
     case "stop":

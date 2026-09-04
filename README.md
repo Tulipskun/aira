@@ -55,7 +55,15 @@ curl -fsSL https://raw.githubusercontent.com/Tulipskun/aira/main/install.sh | ba
 
 The installer prepares Bun when needed, downloads Aira into `~/.local/share/aira`, installs dependencies, creates `.env` from `.env.example`, and installs the `aira` command into an existing writable directory already present in `PATH` whenever possible. This means no `source ~/.bashrc` is required for normal installations.
 
-After installation, fill in `~/.local/share/aira/.env` with `ISLA_TOKEN`, `DISCORD_OWNER_ID`, and Gemini API key(s), then run:
+After installation, run the interactive setup instead of editing `.env` manually:
+
+```bash
+aira setup
+```
+
+Setup asks for the Discord token, owner ID, and Gemini API key(s). API keys can be entered as a comma-separated list; surrounding whitespace is trimmed automatically. Existing values are kept when you press Enter. Token and API-key input is hidden in an interactive terminal. Model names are optional: answer `y` to `ต้องการตั้ง model name หรือไม่ (y/N default=N)` to configure Gemini 1, Gemini 2, and Gemini Embedding 2 model names; the default is not to change them.
+
+Then start Aira:
 
 ```bash
 aira start
@@ -91,6 +99,7 @@ bun run test:chroma
 The CLI controls the existing supervisor and can be called from any directory after installation.
 
 ```text
+aira setup
 aira start
 aira stop
 aira restart
