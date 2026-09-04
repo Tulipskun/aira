@@ -57,8 +57,9 @@ function shiftLocalDate(date: string, days: number): string {
   return shifted.toISOString().slice(0, 10);
 }
 
-export function episodeId(sessionKey: string, startTime: string, endTime: string): string {
-  const input = `${sessionKey}\u0000${startTime}\u0000${endTime}`;
+/** Stable for the lifetime of one episode: later summaries extend the same episode and upsert it. */
+export function episodeId(sessionKey: string, startTime: string): string {
+  const input = `${sessionKey}\u0000${startTime}`;
   let hash = 2166136261;
   for (let index = 0; index < input.length; index += 1) {
     hash ^= input.charCodeAt(index);
@@ -105,7 +106,7 @@ export function buildEpisode(
   const period = episodePeriod(last.timestamp);
   const date = episodeDate(last.timestamp);
   return {
-    id: episodeId(sessionKey, first.timestamp, last.timestamp),
+    id: episodeId(sessionKey, first.timestamp),
     text: selected.map((item) => item.summary.trim()).join(" "),
     sessionKey,
     date,
