@@ -9,10 +9,14 @@ const STATE_FILE = config.paths.geminiKeyState;
 
 type State = { embedding2: number };
 export type EmbeddingTask = "query" | "document";
-export type GeminiEmbeddingTaskType = "RETRIEVAL_QUERY" | "RETRIEVAL_DOCUMENT";
 
-export function embeddingTaskType(task: EmbeddingTask): GeminiEmbeddingTaskType {
-  return task === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT";
+/**
+ * Gemini Embedding 2 does not accept the legacy `taskType` API field. For text-only retrieval,
+ * Google recommends expressing the task as an instruction in the input text instead.
+ */
+export function prepareEmbeddingInput(text: string, task: EmbeddingTask): string {
+  if (task === "query") return `task: search result | query: ${text}`;
+  return `title: none | text: ${text}`;
 }
 
 function keys(): string[] { return (process.env.GEMINI_EMBEDDING2_API_KEYS ?? "").split(",").map((v) => v.trim()).filter(Boolean); }
@@ -40,11 +44,8 @@ export async function embed(text: string, task: EmbeddingTask = "query"): Promis
       const ai = new GoogleGenAI({ apiKey: key });
       const response = await ai.models.embedContent({
         model: MODEL,
-        contents: text,
-        config: {
-          taskType: embeddingTaskType(task),
-          outputDimensionality: DIMENSION,
-        },
+        contents: prepareEmbeddingInput(text, task),
+        config: { outputDimensionality: DIMENSION },
       });
       const values = response.embeddings?.[0]?.values;
       if (!values?.length) throw new Error("Gemini Embedding 2 returned no embedding");
