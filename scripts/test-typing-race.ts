@@ -42,12 +42,12 @@ if (pause) {
   const pausedPromise = pause().then(() => { pauseResolved = true; });
 
   await new Promise((resolve) => setTimeout(resolve, 10));
-  check("pause waits for an in-flight typing request", pauseResolved === false);
+  check("pause waits for an in-flight typing request", !pauseResolved);
   check("pause prevents a new typing request", sendCalls === 1);
 
   request.resolve({ ok: true });
   await pausedPromise;
-  check("pause resolves after the typing request settles", pauseResolved === true);
+  check("pause resolves after the typing request settles", Boolean(pauseResolved));
 
   loop.stop();
 }
