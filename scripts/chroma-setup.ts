@@ -86,20 +86,36 @@ function runOrThrow(runner: CommandRunner, command: string, args: string[], labe
   }
 }
 
-function ensureVenvPip(runner: CommandRunner, venvPython: string): void {
+function ensureVenvPip(
+  runner: CommandRunner,
+  systemPython: string,
+  venvPython: string,
+): void {
   const check = runner(venvPython, ["-m", "pip", "--version"]);
   if (check.status === 0) return;
 
   const bootstrap = runner(venvPython, ["-m", "ensurepip", "--upgrade"]);
-  if (bootstrap.status !== 0) {
-    throw new Error(
-      `The Chroma virtual environment has no pip and ensurepip is unavailable: ${
-        bootstrap.stderr.trim() || `exit ${bootstrap.status}`
-      }. Install Python with venv/pip support, then run 'aira start' again.`,
-    );
+  if (bootstrap.status === 0) {
+    runOrThrow(runner, venvPython, ["-m", "pip", "--version"], "Bootstrapping pip in the Chroma virtual environment");
+    return;
   }
 
-  runOrThrow(runner, venvPython, ["-m", "pip", "--version"], "Bootstrapping pip in the Chroma virtual environment");
+  const systemPip = runner(systemPython, ["-m", "pip", "--version"]);
+  if (systemPip.status === 0) {
+    runOrThrow(
+      runner,
+      systemPython,
+      ["-m", "pip", "--python", venvPython, "install", "pip"],
+      "Installing pip into the Chroma virtual environment",
+    );
+    return;
+  }
+
+  throw new Error(
+    `The Chroma virtual environment has no pip and neither ensurepip nor system pip is available: ${
+      bootstrap.stderr.trim() || `exit ${bootstrap.status}`
+    }. Install Python with venv/pip support, then run 'aira start' again.`,
+  );
 }
 
 export function chromaExecutable(root: string): string {
@@ -139,7 +155,7 @@ export async function ensureChroma(
   }
 
   const venvPython = resolve(venv, "bin/python");
-  ensureVenvPip(runner, venvPython);
+  ensureVenvPip(runner, python, venvPython);
   runOrThrow(runner, venvPython, ["-m", "pip", "install", "chromadb"], "Installing Chroma");
 
   if (!existsSync(chroma)) {
