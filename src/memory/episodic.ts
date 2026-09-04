@@ -14,6 +14,10 @@ export type Episode = {
   period: EpisodePeriod;
   startTime: string;
   endTime: string;
+  /** User IDs that participated in the source summaries. Empty for legacy episodes. */
+  participants: string[];
+  /** When this episode record was created, distinct from the event times it summarizes. */
+  createdAt: string;
   topic?: string;
   score?: number;
 };
@@ -80,8 +84,10 @@ export function temporalQuery(text: string, now = new Date()): { date?: string; 
   return {};
 }
 
+export type EpisodeSummary = { timestamp: string; summary: string; userId?: string };
+
 export function buildEpisode(
-  summaries: Array<{ timestamp: string; summary: string }>,
+  summaries: EpisodeSummary[],
   sessionKey: string,
 ): Episode | null {
   const usable = summaries
@@ -89,7 +95,7 @@ export function buildEpisode(
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
   if (!usable.length) return null;
 
-  const selected: typeof usable = [usable[usable.length - 1]!];
+  const selected: EpisodeSummary[] = [usable[usable.length - 1]!];
   const gapMs = config.episode.gapMinutes * 60_000;
   for (let index = usable.length - 2; index >= 0; index -= 1) {
     const current = usable[index]!;
@@ -112,6 +118,8 @@ export function buildEpisode(
     period,
     startTime: first.timestamp,
     endTime: last.timestamp,
+    participants: [...new Set(selected.map((item) => item.userId).filter((id): id is string => Boolean(id)))],
+    createdAt: new Date().toISOString(),
   };
 }
 
@@ -151,6 +159,8 @@ export async function saveEpisodeVector(episode: Episode, vector: number[]): Pro
       period: episode.period,
       startTime: episode.startTime,
       endTime: episode.endTime,
+      createdAt: episode.createdAt,
+      ...(episode.participants.length ? { participants: episode.participants.join(",") } : {}),
     }],
   });
 }
@@ -159,7 +169,7 @@ export async function buildRecentEpisode(sessionKey: string): Promise<Episode | 
   const history = getHistory(50, sessionKey);
   const summaries = history
     .filter((entry: HistoryMessage) => entry.role === "model" && Boolean(entry.summary?.trim()))
-    .map((entry) => ({ timestamp: entry.timestamp, summary: entry.summary! }));
+    .map((entry) => ({ timestamp: entry.timestamp, summary: entry.summary!, userId: entry.userId }));
   return buildEpisode(summaries, sessionKey);
 }
 
@@ -192,6 +202,8 @@ export async function recallEpisodes(
       period: (typeof metadata?.period === "string" ? metadata.period : "night") as EpisodePeriod,
       startTime: typeof metadata?.startTime === "string" ? metadata.startTime : "",
       endTime: typeof metadata?.endTime === "string" ? metadata.endTime : "",
+      participants: typeof metadata?.participants === "string" ? metadata.participants.split(",").filter(Boolean) : [],
+      createdAt: typeof metadata?.createdAt === "string" ? metadata.createdAt : "",
       score: similarityOf(distances[index]),
     };
   }).filter((episode) => (episode.score ?? 1) >= minSimilarity);
@@ -205,6 +217,7 @@ export function episodePromptMemory(episode: Episode): {
   period: EpisodePeriod;
   startTime: string;
   endTime: string;
+  participants: string[];
 } {
   return {
     text: episode.text,
@@ -214,6 +227,7 @@ export function episodePromptMemory(episode: Episode): {
     period: episode.period,
     startTime: episode.startTime,
     endTime: episode.endTime,
+    participants: episode.participants,
   };
 }
 
