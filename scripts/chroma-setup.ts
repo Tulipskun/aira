@@ -42,7 +42,15 @@ function findPython(platform: NodeJS.Platform, runner: CommandRunner): string | 
   return pythonCandidates(platform).map((name) => executable(name, runner)).find(Boolean);
 }
 
+function privilegedCommand(packageManager: string, runner: CommandRunner): { command: string; prefix: string[] } {
+  if (packageManager === "brew" || process.getuid?.() === 0) return { command: packageManager, prefix: [] };
+  const sudo = executable("sudo", runner);
+  if (sudo) return { command: sudo, prefix: [packageManager] };
+  return { command: packageManager, prefix: [] };
+}
+
 function installPython(packageManager: string, runner: CommandRunner): void {
+  const { command, prefix } = privilegedCommand(packageManager, runner);
   const args = packageManager === "apt-get"
     ? ["update"]
     : packageManager === "dnf"
@@ -59,13 +67,13 @@ function installPython(packageManager: string, runner: CommandRunner): void {
         : ["install", "python"];
 
   if (packageManager !== "brew") {
-    const cache = runner(packageManager, args);
+    const cache = runner(command, [...prefix, ...args]);
     if (cache.status !== 0) {
       throw new Error(`Failed to prepare ${packageManager}: ${cache.stderr.trim() || `exit ${cache.status}`}`);
     }
   }
 
-  const install = runner(packageManager, managerArgs);
+  const install = runner(command, [...prefix, ...managerArgs]);
   if (install.status !== 0) {
     throw new Error(`Failed to install Python with ${packageManager}: ${install.stderr.trim() || `exit ${install.status}`}`);
   }
