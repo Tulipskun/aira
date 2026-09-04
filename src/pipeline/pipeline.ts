@@ -236,7 +236,7 @@ export async function applyState(
   }
 
   if (state.ingestMemory) {
-    const vector = await embed(state.ingestMemory);
+    const vector = await embed(state.ingestMemory, "document");
     const twin = await isDuplicateMemory(vector, sessionKey);
     if (twin) {
       console.log(`[PIPELINE] ${userId}: memory skipped as duplicate of "${twin.text.slice(0, 40)}" (${(twin.score ?? 0).toFixed(2)})`);
@@ -334,7 +334,7 @@ export async function processMessage(message: IncomingMessage): Promise<ProcessM
   saveMessage({ role: "user", userId: message.userId, user: message.user, text: message.text, timestamp: message.timestamp, fileName, sessionKey });
   const prepMs = lap();
   const embedText = message.text || media.summary || "(no text)";
-  const vector = await embed(embedText);
+  const vector = await embed(embedText, "query");
   const embedMs = lap();
   const memories = await recallMemories(vector, sessionKey);
   const episodes = await recallEpisodes(vector, sessionKey, message.text);
