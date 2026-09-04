@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { config } from "../src/config.js";
+import { waitForBotReady } from "./start-readiness.js";
 
 const root = resolve(import.meta.dir, "..");
 const daemon = resolve(import.meta.dir, "daemon.ts");
@@ -20,10 +22,48 @@ if (command === "start") {
       process.exit(0);
     }
   }
-  const child = spawn(process.execPath, ["run", daemon], { cwd: root, stdio: "ignore", detached: true, env: process.env });
+
+  const child = spawn(process.execPath, ["run", daemon], {
+    cwd: root,
+    stdio: "ignore",
+    detached: true,
+    env: process.env,
+  });
   child.unref();
-  console.log(`[SUPERVISOR] Started (pid ${child.pid})`);
-  process.exit(0);
+
+  const pid = child.pid;
+  if (!pid) {
+    console.error("[SUPERVISOR] Failed to start daemon: no pid returned");
+    process.exit(1);
+  }
+
+  console.log(`[SUPERVISOR] Starting (pid ${pid})...`);
+  const result = await waitForBotReady(
+    async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${config.health.port}/health`, {
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (!response.ok) return false;
+        const body = (await response.json()) as { gatewayReady?: boolean };
+        return body.gatewayReady === true;
+      } catch {
+        return false;
+      }
+    },
+    () => running(pid),
+  );
+
+  if (result.ready) {
+    console.log(`[SUPERVISOR] Ready (pid ${pid})`);
+    process.exit(0);
+  }
+
+  if (running(pid)) {
+    try { process.kill(pid, "SIGTERM"); } catch {}
+  }
+  console.error(`[SUPERVISOR] Start failed: ${result.reason}`);
+  process.exit(1);
 }
 
 if (command === "stop") {

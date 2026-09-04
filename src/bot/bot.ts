@@ -30,6 +30,7 @@ const client = new Client({
 // at the same time, so this is a counter rather than a boolean.
 let inFlight = 0;
 let typing: TypingIndicator | undefined;
+let warnedEmptyMessageContent = false;
 
 const scheduler = new MessageScheduler({
   debounceMs: 5_000,
@@ -40,19 +41,12 @@ const scheduler = new MessageScheduler({
   }),
 });
 
-// Show "Isla is typing…" while messages are waiting in the debounce queue or the pipeline
-// is running, refreshed every 8s (Discord expires the indicator after ~10s).
 typing = startTypingLoop(client, {
   channelId: getResponseChannelId,
   isActive: () => inFlight > 0 || scheduler.hasPending(),
 });
 
-// The receive path used to log nothing at all, so a quiet bot was undiagnosable: "nobody typed"
-// and "the gateway stopped delivering events" produced identical logs. This counts every place an
-// incoming message can stop and prints the tally when the channel has been silent for 5 minutes.
 const liveness = createLiveness({
-  // One probe for both the log line and /health, so a diagnosis and an auto-heal can never
-  // disagree about whether she is listening.
   shards: () => shardReadiness(client),
   channel: () => getResponseChannelId(),
 });
@@ -64,9 +58,16 @@ client.on("messageCreate", async (message: Message) => {
 
   const text = message.content.trim();
 
+  if (!text && !warnedEmptyMessageContent) {
+    warnedEmptyMessageContent = true;
+    console.warn("[DISCORD] Received a non-bot message with empty content; prefix commands such as !islacomehere cannot be parsed. Check the Message Content privileged intent in the Discord Developer Portal.");
+  }
+
   if (text.startsWith("!")) {
     liveness.note("command");
+    console.log(`[DISCORD] Prefix command received: ${commandForLog(text)}`);
     if (isKnownCommand(text)) await handleCommand(message, ownerId);
+    else console.log(`[DISCORD] Unknown prefix command ignored: ${commandForLog(text)}`);
     return;
   }
 
@@ -83,13 +84,8 @@ client.on("messageCreate", async (message: Message) => {
   }
 
   liveness.note("queued");
-  // Flush any *other* session's queue so the reply order matches the conversation. Keyed on the
-  // session rather than the user: in a group room, a second speaker must not cut off the turn that
-  // is about to answer the first one — their messages are merging into the same batch.
   scheduler.interruptOtherSessions(scheduled.sessionKey);
   scheduler.push(scheduled);
-  // Poke so the indicator shows immediately instead of waiting for the next 8s tick;
-  // the loop's own min-gap throttle keeps a burst of messages from sending repeats.
   typing?.poke();
 });
 
@@ -98,19 +94,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await handleIslaCommand(interaction);
   } catch (error) {
-    // Never let a failed reply become an unhandled rejection: the interaction may already be
-    // answered, so log only.
     console.error(`[DISCORD] /${ISLA_COMMAND_NAME} handler failed: ${String((error as Error)?.message ?? error)}`);
   }
 });
 
-// Boot time, used for uptime and by the watchdog to tell a fresh process from a long-broken one.
 const startedAt = Date.now();
 
-// Started here rather than in `ready` on purpose: the supervisor must be able to reach this port
-// while the gateway is still connecting, so "process alive, gateway down" stays distinguishable
-// from "process gone". Until `ready` it honestly answers gatewayReady=false, and the watchdog's
-// grace period is what keeps that from triggering a restart during boot.
 const health = startHealthServer({
   client,
   liveness,
@@ -127,25 +116,12 @@ client.once("ready", () => {
   console.log(`[DISCORD] Logged in as ${client.user?.tag ?? "unknown"}`);
   const channelId = getResponseChannelId();
   console.log(`[DISCORD] Response channel: ${channelId ?? "not set"}`);
-  // Start after `ready`: before the gateway connects, `fetchStatus()` legitimately reports no
-  // shards, and a startup line reading NOT-READY(0/0) would be a false alarm on every boot.
   liveness.start();
 });
 
-// Absorb this host's cold getaddrinfo stalls (see warmup.ts) before logging in, so the
-// first user message does not pay for them. Costs ~10s of startup, which nobody waits
-// on, and saves ~11s on the first reply, which everybody does. Runs before `login()` on
-// purpose: the stall is per process, so whoever resolves first absorbs it — letting the
-// gateway connection eat it would leave the embedding call still exposed.
 const warm = await warmNetwork();
 console.log(`[WARMUP] ${warm.stalls} DNS stall(s) absorbed in ${warm.lookups} lookups, ${warm.ms}ms`);
 
-// Memories written before session scoping carry no `sessionKey`, and retrieval filters on that
-// metadata — so an un-migrated collection is not "old memories still work", it is *no* memories
-// ever matching. History is backfilled at its module load (sql/history.ts); this is the vector
-// half of the same migration. Best-effort on purpose: Chroma is started by the daemon before this
-// process, but if it is unreachable the bot must still come online rather than crash-loop, and the
-// next boot retries (the migration is idempotent).
 try {
   const migrated = await migrateMemorySessions();
   if (migrated.backfilled) {
@@ -159,3 +135,8 @@ try {
 }
 
 await client.login(token);
+
+function commandForLog(text: string): string {
+  const name = text.slice(1).trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+  return name || "<empty>";
+}
