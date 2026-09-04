@@ -1,0 +1,21 @@
+name: Add atomic turn test to CI
+
+on:
+  push:
+    branches: [fix/pipeline-state-hardening]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: "!contains(github.event.head_commit.message, 'test: run atomic turn transaction suite in CI')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun run scripts/_add-turn-test-to-ci.mjs
