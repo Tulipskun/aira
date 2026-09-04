@@ -1,0 +1,20 @@
+name: Verify pipeline hardening
+
+on:
+  push:
+    branches: [fix/pipeline-state-hardening]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run scripts/test-turn-transaction.ts
+      - run: bun run scripts/test-relationship-v2.ts
+      - run: bun run scripts/test-private-footer.ts
+      - run: bun run scripts/test-episodic.ts
