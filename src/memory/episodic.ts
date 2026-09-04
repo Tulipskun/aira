@@ -57,7 +57,6 @@ function shiftLocalDate(date: string, days: number): string {
   return shifted.toISOString().slice(0, 10);
 }
 
-/** Stable for the lifetime of one episode: later summaries extend the same episode and upsert it. */
 export function episodeId(sessionKey: string, startTime: string): string {
   const input = `${sessionKey}\u0000${startTime}`;
   let hash = 2166136261;
@@ -136,7 +135,7 @@ function episodeWhere(sessionKey: string, temporal: { date?: string; period?: Ep
 }
 
 export async function saveEpisode(episode: Episode): Promise<void> {
-  const vector = await embed(episode.text);
+  const vector = await embed(episode.text, "document");
   await saveEpisodeVector(episode, vector);
 }
 
