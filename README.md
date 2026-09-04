@@ -8,15 +8,19 @@ Discord AI roleplay/chatbot pipeline using Gemini, SQLite, Chroma and local emot
 Discord
   -> command filter + channel lock
   -> per-session scheduler (5s debounce / 12s max)
-  -> Embedding 2
-  -> Chroma memory + episodic search
+  -> Embedding 2 (query)
+  -> Chroma semantic memory search + episodic search
   -> SQLite history + relationship/profile
   -> Gemini 1 (user-facing response)
   -> Gemini 2 (state/relationship analyzer)
   -> SQLite state update + local image selection
   -> Discord reply
-  -> background Chroma memory/episode ingestion
+  -> background memory/episode ingestion
+       -> Memory:  Embedding 2 (document) -> duplicate check -> Chroma
+       -> Episode: build from SQLite history -> Embedding 2 (document) -> Chroma
 ```
+
+Embedding 2 is used in both directions. Retrieval embeds the incoming query with the `query` task type. Background ingestion embeds the actual stored memory or episode text with the `document` task type before writing its vector to Chroma. Memory ingestion checks for a duplicate using that document vector before the write. Episode ingestion builds the recent episode from SQLite history before embedding it.
 
 Gemini 2 is awaited before the Discord reply because its state analysis and emotion-image selection are part of the response result. Chroma writes for new memories and episodes happen after the response path and cannot fail an otherwise successful turn.
 
