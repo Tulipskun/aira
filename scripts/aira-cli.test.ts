@@ -27,22 +27,40 @@ const status = readStatus(root);
 assert.equal(status.pid, 12345);
 assert.equal(status.running, false);
 
-const calls = { register: 0, restart: 0 };
+const calls = { register: 0, stop: 0, start: 0 };
 const unchangedCode = await runUpdate(root, {
   gitPull: () => ({ code: 0, before: "same", after: "same" }),
+  isRunning: () => false,
+  stop: () => { calls.stop += 1; return 0; },
   registerCommands: () => { calls.register += 1; return 0; },
-  restart: () => { calls.restart += 1; return 0; },
+  start: () => { calls.start += 1; return 0; },
 });
 assert.equal(unchangedCode, 0);
-assert.deepEqual(calls, { register: 0, restart: 0 });
+assert.deepEqual(calls, { register: 0, stop: 0, start: 0 });
 
+calls.stop = 0;
+calls.start = 0;
 const changedCode = await runUpdate(root, {
   gitPull: () => ({ code: 0, before: "old", after: "new" }),
+  isRunning: () => true,
+  stop: () => { calls.stop += 1; return 0; },
   registerCommands: () => { calls.register += 1; return 0; },
-  restart: () => { calls.restart += 1; return 0; },
+  start: () => { calls.start += 1; return 0; },
 });
 assert.equal(changedCode, 0);
-assert.deepEqual(calls, { register: 1, restart: 1 });
+assert.deepEqual(calls, { register: 1, stop: 1, start: 1 });
+
+calls.stop = 0;
+calls.start = 0;
+const stoppedCode = await runUpdate(root, {
+  gitPull: () => ({ code: 0, before: "old", after: "new" }),
+  isRunning: () => false,
+  stop: () => { calls.stop += 1; return 0; },
+  registerCommands: () => { calls.register += 1; return 0; },
+  start: () => { calls.start += 1; return 0; },
+});
+assert.equal(stoppedCode, 0);
+assert.deepEqual(calls, { register: 2, stop: 0, start: 1 });
 
 const registerSource = await Bun.file(join(import.meta.dir, "register-commands.ts")).text();
 assert.match(registerSource, /PUT.*\/applications\/\$\{application\.id\}\/commands/);
