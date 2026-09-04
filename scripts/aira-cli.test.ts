@@ -27,22 +27,22 @@ const status = readStatus(root);
 assert.equal(status.pid, 12345);
 assert.equal(status.running, false);
 
-const calls: string[] = [];
+const calls = { register: 0, restart: 0 };
 const unchangedCode = await runUpdate(root, {
   gitPull: () => ({ code: 0, before: "same", after: "same" }),
-  registerCommands: () => { calls.push("register"); return 0; },
-  restart: () => { calls.push("restart"); return 0; },
+  registerCommands: () => { calls.register += 1; return 0; },
+  restart: () => { calls.restart += 1; return 0; },
 });
 assert.equal(unchangedCode, 0);
-assert.deepEqual(calls, []);
+assert.deepEqual(calls, { register: 0, restart: 0 });
 
 const changedCode = await runUpdate(root, {
   gitPull: () => ({ code: 0, before: "old", after: "new" }),
-  registerCommands: () => { calls.push("register"); return 0; },
-  restart: () => { calls.push("restart"); return 0; },
+  registerCommands: () => { calls.register += 1; return 0; },
+  restart: () => { calls.restart += 1; return 0; },
 });
 assert.equal(changedCode, 0);
-assert.deepEqual(calls, ["register", "restart"]);
+assert.deepEqual(calls, { register: 1, restart: 1 });
 
 const registerSource = await Bun.file(join(import.meta.dir, "register-commands.ts")).text();
 assert.match(registerSource, /PUT.*\/applications\/\$\{application\.id\}\/commands/);
