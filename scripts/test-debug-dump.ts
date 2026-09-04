@@ -31,28 +31,30 @@ for (const value of ["0", "false", "no", "off"]) {
 
 console.log("=== 2. default writes debug records ===");
 delete process.env.GEMINI_DEBUG_PAYLOAD;
-debugDump({ ts: "t0", stage: "gemini1", event: "request", model: "m", payload: { apiKey: "secret" } });
+debugDump({ ts: "t0", stage: "gemini1", event: "request", model: "m", turnId: "turn-0", payload: { apiKey: "secret" } });
 check("file created when env is unset", existsSync(file));
 check("record written", readDebugDump(file).length === 1);
+check("turn id written", readDebugDump(file)[0]?.turnId === "turn-0");
 check("secret redacted", JSON.stringify(readDebugDump(file)).includes("[redacted]"));
 check("raw secret absent", !readFileSync(file, "utf8").includes("secret"));
 
 console.log("=== 3. only latest three request/response/error pairs are retained ===");
 for (let turn = 1; turn <= 5; turn++) {
-  debugDump({ ts: `t${turn}-request`, stage: "gemini1", event: "request", model: "m", payload: { turn } });
-  debugDump({ ts: `t${turn}-response`, stage: "gemini1", event: "response", model: "m", response: { turn } });
+  debugDump({ ts: `t${turn}-request`, stage: "gemini1", event: "request", model: "m", turnId: `turn-${turn}`, payload: { turn } });
+  debugDump({ ts: `t${turn}-response`, stage: "gemini1", event: "response", model: "m", turnId: `turn-${turn}`, response: { turn } });
 }
 const retained = readDebugDump(file);
 check("retains exactly six records", retained.length === 6);
 check("oldest retained turn is #3", retained[0]?.ts === "t3-request");
 check("latest retained turn is #5", retained.at(-1)?.ts === "t5-response");
+check("turn id groups request/response", retained.every((r) => r.turnId === "turn-" + r.ts.slice(1, 2)));
 check("records remain chronological", retained.every((r, i) => i === 0 || r.ts >= retained[i - 1]!.ts));
 check("whole file remains valid JSON", Array.isArray(JSON.parse(readFileSync(file, "utf8"))));
 
 console.log("=== 4. disabled mode writes nothing ===");
 const before = readDebugDump(file).length;
 process.env.GEMINI_DEBUG_PAYLOAD = "off";
-debugDump({ ts: "disabled", stage: "gemini1", event: "request", model: "m" });
+debugDump({ ts: "disabled", stage: "gemini1", event: "request", model: "m", turnId: "disabled" });
 check("disabled write does not change records", readDebugDump(file).length === before);
 
 console.log("=== 5. legacy JSONL migrates and is capped ===");
@@ -66,7 +68,7 @@ check("migration reports a change", migration.changed === true);
 check("migration keeps only latest three records", migration.records === 5 && migrated.length === 5);
 // Migration itself preserves existing records; the retention limit applies when new debug traffic arrives.
 process.env.GEMINI_DEBUG_PAYLOAD = "1";
-debugDump({ ts: "legacy-new", stage: "gemini1", event: "request", model: "m" });
+debugDump({ ts: "legacy-new", stage: "gemini1", event: "request", model: "m", turnId: "legacy-new" });
 check("new traffic applies the retention cap", readDebugDump(legacy).length === 6);
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
