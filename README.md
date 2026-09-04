@@ -41,7 +41,23 @@ Copy `.env.example` to `.env` and fill in `ISLA_TOKEN` (the bot's Discord token)
 ```bash
 bun install
 bun run typecheck
-bun run start
+bun run install-cli
+aira start
 ```
+
+## CLI
+
+The CLI controls the existing supervisor and can be called from any directory after installation.
+
+```text
+aira start
+aira stop
+aira restart
+aira status
+aira log
+aira logs
+```
+
+All commands return to the shell. `log` and `logs` print the last 100 lines instead of following the log stream.
 
 See `docs/` for component contracts and architecture details.
