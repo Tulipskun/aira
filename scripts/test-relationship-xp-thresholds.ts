@@ -31,9 +31,9 @@ assert.equal(d("lover", 1000, 0).bond, "lover");
 assert.equal(d("lover", 1000, 0, { soulmate: true }).bond, "soulmate");
 
 // Sibling/family require 500 XP + acceptance.
-assert.equal(d("friend", 499, 0, { sibling: true }).bond, "friend");
+assert.equal(d("friend", 499, 0, { sibling: true }).bond, "close_friend");
 assert.equal(d("friend", 500, 0, { sibling: true }).bond, "sibling");
-assert.equal(d("friend", 499, 0, { family: true }).bond, "friend");
+assert.equal(d("friend", 499, 0, { family: true }).bond, "close_friend");
 assert.equal(d("friend", 500, 0, { family: true }).bond, "family");
 
 console.log("relationship XP threshold tests passed");
