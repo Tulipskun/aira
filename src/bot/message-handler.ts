@@ -56,8 +56,16 @@ export function replyAnchorOf(messages: ScheduledMessage[]): string | undefined 
 }
 
 export type FlushBusyListener = (busy: boolean) => void;
+export type TypingControl = {
+  pause: () => Promise<void>;
+  resume: () => void;
+};
 
-export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => {}) {
+export function createOnFlush(
+  client: Client,
+  onBusy: FlushBusyListener = () => {},
+  typing?: TypingControl,
+) {
   return async (messages: ScheduledMessage[]): Promise<void> => {
     if (!messages.length) return;
 
@@ -79,6 +87,13 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
       }
     }
     const anchor = replyAnchorOf(messages);
+    let typingPaused = false;
+    const pauseTyping = async (): Promise<void> => {
+      if (!typing || typingPaused) return;
+      await typing.pause();
+      typingPaused = true;
+    };
+
     onBusy(true);
     try {
       let result: ProcessMessageResult;
@@ -95,6 +110,7 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
         });
       } catch (error) {
         console.error(`[PIPELINE] processMessage failed for ${first.userId}: ${String((error as Error)?.stack ?? error)}`);
+        await pauseTyping();
         await sendFailureNotice(client, responseChannelId, anchor);
         return;
       }
@@ -108,6 +124,7 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
       }
 
       try {
+        await pauseTyping();
         const sent = await channel.send(
           buildReplyPayload({
             text: result.text,
@@ -129,6 +146,7 @@ export function createOnFlush(client: Client, onBusy: FlushBusyListener = () => 
       }
     } finally {
       onBusy(false);
+      if (typingPaused) typing?.resume();
     }
   };
 }
