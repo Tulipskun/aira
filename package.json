@@ -7,6 +7,7 @@
     "start": "bun run scripts/supervisor.ts start",
     "stop": "bun run scripts/supervisor.ts stop",
     "logs": "bun run scripts/supervisor.ts logs",
+    "install-cli": "bun run scripts/install-cli.ts",
     "forget": "bun run scripts/forget.ts"
   },
   "dependencies": {
