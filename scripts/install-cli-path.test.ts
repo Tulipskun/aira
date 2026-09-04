@@ -8,16 +8,10 @@ const root = mkdtempSync(join(tmpdir(), "aira-install-cli-path-"));
 const pathBin = join(root, "path-bin");
 mkdirSync(pathBin);
 
-assert.equal(
-  selectBinDir({ HOME: root, PATH: `${pathBin}:/usr/bin` }),
-  pathBin,
-);
+assert.equal(selectBinDir({ HOME: root, PATH: `${pathBin}:/usr/bin` }), pathBin);
 
 const missingBin = join(root, "missing-bin");
-assert.equal(
-  selectBinDir({ HOME: root, PATH: `${missingBin}:/usr/bin` }),
-  missingBin,
-);
+assert.equal(selectBinDir({ HOME: root, PATH: `${missingBin}:/usr/bin` }), missingBin);
 
 const prefixBin = join(root, "prefix", "bin");
 mkdirSync(prefixBin, { recursive: true });
