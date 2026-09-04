@@ -7,19 +7,24 @@ Discord AI roleplay/chatbot pipeline using Gemini, SQLite, Chroma and local emot
 ```text
 Discord
   -> command filter + channel lock
-  -> per-user scheduler (5s debounce / 12s max)
+  -> per-session scheduler (5s debounce / 12s max)
   -> Embedding 2
-  -> Chroma memory search
-  -> SQLite history + relationship
-  -> Gemini 1
-  -> Gemini 2
-  -> forced execute parser
-  -> SQLite / local image selection
+  -> Chroma memory + episodic search
+  -> SQLite history + relationship/profile
+  -> Gemini 1 (user-facing response)
+  -> Gemini 2 (state/relationship analyzer)
+  -> SQLite state update + local image selection
   -> Discord reply
-  -> optional background memory ingestion
+  -> background Chroma memory/episode ingestion
 ```
 
-Gemini 2 is awaited before the Discord reply because its relationship/state output and emotion-image selection can be required for the final response.
+Gemini 2 is awaited before the Discord reply because its state analysis and emotion-image selection are part of the response result. Chroma writes for new memories and episodes happen after the response path and cannot fail an otherwise successful turn.
+
+Thought signatures required by the Gemini context protocol are kept in a process-local cache of at most 5 real signatures. The cache is persisted only after inactivity or graceful shutdown rather than on every mutation.
+
+## Relationship state
+
+SQLite is the source of truth for relationship state. XP is intentionally unbounded for leaderboard ranking. The ladder uses XP for the normal rungs; `crush` additionally requires at least 500 XP and the required accepted flirt history. An accepted flirt increments the flirt counter and grants an explicit XP bonus.
 
 ## Discord commands
 
@@ -29,10 +34,12 @@ Unknown `!` commands are ignored and do not enter the AI pipeline. Normal messag
 
 ## Storage
 
-- SQLite: conversation history and structured relationship/state.
-- Chroma: long-term semantic memory.
+- SQLite: conversation history and structured relationship/profile state.
+- Chroma: long-term semantic and episodic memory.
 - `images/`: bundled emotion assets selected by filename.
-- `.aira/`: persistent runtime configuration; not committed.
+- `.aira/`: persistent runtime configuration and local service state; not committed.
+
+Memory timestamps distinguish the source event time from the record creation time. Episodes also retain participant IDs so group-session memories do not lose identity context.
 
 ## Setup
 
