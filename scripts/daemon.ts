@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeF
 import { dirname, resolve } from "node:path";
 import "dotenv/config";
 import { config } from "../src/config.js";
+import { ensureChroma } from "./chroma-setup.js";
 import { DEFAULT_WATCH, decideWatch, initialWatchState, type ProbeResult, type WatchState } from "./watchdog.js";
 
 const root = resolve(import.meta.dir, "..");
@@ -10,8 +11,6 @@ const runtime = resolve(root, ".aira");
 const logDir = resolve(runtime, "logs");
 const pidFile = resolve(runtime, "supervisor.pid");
 const logFile = resolve(logDir, "aira.log");
-const chromaBin = resolve(runtime, "chroma-venv/bin/chroma");
-const chroma = existsSync(chromaBin) ? chromaBin : "chroma";
 
 mkdirSync(logDir, { recursive: true });
 
@@ -61,6 +60,16 @@ function stop(code = 0): Promise<never> {
 process.once("SIGTERM", () => stop(0));
 process.once("SIGINT", () => stop(0));
 
+let chroma: string;
+try {
+  chroma = await ensureChroma(root);
+  log(`[SUPERVISOR] Chroma executable ready: ${chroma}`);
+} catch (error) {
+  log(`[SUPERVISOR] Chroma setup failed: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`[SUPERVISOR] Chroma setup failed: ${error instanceof Error ? error.message : String(error)}`);
+  await stop(1);
+}
+
 chromaProcess = spawn(chroma, ["run", "--path", resolve(runtime, "chroma"), "--host", "127.0.0.1", "--port", "8000"], {
   cwd: root,
   stdio: ["ignore", "pipe", "pipe"],
@@ -102,7 +111,7 @@ if (chromaProcess.exitCode !== null || Date.now() >= deadline) await stop(1);
 // the auto-heal and the diagnosis cannot disagree.
 
 // The port comes from config.ts — the same value src/bot/bot.ts binds. Two literals here would
-// mean a `.env` override makes the daemon poll a port nobody listens on, and it would then
+// mean a `.env` override makes the daemon poll a port nobody listens to, and it would then
 // restart a perfectly healthy bot forever.
 const HEALTH_URL = `http://127.0.0.1:${config.health.port}/health`;
 const WATCH = DEFAULT_WATCH;
