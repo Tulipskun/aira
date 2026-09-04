@@ -90,5 +90,18 @@ say "Installing the 'aira' command..."
 bun run install-cli
 
 printf '\n[AIRA] Installation complete.\n'
-printf '[AIRA] Run: aira setup\n'
-printf '[AIRA] Then run: aira start\n'
+if command -v aira >/dev/null 2>&1; then
+  printf '[AIRA] CLI is available in the current shell.\n'
+  printf '[AIRA] Run: aira setup\n'
+  printf '[AIRA] Then run: aira start\n'
+else
+  case "${SHELL##*/}" in
+    zsh) rc_path="${HOME}/.zshrc" ;;
+    bash) rc_path="${HOME}/.bashrc" ;;
+    *) rc_path="${HOME}/.profile" ;;
+  esac
+  printf '[AIRA] CLI was installed, but the current shell has not reloaded its PATH.\n'
+  printf '[AIRA] Run: source %s\n' "$rc_path"
+  printf '[AIRA] Then run: aira setup\n'
+  printf '[AIRA] Then run: aira start\n'
+fi
