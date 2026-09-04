@@ -53,7 +53,7 @@ export function readStatus(projectRoot: string): { pid?: number; running: boolea
     process.kill(pid, 0);
     return { pid, running: true };
   } catch {
-    return { running: false };
+    return { pid, running: false };
   }
 }
 
