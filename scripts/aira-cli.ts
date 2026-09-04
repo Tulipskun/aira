@@ -63,13 +63,20 @@ function gitHead(projectRoot: string): string {
     env: process.env,
   });
   if (result.error || result.status !== 0) {
-    throw new Error(`Failed to read git HEAD: ${result.error?.message ?? result.stderr?.trim() ?? "unknown error"}`);
+    throw new Error(`Failed to read git HEAD: ${result.error?.message ?? result.stderr?.toString().trim() ?? "unknown error"}`);
   }
   return result.stdout.trim();
 }
 
 function pullGitHub(projectRoot: string): GitPullResult {
-  const before = gitHead(projectRoot);
+  let before: string;
+  try {
+    before = gitHead(projectRoot);
+  } catch (error) {
+    console.error(`[AIRA] ${error instanceof Error ? error.message : String(error)}`);
+    return { code: 1, before: "", after: "" };
+  }
+
   const result = spawnSync("git", ["pull", "--ff-only"], {
     cwd: projectRoot,
     stdio: "inherit",
@@ -82,14 +89,20 @@ function pullGitHub(projectRoot: string): GitPullResult {
   if ((result.status ?? 1) !== 0) {
     return { code: result.status ?? 1, before, after: before };
   }
-  return { code: 0, before, after: gitHead(projectRoot) };
+
+  try {
+    return { code: 0, before, after: gitHead(projectRoot) };
+  } catch (error) {
+    console.error(`[AIRA] ${error instanceof Error ? error.message : String(error)}`);
+    return { code: 1, before, after: before };
+  }
 }
 
 export function hasRevisionChanged(before: string, after: string): boolean {
   return before !== after;
 }
 
-export async function runUpdate(projectRoot: string, deps: UpdateDeps): Promise<number> {
+export async function runUpdate(_projectRoot: string, deps: UpdateDeps): Promise<number> {
   const pulled = deps.gitPull();
   if (pulled.code !== 0) return pulled.code;
 
