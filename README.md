@@ -43,7 +43,9 @@ Memory timestamps distinguish the source event time from the record creation tim
 
 ## Setup
 
-Copy `.env.example` to `.env` and fill in `ISLA_TOKEN` (the bot's Discord token), owner ID, Gemini models/keys, and service endpoints.
+Copy `.env.example` to `.env` and fill in `ISLA_TOKEN` (the bot's Discord token), owner ID, and Gemini API key(s). Gemini 1 defaults to `gemini-3.1-flash-lite` and Gemini 2 defaults to `gemini-3.5-flash-lite`; both can still be overridden with `.env`.
+
+`aira start` automatically checks for the private Chroma environment. If Python 3 is missing, Aira installs it using a supported system package manager (`apt-get`, `dnf`, `pacman`, or `brew`), creates `.aira/chroma-venv`, and installs Chroma there. Existing installations are reused. Chroma data stays in `.aira/chroma/`.
 
 ```bash
 bun install

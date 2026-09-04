@@ -9,8 +9,8 @@ if (sharedGeminiKeys) {
 
 export const config = {
   models: {
-    gemini1: process.env.GEMINI1_MODEL ?? "gemini-flash-lite-latest",
-    gemini2: process.env.GEMINI2_MODEL ?? "gemini-flash-lite-latest",
+    gemini1: process.env.GEMINI1_MODEL ?? "gemini-3.1-flash-lite",
+    gemini2: process.env.GEMINI2_MODEL ?? "gemini-3.5-flash-lite",
     embedding2: process.env.GEMINI_EMBEDDING2_MODEL ?? "gemini-embedding-2",
   },
   embedding: {

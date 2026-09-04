@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import "dotenv/config";
 import { config } from "../src/config.js";
+import { ensureChroma } from "./chroma-setup.js";
 import { DEFAULT_WATCH, decideWatch, initialWatchState, type ProbeResult, type WatchState } from "./watchdog.js";
 
 const root = resolve(import.meta.dir, "..");
@@ -10,8 +11,6 @@ const runtime = resolve(root, ".aira");
 const logDir = resolve(runtime, "logs");
 const pidFile = resolve(runtime, "supervisor.pid");
 const logFile = resolve(logDir, "aira.log");
-const chromaBin = resolve(runtime, "chroma-venv/bin/chroma");
-const chroma = existsSync(chromaBin) ? chromaBin : "chroma";
 
 mkdirSync(logDir, { recursive: true });
 
@@ -37,8 +36,6 @@ let stopping = false;
 let chromaProcess: ReturnType<typeof spawn> | undefined;
 let airaProcess: ReturnType<typeof spawn> | undefined;
 
-// Returns a promise that never resolves: callers must never continue past stop().
-// Previously this fell through to the spawn() below, leaving bot.ts orphaned after a failed start.
 function stop(code = 0): Promise<never> {
   if (!stopping) {
     stopping = true;
@@ -61,6 +58,20 @@ function stop(code = 0): Promise<never> {
 process.once("SIGTERM", () => stop(0));
 process.once("SIGINT", () => stop(0));
 
+async function prepareChroma(): Promise<string> {
+  try {
+    const executable = await ensureChroma(root);
+    log(`[SUPERVISOR] Chroma executable ready: ${executable}`);
+    return executable;
+  } catch (error) {
+    log(`[SUPERVISOR] Chroma setup failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[SUPERVISOR] Chroma setup failed: ${error instanceof Error ? error.message : String(error)}`);
+    return stop(1);
+  }
+}
+
+const chroma = await prepareChroma();
+
 chromaProcess = spawn(chroma, ["run", "--path", resolve(runtime, "chroma"), "--host", "127.0.0.1", "--port", "8000"], {
   cwd: root,
   stdio: ["ignore", "pipe", "pipe"],
@@ -76,7 +87,6 @@ chromaProcess.once("exit", (code, signal) => {
   if (!stopping) { log(`[SUPERVISOR] Chroma exited (${signal ?? code}); stopping Aira`); void stop(1); }
 });
 
-// Chroma cold start on this host measures ~29s, which the old 30s deadline could not absorb.
 const deadline = Date.now() + 120_000;
 while (Date.now() < deadline) {
   try {
@@ -101,16 +111,12 @@ if (chromaProcess.exitCode !== null || Date.now() >= deadline) await stop(1);
 // src/bot/health.ts reports `gatewayReady` from the same probe the [LIVENESS] log line prints, so
 // the auto-heal and the diagnosis cannot disagree.
 
-// The port comes from config.ts — the same value src/bot/bot.ts binds. Two literals here would
-// mean a `.env` override makes the daemon poll a port nobody listens on, and it would then
-// restart a perfectly healthy bot forever.
 const HEALTH_URL = `http://127.0.0.1:${config.health.port}/health`;
 const WATCH = DEFAULT_WATCH;
 
 let watchState: WatchState = initialWatchState(Date.now());
 let watchTimer: ReturnType<typeof setInterval> | undefined;
 
-// process.execPath, not "bun": bun is not on PATH in this host's non-login shells.
 function spawnBot(): void {
   airaProcess = spawn(process.execPath, ["run", "src/bot/bot.ts"], {
     cwd: root,
@@ -125,8 +131,6 @@ function spawnBot(): void {
     void stop(1);
   });
   airaProcess.once("exit", (code, signal) => {
-    // A restart kills the child on purpose, so the exit handler must not treat it as a crash and
-    // tear Chroma down with it.
     if (stopping || watchState.restarting) return;
     log(`[SUPERVISOR] Aira exited (${signal ?? code}); stopping`);
     void stop(1);
@@ -142,8 +146,6 @@ async function probeHealth(): Promise<ProbeResult> {
     const body = (await response.json()) as { gatewayReady?: boolean };
     return { reachable: true, gatewayReady: body?.gatewayReady === true };
   } catch {
-    // Unreachable covers "process gone", "port never bound" and "event loop wedged". All three
-    // deserve the same verdict as a dead gateway: users cannot reach her either way.
     return { reachable: false, gatewayReady: false };
   }
 }
@@ -152,29 +154,20 @@ async function restartBot(why: string, restarts: number, waitMs: number): Promis
   log(`[SUPERVISOR] ${why} — restarting bot (#${restarts}, backoff ${Math.round(waitMs / 1000)}s)`);
   await new Promise((r) => setTimeout(r, waitMs));
   if (stopping) {
-    // Never continue past a stop request: this exact fall-through is what used to orphan bot.ts
-    // after a failed start.
     watchState = { ...watchState, restarting: false };
     return;
   }
   const old = airaProcess;
   if (old) {
-    // A fresh promise per wait: a resolved one cannot be re-awaited to mean "wait again".
     const waitExit = (ms: number) => new Promise<"exit" | "timeout">((r) => {
       const timer = setTimeout(() => r("timeout"), ms);
       old.once("exit", () => { clearTimeout(timer); r("exit"); });
     });
     try { old.kill("SIGTERM"); } catch {}
     if ((await waitExit(10_000)) === "timeout") {
-      // The case we are restarting for is often a process that no longer runs its event loop, so
-      // it cannot honour SIGTERM either. Without this escalation the old process keeps holding
-      // port 8091, the replacement cannot bind it, and the watchdog restarts forever and then
-      // gives up — a self-inflicted version of the outage it was meant to cure.
       log(`[SUPERVISOR] bot ignored SIGTERM for 10s (pid ${old.pid}); sending SIGKILL`);
       try { old.kill("SIGKILL"); } catch {}
       if ((await waitExit(10_000)) === "timeout") {
-        // Still alive. Spawn anyway: a second bot that cannot bind the port is louder in the log
-        // than no bot at all, and the give-up counter will stop the loop.
         log(`[SUPERVISOR] bot (pid ${old.pid}) survived SIGKILL; spawning anyway`);
       }
     }
@@ -186,7 +179,6 @@ async function watch(): Promise<void> {
   if (stopping || !airaProcess) return;
   const probe = await probeHealth();
   const { state, action } = decideWatch(watchState, probe, Date.now(), WATCH);
-  // `restarting` is set by the caller after decideWatch, so carry it forward explicitly.
   watchState = { ...state, restarting: state.restarting || action.kind === "restart" };
 
   switch (action.kind) {
@@ -201,8 +193,6 @@ async function watch(): Promise<void> {
       log(`[SUPERVISOR] ${action.why} (${action.streak}/${action.limit})`);
       return;
     case "give-up":
-      // Stop trying, but say it out loud with the evidence. A restart loop that never converges
-      // hides the problem better than one loud line does.
       log(`[SUPERVISOR] bot dead for ${Math.round(action.sinceLastMs / 60_000)}m+ across ${action.restarts} restarts — giving up auto-restart, needs a human`);
       if (watchTimer) clearInterval(watchTimer);
       watchTimer = undefined;
@@ -218,5 +208,4 @@ log(`[SUPERVISOR] Started (pid ${process.pid}), Chroma pid ${chromaProcess.pid},
 watchTimer = setInterval(() => void watch(), WATCH.intervalMs);
 watchTimer.unref();
 
-// Keep the daemon alive while its children run.
 await new Promise<void>(() => {});
