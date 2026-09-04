@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCommand, readStatus, tailLog } from "./aira-cli.js";
+import { buildCommand, hasRevisionChanged, readStatus, tailLog, runUpdate } from "./aira-cli.js";
 
 assert.deepEqual(buildCommand([]), { command: "help" });
 assert.deepEqual(buildCommand(["start"]), { command: "start" });
@@ -11,6 +11,9 @@ assert.deepEqual(buildCommand(["logs"]), { command: "log" });
 assert.deepEqual(buildCommand(["restart"]), { command: "restart" });
 assert.deepEqual(buildCommand(["status"]), { command: "status" });
 assert.deepEqual(buildCommand(["register_commands"]), { command: "register_commands" });
+assert.deepEqual(buildCommand(["update"]), { command: "update" });
+assert.equal(hasRevisionChanged("abc", "abc"), false);
+assert.equal(hasRevisionChanged("abc", "def"), true);
 
 const root = mkdtempSync(join(tmpdir(), "aira-cli-"));
 const runtime = join(root, ".aira");
@@ -23,5 +26,27 @@ writeFileSync(join(runtime, "supervisor.pid"), "12345\n");
 const status = readStatus(root);
 assert.equal(status.pid, 12345);
 assert.equal(status.running, false);
+
+const calls: string[] = [];
+const unchangedCode = await runUpdate(root, {
+  gitPull: () => ({ code: 0, before: "same", after: "same" }),
+  registerCommands: () => { calls.push("register"); return 0; },
+  restart: () => { calls.push("restart"); return 0; },
+});
+assert.equal(unchangedCode, 0);
+assert.deepEqual(calls, []);
+
+const changedCode = await runUpdate(root, {
+  gitPull: () => ({ code: 0, before: "old", after: "new" }),
+  registerCommands: () => { calls.push("register"); return 0; },
+  restart: () => { calls.push("restart"); return 0; },
+});
+assert.equal(changedCode, 0);
+assert.deepEqual(calls, ["register", "restart"]);
+
+const registerSource = await Bun.file(join(import.meta.dir, "register-commands.ts")).text();
+assert.match(registerSource, /PUT.*\/applications\/\$\{application\.id\}\/commands/);
+assert.match(registerSource, /\[\.\.\.others, command\]/);
+assert.doesNotMatch(registerSource, /POST.*\/applications\/\$\{application\.id\}\/commands/);
 
 console.log("aira-cli tests: OK");
