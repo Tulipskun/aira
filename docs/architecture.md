@@ -9,30 +9,45 @@ Discord
   -> session resolution (src/sql/sessions.ts -> user:<id> | group:<channel>)
   -> MessageScheduler (src/pipeline/scheduler.ts), batching per session
   -> src/pipeline/pipeline.ts
-  -> Gemini Embedding 2 (src/memory/embedding.ts)
-  -> Chroma similarity search, scoped to the session (src/memory/chroma.ts)
-  -> SQLite history for this session + profiles of every speaker (src/sql/)
-  -> Gemini 1 (src/gemini/client.ts)
-  -> Gemini 2 (must wait for Gemini 1)
+  -> Gemini Embedding 2 query embedding
+  -> Chroma semantic + episodic retrieval, scoped to the session
+  -> SQLite history + profiles for the speakers in the session
+  -> Gemini 1 dialogue response + turn summary
+  -> persist Gemini 1 response/summary to SQLite
+  -> Gemini 2 post-response analysis
   -> one flat JSON state object (no tool call)
-  -> SQLite relationship/profile + Chroma memory (stamped with the session key)
+  -> applyTurnStateAtomic()
+       BEGIN IMMEDIATE
+         -> idempotency check
+         -> relationship / XP / flirt / approvals
+         -> facts / nicknames
+         -> record applied turn key
+       COMMIT
   -> select_image(filename)
   -> local images/<filename>
   -> Discord Embed
+  -> background memory/episode ingestion
+       -> Gemini Embedding 2 document embedding
+       -> duplicate check
+       -> Chroma write
 ```
+
+The structured state mutation is response-critical and atomic in SQLite. Chroma ingestion is deliberately outside that transaction and is best-effort.
 
 ## Model configuration
 
-All model names are configurable from `.env` and are centralized in `config.ts`. Code should not hardcode model names in individual pipeline modules.
+All model names are configurable from `.env` and are centralized in `src/config.ts`. Code should not hardcode model names in individual pipeline modules.
 
 - `GEMINI1_MODEL` — Gemini 1 dialogue/character response model.
-- `GEMINI2_MODEL` — Gemini 2 post-response decision/tool model.
+- `GEMINI2_MODEL` — Gemini 2 post-response analyzer/state model.
 - `GEMINI_EMBEDDING2_MODEL` — Gemini Embedding 2 used for Chroma queries and long-term memory vectors.
 - `GEMINI_EMBEDDING2_DIMENSION` — requested embedding dimensionality.
 
-All Google Gemini stages share one comma-separated API-key pool: `GEMINI_API_KEY=key1,key2`. The runtime maps this pool to each stage internally while keeping independent rotation state per stage. The stage-specific `*_API_KEYS` variables are no longer required for setup.
+All Google Gemini stages are configured from one comma-separated `GEMINI_API_KEY` pool. The runtime maps that shared pool to stage-specific internal variables while retaining independent rotation state per stage. The stage-specific `*_API_KEYS` variables are internal compatibility/runtime variables and are not required for setup.
 
 `GEMINI1_SYSTEM_PROMPT_FILE` points to the editable Gemini 1 character/system prompt. Default: `./src/gemini/prompts/isla.md`.
+
+`GEMINI2_SYSTEM_PROMPT_FILE` points to Gemini 2's state-analysis prompt template. Default: `./src/gemini/prompts/isla-state.md`.
 
 Gemini Embedding 2 generates vectors for Chroma retrieval and long-term memory ingestion. Chroma is only the vector database.
 
@@ -42,7 +57,15 @@ Chroma runs as a separate local server. The server is started by the Bun supervi
 
 Gemini 2 is part of the response path. The bot does not reply until Gemini 2 has returned because relationship/state changes and `select_image` may be required to build the final response.
 
-Only work that is not required for the current response may run afterward, such as embedding and persisting newly ingested long-term memory.
+`applyTurnStateAtomic()` commits the structured relationship/profile mutation before the response is assembled. The transaction covers relationship, XP, flirt count, approval flags, facts, nicknames, and the turn idempotency record.
+
+Only work that is not required for the current response runs afterward, including new semantic-memory and episode Chroma writes.
+
+## State idempotency
+
+A turn state mutation is identified by `(session_key, user_id, event_timestamp)`. The key is recorded in `turn_state_applied` inside the same SQLite transaction as the profile mutation. Retrying the same turn therefore does not double-apply XP, flirt count, approvals, facts, or nicknames.
+
+This protects structured SQLite state. It does not make Chroma ingestion transactional; Chroma ingestion remains asynchronous/best-effort.
 
 ## Supervisor
 
@@ -54,7 +77,7 @@ The supervisor starts Chroma, waits for its heartbeat, then starts Aira. It shut
 
 All application runtime data belongs under `.aira/` by default:
 
-- `.aira/aira.db` — SQLite conversation history, relationship and profile data.
+- `.aira/aira.db` — SQLite conversation history, relationship and profile data, and applied-turn idempotency records.
 - `.aira/discord-config.json` — persistent Discord channel lock.
 - `.aira/gemini-key-state.json` — persistent Gemini key rotation state.
 - `.aira/chroma/` — persistent Chroma storage.
@@ -63,15 +86,13 @@ All application runtime data belongs under `.aira/` by default:
 
 ## Multi-user input
 
-The scheduler batches messages per Discord `userId`. Discord IDs remain internal and are never sent to Gemini.
+The scheduler batches messages per session. In a private session, the stream is `user:<id>`. In a group session, the stream is `group:<channel>`. Each speaker still has a separate SQLite profile and relationship state.
+
+Discord IDs remain internal in private-session Gemini context. Group-session context may include speaker identity information required to attribute each message correctly.
 
 ## Image flow
 
-`select_image` returns a filename, not a URL. The registry is the `images/` directory itself: its
-listing (plus `manifest.json` descriptions) is what Gemini 2 is offered as the enum, and the same
-listing is what a returned filename is validated against before the local file is read. Nothing is
-hardcoded, so adding a picture needs no code change. `none` is a legal answer meaning "no picture
-this turn".
+`select_image` returns a filename, not a URL. The registry is the `images/` directory itself: its listing (plus `manifest.json` descriptions) is what Gemini 2 is offered as the enum, and the same listing is what a returned filename is validated against before the local file is read. Nothing is hardcoded, so adding a picture needs no code change. `none` is a legal answer meaning "no picture this turn".
 
 ## Commands and channel lock
 
