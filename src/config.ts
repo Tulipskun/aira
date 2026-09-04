@@ -1,3 +1,12 @@
+// All Google Gemini stages use the same API-key pool. Keeping the aliases internal lets the
+// runtime retain independent rotation state per stage while setup only needs GEMINI_API_KEY.
+const sharedGeminiKeys = (process.env.GEMINI_API_KEY ?? "").trim();
+if (sharedGeminiKeys) {
+  process.env.GEMINI1_API_KEYS ||= sharedGeminiKeys;
+  process.env.GEMINI2_API_KEYS ||= sharedGeminiKeys;
+  process.env.GEMINI_EMBEDDING2_API_KEYS ||= sharedGeminiKeys;
+}
+
 export const config = {
   models: {
     gemini1: process.env.GEMINI1_MODEL ?? "gemini-flash-lite-latest",
