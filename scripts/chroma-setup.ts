@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 export type CommandResult = { status: number | null; stdout: string; stderr: string };
@@ -118,24 +118,33 @@ function ensureVenvPip(
   platform: NodeJS.Platform,
   runner: CommandRunner,
   systemPython: string,
-  venvPython: string,
-): void {
+  venv: string,
+): string {
+  let venvPython = resolve(venv, "bin/python");
   const check = runner(venvPython, ["-m", "pip", "--version"]);
-  if (check.status === 0) return;
+  if (check.status === 0) return venvPython;
 
   const bootstrap = runner(venvPython, ["-m", "ensurepip", "--upgrade"]);
   if (bootstrap.status === 0) {
     runOrThrow(runner, venvPython, ["-m", "pip", "--version"], "Bootstrapping pip in the Chroma virtual environment");
-    return;
+    return venvPython;
   }
 
   const pipPython = ensureSystemPip(platform, systemPython, runner);
+
+  // A venv that has a Python interpreter but no pip is incomplete. Rebuild it
+  // after installing system venv/pip support so Python can bootstrap pip normally.
+  rmSync(venv, { recursive: true, force: true });
+  runOrThrow(runner, pipPython, ["-m", "venv", venv], "Recreating the Chroma virtual environment");
+  venvPython = resolve(venv, "bin/python");
+
   runOrThrow(
     runner,
-    pipPython,
-    ["-m", "pip", "--python", venvPython, "install", "pip"],
-    "Installing pip into the Chroma virtual environment",
+    venvPython,
+    ["-m", "pip", "--version"],
+    "Verifying pip in the recreated Chroma virtual environment",
   );
+  return venvPython;
 }
 
 export function chromaExecutable(root: string): string {
@@ -174,8 +183,7 @@ export async function ensureChroma(
     runOrThrow(runner, python, ["-m", "venv", venv], "Creating the Chroma virtual environment");
   }
 
-  const venvPython = resolve(venv, "bin/python");
-  ensureVenvPip(platform, runner, python, venvPython);
+  const venvPython = ensureVenvPip(platform, runner, python, venv);
   runOrThrow(runner, venvPython, ["-m", "pip", "install", "chromadb"], "Installing Chroma");
 
   if (!existsSync(chroma)) {
