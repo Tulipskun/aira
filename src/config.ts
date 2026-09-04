@@ -23,6 +23,12 @@ export const config = {
     /** Above this, a new memory is a restatement of one already stored and is not written again. */
     dedupeSimilarity: Number(process.env.ISLA_MEMORY_DEDUPE_SIMILARITY ?? 0.92),
   },
+  episode: {
+    collection: process.env.ISLA_EPISODE_COLLECTION ?? "aira_episodes",
+    maxResults: Number(process.env.ISLA_EPISODE_MAX_RESULTS ?? 5),
+    minSimilarity: Number(process.env.ISLA_EPISODE_MIN_SIMILARITY ?? 0.55),
+    gapMinutes: Number(process.env.ISLA_EPISODE_GAP_MINUTES ?? 30),
+  },
   display: {
     // Zone used to *render* timestamps for the model. Storage stays UTC regardless.
     timezone: process.env.ISLA_TIMEZONE ?? "Asia/Bangkok",
