@@ -22,6 +22,9 @@ const runner: CommandRunner = (command, args) => {
     return { status: 0, stdout: "", stderr: "" };
   }
   if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "pip") {
+    if (args[2] === "--version") {
+      return { status: 0, stdout: "pip 25.0\n", stderr: "" };
+    }
     writeFileSync(chromaExecutable(root), "#!/bin/sh\nexit 0\n");
     chmodSync(chromaExecutable(root), 0o755);
     return { status: 0, stdout: "", stderr: "" };
@@ -41,6 +44,31 @@ const commandCount = commands.length;
 const reused = await ensureChroma(root, { platform: "linux", runner });
 assert.equal(reused, installed);
 assert.equal(commands.length, commandCount);
+
+const brokenRoot = mkdtempSync(join(tmpdir(), "aira-chroma-no-pip-"));
+mkdirSync(resolve(brokenRoot, ".aira/chroma-venv/bin"), { recursive: true });
+writeFileSync(resolve(brokenRoot, ".aira/chroma-venv/bin/python"), "fake-python");
+const brokenCommands: string[] = [];
+const brokenRunner: CommandRunner = (command, args) => {
+  brokenCommands.push(`${command} ${args.join(" ")}`);
+  if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "pip" && args[2] === "--version") {
+    return { status: 1, stdout: "", stderr: "No module named pip" };
+  }
+  if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "ensurepip") {
+    return { status: 0, stdout: "Successfully installed pip\n", stderr: "" };
+  }
+  if (command.endsWith("/bin/python") && args[0] === "-m" && args[1] === "pip" && args[2] === "install") {
+    writeFileSync(chromaExecutable(brokenRoot), "#!/bin/sh\nexit 0\n");
+    chmodSync(chromaExecutable(brokenRoot), 0o755);
+    return { status: 0, stdout: "", stderr: "" };
+  }
+  return { status: 0, stdout: "", stderr: "" };
+};
+
+const recovered = await ensureChroma(brokenRoot, { platform: "linux", runner: brokenRunner });
+assert.equal(recovered, chromaExecutable(brokenRoot));
+assert.ok(brokenCommands.some((value) => value.includes("-m ensurepip --upgrade")));
+assert.ok(brokenCommands.some((value) => value.includes("-m pip install chromadb")));
 
 await assert.rejects(
   ensureChroma(mkdtempSync(join(tmpdir(), "aira-chroma-win-")), { platform: "win32", runner }),
