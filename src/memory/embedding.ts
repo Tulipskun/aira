@@ -8,6 +8,12 @@ const DIMENSION = config.embedding.dimension;
 const STATE_FILE = config.paths.geminiKeyState;
 
 type State = { embedding2: number };
+export type EmbeddingTask = "query" | "document";
+export type GeminiEmbeddingTaskType = "RETRIEVAL_QUERY" | "RETRIEVAL_DOCUMENT";
+
+export function embeddingTaskType(task: EmbeddingTask): GeminiEmbeddingTaskType {
+  return task === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT";
+}
 
 function keys(): string[] { return (process.env.GEMINI_EMBEDDING2_API_KEYS ?? "").split(",").map((v) => v.trim()).filter(Boolean); }
 function loadState(): State {
@@ -23,7 +29,7 @@ function status(error: unknown): number | undefined {
   return value.status ?? value.code ?? value.response?.status;
 }
 
-export async function embed(text: string): Promise<number[]> {
+export async function embed(text: string, task: EmbeddingTask = "query"): Promise<number[]> {
   const apiKeys = keys();
   const fallback = process.env.GEMINI_EMBEDDING2_API_KEY ?? process.env.GEMINI_API_KEY;
   if (!apiKeys.length && !fallback) throw new Error("No Gemini Embedding 2 API key configured");
@@ -32,7 +38,14 @@ export async function embed(text: string): Promise<number[]> {
     const key = apiKeys.length ? apiKeys[state.embedding2 % apiKeys.length] : fallback!;
     try {
       const ai = new GoogleGenAI({ apiKey: key });
-      const response = await ai.models.embedContent({ model: MODEL, contents: text, config: { outputDimensionality: DIMENSION } });
+      const response = await ai.models.embedContent({
+        model: MODEL,
+        contents: text,
+        config: {
+          taskType: embeddingTaskType(task),
+          outputDimensionality: DIMENSION,
+        },
+      });
       const values = response.embeddings?.[0]?.values;
       if (!values?.length) throw new Error("Gemini Embedding 2 returned no embedding");
       return values;
