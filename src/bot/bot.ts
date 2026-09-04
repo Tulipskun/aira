@@ -38,6 +38,9 @@ const scheduler = new MessageScheduler({
   onFlush: createOnFlush(client, (busy) => {
     inFlight = Math.max(0, inFlight + (busy ? 1 : -1));
     if (busy) typing?.poke();
+  }, {
+    pause: async () => { await typing?.pause(); },
+    resume: () => { typing?.resume(); },
   }),
 });
 
