@@ -19,6 +19,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run test:cli
+      - run: bun run scripts/test-gemini-api-key-config.ts
       - run: bun run scripts/test-relationship-v2.ts
       - run: bun run scripts/test-private-footer.ts
       - run: bun run scripts/test-episodic.ts
