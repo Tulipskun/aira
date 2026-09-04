@@ -1,7 +1,8 @@
 name: Temporary schema description edit
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [tmp-schema-edit]
 
 permissions:
   contents: write
