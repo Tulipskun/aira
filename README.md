@@ -4,7 +4,7 @@ Discord AI roleplay/chatbot pipeline built around Gemini, SQLite, Chroma, and lo
 
 ## Architecture
 
-Aira separates the response path from background memory persistence. SQLite is the source of truth for conversation history and structured user state. Chroma is the semantic and episodic memory store. Gemini 1 produces the user-facing response; Gemini 2 analyzes the completed turn and produces structured relationship/state data used by the response pipeline.
+Aira separates the response path from background memory persistence. SQLite is the source of truth for conversation history and structured user state. Chroma is the semantic and episodic memory store. Gemini 1 produces the user-facing response; Gemini 2 analyzes the completed turn and produces structured state signals used by the response pipeline.
 
 ### End-to-end turn flow
 
@@ -24,7 +24,8 @@ Discord message
        -> build Gemini 1 context
             profile + current state + history + memories + episode context + media
        -> Gemini 1: user-facing response
-       -> Gemini 2: post-response state/relationship analysis
+       -> Gemini 1 response + summary -> SQLite history
+       -> Gemini 2: post-response state analysis
        -> applyTurnStateAtomic()
             BEGIN IMMEDIATE
               -> idempotency check
@@ -78,9 +79,9 @@ Memory timestamps distinguish the source event timestamp from the record creatio
 
 Gemini 1 is the user-facing dialogue model. It receives the assembled conversation context, user profile/state, retrieved semantic memories, episodic context, and supported media information, then produces the response text and turn-level summary data used by the pipeline.
 
-Gemini 2 is an analyzer, not the user-facing dialogue model. It receives the current turn, Gemini 1's response, the turn summary, and the relevant current state, then returns structured state information such as affinity, flirt detection, approvals, facts, nicknames, and emotion-image selection.
+Gemini 2 is an analyzer, not the user-facing dialogue model. It receives the current turn, Gemini 1's response, the turn summary, and the relevant current state, then returns structured state information such as affinity, flirt detection, approvals, facts, nicknames, memory text, and emotion-image selection.
 
-The Gemini 2 analysis is awaited before the Discord reply because its state result is part of the response result. Chroma writes are not awaited as part of the response-critical state transaction.
+The Gemini 2 analysis is awaited before the Discord reply because its state result and selected emotion image are part of the response result. Chroma writes are not part of the structured SQLite state transaction.
 
 Thought signatures required by the Gemini context protocol are kept in a process-local cache of at most 5 real signatures. The cache is persisted only after inactivity or graceful shutdown rather than after every mutation.
 
@@ -117,13 +118,40 @@ SQLite is authoritative for structured state. Chroma is an auxiliary long-term m
 
 ## Installation
 
-The recommended installation is a single bootstrap command:
+Aira is currently a **private GitHub repository**. Do not use the public `raw.githubusercontent.com` installer URL for this repository; an unauthenticated raw request cannot read a private repository.
+
+### Recommended installation for the private repository
+
+Install and authenticate the GitHub CLI first:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Tulipskun/aira/main/install.sh | bash
+gh auth login
+gh auth status
 ```
 
-The installer prepares Bun when needed, downloads Aira into `~/.local/share/aira`, installs dependencies, creates `.env` from `.env.example`, and installs the `aira` command into an existing writable directory already present in `PATH` whenever possible. This normally requires no `source ~/.bashrc`.
+Then download the installer through the authenticated GitHub API and execute it:
+
+```bash
+gh api repos/Tulipskun/aira/contents/install.sh --jq '.content' | base64 -d | bash
+```
+
+`gh api` uses the credentials from `gh auth login` to read `install.sh` from the private repository. The installer then uses authenticated `gh repo clone` when available, so the private repository can be cloned without putting credentials into the repository URL.
+
+If `base64 -d` is not available on the host, use the platform's base64 decode option instead (for example, `base64 --decode` on GNU coreutils).
+
+If the repository has already been cloned manually, the installer can also be run directly from the checkout:
+
+```bash
+./install.sh
+```
+
+The installer installs Bun when needed, creates `.env` from `.env.example`, installs dependencies, and installs the `aira` CLI. Existing installations are updated with `git pull --ff-only`, while the existing `.env` is preserved.
+
+The repository and installation directory can be overridden when required:
+
+```bash
+AIRA_REPO_URL=https://github.com/Tulipskun/aira.git AIRA_INSTALL_ROOT="$HOME/.local/share/aira" ./install.sh
+```
 
 After installation, run the interactive setup instead of editing `.env` manually:
 
@@ -131,7 +159,7 @@ After installation, run the interactive setup instead of editing `.env` manually
 aira setup
 ```
 
-Setup asks for the Discord token, owner ID, and Gemini API key(s). Multiple API keys can be entered as a comma-separated list; surrounding whitespace is trimmed automatically. Existing values are kept when you press Enter. Token and API-key input is hidden in an interactive terminal.
+Setup asks for the Discord token, owner ID, and Gemini API key(s). Multiple API keys can be entered as a comma-separated list; surrounding whitespace is trimmed automatically. Token and API-key input is hidden in an interactive terminal.
 
 Model names are optional. Answer `y` to `ต้องการตั้ง model name หรือไม่ (y/N default=N)` to configure the Gemini 1, Gemini 2, and Gemini Embedding 2 model names. The default is to keep the existing/default model configuration.
 
@@ -143,13 +171,18 @@ aira start
 
 If the installer cannot find a writable directory already in `PATH`, it falls back to `~/.local/bin`, updates the appropriate shell startup file, and prints the required `source` command.
 
-For development or an existing checkout, manual installation remains available:
+### Manual installation from a cloned private checkout
+
+If you prefer to clone the private repository yourself:
 
 ```bash
+gh auth login
+gh repo clone Tulipskun/aira "$HOME/.local/share/aira"
+cd "$HOME/.local/share/aira"
 bun install
 bun run install-cli
 cp .env.example .env
-# Edit .env
+aira setup
 aira start
 ```
 
@@ -164,15 +197,10 @@ bun install
 bun run typecheck
 bun run test:cli
 bun run test:chroma
-```
-
-The atomic turn-state regression test can also be run directly:
-
-```bash
 bun run scripts/test-turn-transaction.ts
 ```
 
-The test verifies both the first atomic application and a duplicate retry using the same `(sessionKey, userId, timestamp)` idempotency key. Relationship, XP, flirt count, facts, and nicknames must remain consistent after the retry.
+The atomic turn-state regression test verifies both the first atomic application and a duplicate retry using the same `(sessionKey, userId, timestamp)` idempotency key. Relationship, XP, flirt count, facts, and nicknames must remain consistent after the retry.
 
 Other focused regression suites include relationship-state, private-footer, episodic-memory, session, Gemini API-key configuration, CLI, and Chroma setup tests. The repository's CI runs the standard typecheck and test suites on changes to the main codebase.
 
