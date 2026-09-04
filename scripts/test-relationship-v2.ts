@@ -32,9 +32,9 @@ assert.equal(deriveBond("lover", 999, { flirtCount: 0, approvals: { soulmate: tr
 assert.equal(deriveBond("lover", 1000, { flirtCount: 0, approvals: { soulmate: true } }).bond, "soulmate");
 
 // Sibling/family are capped special rungs and require 500 XP + acceptance.
-assert.equal(deriveBond("friend", 499, { flirtCount: 0, approvals: { sibling: true } }).bond, "friend");
+assert.equal(deriveBond("friend", 499, { flirtCount: 0, approvals: { sibling: true } }).bond, "close_friend");
 assert.equal(deriveBond("friend", 500, { flirtCount: 0, approvals: { sibling: true } }).bond, "sibling");
-assert.equal(deriveBond("friend", 499, { flirtCount: 0, approvals: { family: true } }).bond, "friend");
+assert.equal(deriveBond("friend", 499, { flirtCount: 0, approvals: { family: true } }).bond, "close_friend");
 assert.equal(deriveBond("friend", 500, { flirtCount: 0, approvals: { family: true } }).bond, "family");
 
 // A proposal cannot jump from a lower rung directly to lover/soulmate.
