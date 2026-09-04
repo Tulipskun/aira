@@ -26,14 +26,14 @@ try {
   );
 
   assert.equal(first.duplicate, false);
-  assert.equal(first.xp, 50);
+  assert.equal(first.xp, 25);
   assert.equal(first.flirtCount, 1);
   assert.equal(first.flirtDelta, 1);
   assert.equal(first.factsAdded, 1);
   assert.equal(first.nicknamesAdded, 1);
 
   const stored = getUserProfile("u1");
-  assert.equal(stored?.xp, 50);
+  assert.equal(stored?.xp, 25);
   assert.equal(stored?.flirtCount, 1);
   assert.deepEqual(stored?.nickname, ["ยูตะ"]);
   assert.equal(stored?.facts.length, 1);
@@ -55,7 +55,7 @@ try {
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.flirtDelta, 0);
   assert.equal(duplicate.bondUnlocked, false);
-  assert.equal(getUserProfile("u1")?.xp, 50);
+  assert.equal(getUserProfile("u1")?.xp, 25);
   assert.equal(getUserProfile("u1")?.flirtCount, 1);
   assert.deepEqual(getUserProfile("u1")?.nickname, ["ยูตะ"]);
 
