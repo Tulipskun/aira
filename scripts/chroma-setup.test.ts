@@ -55,9 +55,10 @@ const brokenRunner: CommandRunner = (command, args) => {
   brokenCommands.push(`${command} ${args.join(" ")}`);
   if (command === "sh" && args[0] === "-lc") {
     const name = args[1].match(/command -v '([^']+)'/)?.[1];
-    return name === "python3"
-      ? { status: 0, stdout: "/usr/bin/python3\n", stderr: "" }
-      : { status: 1, stdout: "", stderr: "" };
+    if (name === "python3" || name === "apt-get") {
+      return { status: 0, stdout: `/usr/bin/${name}\n`, stderr: "" };
+    }
+    return { status: 1, stdout: "", stderr: "" };
   }
   if (command === "/usr/bin/python3" && args[0] === "-m" && args[1] === "pip" && args[2] === "--version") {
     return systemPipReady
