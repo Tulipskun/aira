@@ -1,5 +1,5 @@
-import { accessSync, chmodSync, constants, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 
 export function shellRcPath(home: string, shell: string): string {
   const name = shell.split("/").pop();
@@ -30,6 +30,11 @@ function isWritableDirectory(path: string): boolean {
   }
 }
 
+function isCreatableDirectory(path: string): boolean {
+  if (existsSync(path)) return isWritableDirectory(path);
+  return isWritableDirectory(dirname(path));
+}
+
 export function selectBinDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const home = env.HOME;
   const prefix = env.PREFIX;
@@ -45,7 +50,7 @@ export function selectBinDir(env: NodeJS.ProcessEnv = process.env): string | und
   ].filter((entry): entry is string => Boolean(entry));
 
   for (const entry of [...preferred, ...entries]) {
-    if (entries.includes(entry) && isWritableDirectory(entry)) return entry;
+    if (entries.includes(entry) && isCreatableDirectory(entry)) return entry;
   }
 
   return undefined;
