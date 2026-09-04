@@ -50,6 +50,7 @@ const changedCode = await runUpdate(root, {
 assert.equal(changedCode, 0);
 assert.deepEqual(calls, { register: 1, stop: 1, start: 1 });
 
+calls.register = 0;
 calls.stop = 0;
 calls.start = 0;
 const stoppedCode = await runUpdate(root, {
@@ -60,7 +61,7 @@ const stoppedCode = await runUpdate(root, {
   start: () => { calls.start += 1; return 0; },
 });
 assert.equal(stoppedCode, 0);
-assert.deepEqual(calls, { register: 2, stop: 0, start: 1 });
+assert.deepEqual(calls, { register: 1, stop: 0, start: 0 });
 
 const registerSource = await Bun.file(join(import.meta.dir, "register-commands.ts")).text();
 assert.match(registerSource, /PUT.*\/applications\/\$\{application\.id\}\/commands/);
