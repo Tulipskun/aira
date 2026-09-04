@@ -16,6 +16,7 @@ assert.match(installer, /AIRA_REPO_URL/);
 assert.match(installer, /If this repository is private, install GitHub CLI and run 'gh auth login' first/);
 assert.match(installer, /If this repository is private, run 'gh auth login' and 'gh auth setup-git' first/);
 assert.match(installer, /CLI is available in the current shell/);
-assert.match(installer, /CLI was installed, but the current shell has not reloaded its PATH/);
+assert.match(installer, /CLI was installed at/);
+assert.match(installer, /CLI installation could not be verified/);
 
 console.log("installer tests: OK");
