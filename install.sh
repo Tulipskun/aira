@@ -12,7 +12,9 @@ command -v git >/dev/null 2>&1 || fail "git is required."
 
 install_package() {
   local package="$1"
-  if command -v apt-get >/dev/null 2>&1; then
+  if [ -n "${PREFIX:-}" ] && command -v pkg >/dev/null 2>&1; then
+    pkg install -y "$package"
+  elif command -v apt-get >/dev/null 2>&1; then
     if [ "$(id -u)" -eq 0 ]; then apt-get update && apt-get install -y "$package"; else sudo apt-get update && sudo apt-get install -y "$package"; fi
   elif command -v dnf >/dev/null 2>&1; then
     if [ "$(id -u)" -eq 0 ]; then dnf install -y "$package"; else sudo dnf install -y "$package"; fi
@@ -54,17 +56,16 @@ clone_repo() {
     say "Downloading Aira using GitHub CLI authentication..."
     gh repo clone "${REPO_URL%.git}" "$destination" -- --depth=1
   else
-    git clone --depth 1 "$REPO_URL" "$destination"
+    git clone --depth 1 "$REPO_URL" "$destination" || fail "Unable to clone Aira. If this repository is private, install GitHub CLI and run 'gh auth login' first."
   fi
 }
 
 if [ -d "${INSTALL_ROOT}/.git" ]; then
   say "Updating Aira source..."
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    git -C "$INSTALL_ROOT" pull --ff-only
-  else
-    git -C "$INSTALL_ROOT" pull --ff-only
+    gh auth setup-git >/dev/null 2>&1 || true
   fi
+  git -C "$INSTALL_ROOT" pull --ff-only || fail "Unable to update Aira. If this repository is private, run 'gh auth login' and 'gh auth setup-git' first."
 else
   mkdir -p "$(dirname "$INSTALL_ROOT")"
   if [ -e "$INSTALL_ROOT" ]; then
