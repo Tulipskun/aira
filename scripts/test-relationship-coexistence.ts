@@ -18,7 +18,7 @@ try {
       { userId, userName, affinity: 300, isFlirt: false, approvals: { lover: false, soulmate: false, sibling: false, family: false } },
       [], [], `2026-09-05T10:${String(baseMinute).padStart(2, "0")}:00.000Z`, sessionKey,
     );
-    for (let i = 1; i <= 5; i++) {
+    for (let i = 1; i <= 6; i++) {
       applyTurnStateAtomic(
         { userId, userName, affinity: 0, isFlirt: true, approvals: { lover: false, soulmate: false, sibling: false, family: false } },
         [], [], `2026-09-05T10:${String(baseMinute + i).padStart(2, "0")}:00.000Z`, sessionKey,
@@ -26,7 +26,7 @@ try {
     }
     return applyTurnStateAtomic(
       { userId, userName, affinity: 0, isFlirt: false, approvals: { lover: true, soulmate: false, sibling: false, family: false } },
-      [], [], `2026-09-05T10:${String(baseMinute + 6).padStart(2, "0")}:00.000Z`, sessionKey,
+      [], [], `2026-09-05T10:${String(baseMinute + 7).padStart(2, "0")}:00.000Z`, sessionKey,
     );
   }
 
