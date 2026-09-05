@@ -1,467 +1,87 @@
 /**
  * Gemini 2's reply format — the relationship state of one turn, as JSON.
- *
- * Gemini 2 used to answer with a tool call (`execute` with an `operations` array). It now answers
- * with one flat JSON object, exactly like Gemini 1, so both stages share one parsing path and one
- * failure mode.
- *
- * The important design rule: **Gemini 2 never names a bond.** It reports facts about the turn —
- * how much the relationship moved (`affinity`), whether the user flirted (`is_flirt`), whether *she*
- * accepted a proposal (`approve_lover` / `approve_soulmate` / …) — and `deriveBond()` in `sql/bonds.ts`
- * turns those facts plus the stored xp into a rung on the ladder. A model that cannot set the rung
- * cannot skip the ladder's prerequisites either.
- *
- * Some fields are only meaningful at certain rungs (`approve_lover` means nothing to a stranger), so
- * the JSON schema cannot demand them unconditionally — a schema is one static object while the
- * requirement depends on the user's current bond. `requiredFieldsFor()` states the rule, the prompt
- * teaches it, and `parseIslaState()` treats a missing field as `false` and says so.
- *
- * Parsing never throws and never loses the turn: a malformed reply means "no state change this
- * turn", which is recoverable, whereas throwing costs the user their answer.
+ * Gemini 2 is a post-response analyzer. It reports relationship signals and fact proposals; the
+ * application remains the final authorization boundary for personal-fact writes.
  */
-
 import type { BondLevel } from "../sql/bonds.js";
 import { imageNames, isKnownImage, normalizeImageName } from "../bot/images.js";
 
-/** What the model answers when no picture fits this turn. Not a filename. */
 export const NO_IMAGE = "none";
-
-/**
- * Isla's expression images, offered to Gemini 2 as the `select_image` enum.
- *
- * **The `images/` directory is the list** (see `bot/images.ts`) — there used to be a hardcoded
- * array of invented names here (`neutral`, `happy`, `shy_smile`, …) that matched no file on disk,
- * so the model could only ever pick a picture that failed to load, and adding artwork changed
- * nothing. Dropping a file into `images/` now makes it offerable with no code edit.
- *
- * `imageChoices()` is the live read; `IMAGES` is the boot-time snapshot, kept because tests and
- * callers want a plain array. The schema uses the getter so the enum handed to the API always
- * agrees with the catalog printed in Gemini 2's system prompt — both are re-read per request, and
- * both produce the same string until somebody actually adds a picture, so the prompt cache is not
- * disturbed by the liveness.
- */
-export function imageChoices(dir?: string): string[] {
-  return [...imageNames(dir), NO_IMAGE];
-}
-
+export function imageChoices(dir?: string): string[] { return [...imageNames(dir), NO_IMAGE]; }
 export const IMAGES: readonly string[] = imageChoices();
-
 export type ImageName = string;
-
 export const AFFINITY_MIN = -100;
 export const AFFINITY_MAX = 100;
-/**
- * The floor for any interaction that is not negative.
- *
- * The owner's rule: a normal turn is worth at least +10. Without a floor the model drifts to
- * awarding 0 for "nothing happened", and a relationship that never moves never climbs the ladder.
- */
 export const AFFINITY_NEUTRAL_FLOOR = 10;
-
-/**
- * How hard a turn hits the relationship, as the model is told.
- *
- * These bands exist only to steer the number — nothing in the ladder reads them, `deriveBond()` sees
- * the resulting xp. But they are stated in **two** places that must agree: the `affinity` field
- * description in the JSON schema, and Gemini 2's instruction file. Both are rendered from this list
- * (`affinityScaleText()`), because a model told "+10 floor" in one place and "-1..-9 for mild
- * negativity" in another will average the two instructions and produce a number nobody designed.
- */
-export type AffinityTier = {
-  /** Lowest value in this band. */
-  min: number;
-  /** Highest value in this band. */
-  max: number;
-  /** What kind of turn lands here, in Thai. */
-  label: string;
-};
-
+export type AffinityTier = { min: number; max: number; label: string };
 export const AFFINITY_TIERS: readonly AffinityTier[] = [
   { min: AFFINITY_NEUTRAL_FLOOR, max: AFFINITY_MAX, label: "การคุยปกติ/ไม่ใช่ด้านลบ" },
   { min: -9, max: -1, label: "ด้านลบเล็กน้อย" },
   { min: -40, max: -10, label: "ด่า/ทำร้ายความรู้สึก" },
   { min: AFFINITY_MIN, max: -41, label: "หยาบคายมาก/ดูถูกซ้ำ ๆ" },
 ];
-
-/** `+10..+100` / `-9..-1` — a positive band always carries its `+` so it cannot read as a minus. */
-function signed(value: number): string {
-  return value > 0 ? `+${value}` : String(value);
-}
-
-/** The bands as one line of prose, e.g. `การคุยปกติ +10..+100; ด้านลบเล็กน้อย -9..-1; …`. */
-export function affinityScaleText(separator = "; "): string {
-  return AFFINITY_TIERS.map((tier) => `${tier.label} ${signed(tier.min)}..${signed(tier.max)}`).join(separator);
-}
-
-/**
- * How many facts she may learn from one turn.
- *
- * A reporting guideline the model is told twice (schema + instruction), so it lives here once. It is
- * deliberately *not* enforced in `parseIslaState()`: a turn that reports four facts is not a
- * malformed reply, and silently dropping the fourth would be the model deciding something the owner
- * never asked for. `MAX_FACTS` in `sql/profile.ts` is the hard bound that does exist.
- */
+function signed(value: number): string { return value > 0 ? `+${value}` : String(value); }
+export function affinityScaleText(separator = "; "): string { return AFFINITY_TIERS.map((tier) => `${tier.label} ${signed(tier.min)}..${signed(tier.max)}`).join(separator); }
 export const FACTS_PER_TURN = 3;
 
-/**
- * What Gemini 2 must report about one turn.
- *
- * `bond` is deliberately absent — see the module comment.
- */
+export type FactProposal = { text: string; ownerUserId: string; confirmedByOwner: boolean; replacesFact?: string };
 export type IslaState = {
-  /** Change in relationship points this turn, -100..100. Stored as `xp`. */
   affinity: number;
-  /** Present only when the user's rung can be romantic (see `requiresFlirtFlag`). */
   isFlirt?: boolean;
-  /**
-   * A mutual agreement to be lovers this turn — either she accepted his request, or he accepted
-   * hers. Only consulted while the user is a `crush`.
-   */
   approveLover?: boolean;
-  /**
-   * A mutual agreement to marry this turn, in either direction. Grants `soulmate` from `lover`,
-   * and from `crush` it grants `lover` first while this stays pending — a yes said out loud must
-   * never be stranded.
-   */
   approveSoulmate?: boolean;
-  /** A mutual agreement to be siblings this turn, in either direction. */
   approveSibling?: boolean;
-  /** A mutual agreement to be family this turn, in either direction. */
   approveFamily?: boolean;
-  /** Empty means "no image this turn" — a legitimate answer, not a failure. */
   selectImage: string;
+  /** Legacy text-only view retained for existing callers; structured proposals are preferred. */
   addFacts: string[];
-  /** Nicknames Isla gave the user in her reply this turn. Shown in the embed footer. */
+  /** Structured fact proposals emitted by the parser; optional for compatibility with older tests/callers. */
+  factProposals?: FactProposal[];
   addNicknames: string[];
-  /** Empty means nothing worth keeping long-term. */
   ingestMemory: string;
-  /** The reply was usable JSON matching the shape above. */
   parsed: boolean;
-  /** What had to be repaired or ignored while reading the reply. */
   warnings: string[];
 };
-
-/**
- * The bond names this parser needs to know about.
- *
- * Type-only import, so there is no runtime dependency from `gemini/` on `sql/` — but the two can no
- * longer drift, which a hand-copied union would have allowed.
- */
 export type BondName = BondLevel;
 
-/**
- * The JSON schema handed to the API.
- *
- * Only `affinity` and `select_image` are hard-required: every other field's meaning depends on the
- * user's current rung, which the schema cannot see.
- */
 export const ISLA_STATE_SCHEMA = {
   type: "object",
   properties: {
-    affinity: {
-      type: "number",
-      description:
-        `คะแนนความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (${AFFINITY_MIN} ถึง ${AFFINITY_MAX}) — ค่าบวกคือความสัมพันธ์ดีขึ้น ค่าลบคือแย่ลง ` +
-        `ช่วงคะแนน: ${affinityScaleText()}.`
-    },
-    is_flirt: {
-      type: "boolean",
-      description:
-        "true เมื่อ {{partner}} เป็นฝ่ายจีบหรือเข้าหาเชิงชู้สาวในเทิร์นนี้ โดยไม่ขึ้นกับการตอบรับของไอล่า; หากไม่ได้จีบให้เป็น false"
-    },
-    approve_lover: {
-      type: "boolean",
-      description: "true เมื่อทั้งสองฝ่ายยินยอมเป็นคนรักกันอย่างชัดเจนในเทิร์นนี้"
-    },
-    approve_soulmate: {
-      type: "boolean",
-      description: "true เมื่อทั้งสองฝ่ายยินยอมแต่งงานกันอย่างชัดเจนในเทิร์นนี้"
-    },
-    approve_sibling: {
-      type: "boolean",
-      description: "true เมื่อทั้งสองฝ่ายยินยอมเป็นพี่น้องกันอย่างชัดเจนในเทิร์นนี้"
-    },
-    approve_family: {
-      type: "boolean",
-      description: "true เมื่อทั้งสองฝ่ายยินยอมให้ความสัมพันธ์เป็นครอบครัวอย่างชัดเจนในเทิร์นนี้"
-    },
-    select_image: {
-      type: "string",
-      // A getter, not a snapshot: the enum must never disagree with the file list in the prompt.
-      get enum() {
-        return imageChoices();
-      },
-      description:
-        `ชื่อไฟล์รูปอารมณ์ของไอล่าที่ตรงกับคำตอบของเธอที่สุด ต้องเลือกจากรายการที่กำหนดเท่านั้น ` +
-        `(ใช้ "${NO_IMAGE}" เมื่อไม่มีรูปที่เหมาะสม)`,
-    },
+    affinity: { type: "number", description: `คะแนนความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (${AFFINITY_MIN} ถึง ${AFFINITY_MAX}) — ค่าบวกคือความสัมพันธ์ดีขึ้น ค่าลบคือแย่ลง ช่วงคะแนน: ${affinityScaleText()}.` },
+    is_flirt: { type: "boolean", description: "true เมื่อ {{partner}} เป็นฝ่ายจีบหรือเข้าหาเชิงชู้สาวในเทิร์นนี้" },
+    approve_lover: { type: "boolean", description: "true เมื่อทั้งสองฝ่ายยินยอมเป็นคนรักกันอย่างชัดเจนในเทิร์นนี้" },
+    approve_soulmate: { type: "boolean", description: "true เมื่อทั้งสองฝ่ายยินยอมแต่งงานกันอย่างชัดเจนในเทิร์นนี้" },
+    approve_sibling: { type: "boolean", description: "true เมื่อทั้งสองฝ่ายยินยอมเป็นพี่น้องกันอย่างชัดเจนในเทิร์นนี้" },
+    approve_family: { type: "boolean", description: "true เมื่อทั้งสองฝ่ายยินยอมให้ความสัมพันธ์เป็นครอบครัวอย่างชัดเจนในเทิร์นนี้" },
+    select_image: { type: "string", get enum() { return imageChoices(); }, description: `ชื่อไฟล์รูปอารมณ์ของไอล่าที่ตรงกับคำตอบของเธอที่สุด (ใช้ "${NO_IMAGE}" เมื่อไม่มีรูปที่เหมาะสม)` },
     add_facts: {
       type: "array",
-      items: { type: "string" },
-      description: `ข้อเท็จจริงใหม่เกี่ยวกับ {{partner}} ที่ปรากฏในเทิร์นนี้ ไม่เกิน ${FACTS_PER_TURN} ข้อ`,
+      items: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "ข้อเท็จจริงที่เป็นของบุคคลนี้" },
+          owner_user_id: { type: "string", description: "userId ของเจ้าของข้อเท็จจริง ไม่ใช่ session key และไม่ใช่ชื่อที่คาดเดา" },
+          confirmed_by_owner: { type: "boolean", description: "true เฉพาะเมื่อเจ้าของข้อเท็จจริงยืนยันข้อมูลนี้ด้วยตนเองในบริบทที่วิเคราะห์" },
+          replaces_fact: { type: "string", description: "ข้อเท็จจริงเดิมที่ข้อความนี้ยืนยันว่าแทนที่; ว่างหากไม่ใช่การแทนที่" },
+        },
+        required: ["text", "owner_user_id", "confirmed_by_owner"],
+      },
+      description: `ข้อเสนอข้อเท็จจริงไม่เกิน ${FACTS_PER_TURN} ข้อ; ข้อความของบุคคลอื่นห้ามเปลี่ยนข้อเท็จจริงของเขาโดยไม่มีการยืนยันจากเจ้าของ`,
     },
-    add_nicknames: {
-      type: "array",
-      items: { type: "string" },
-      description:
-        "ฉายาใหม่ที่ไอล่าใช้เรียก {{partner}} จริงในคำตอบเทิร์นนี้; หากไม่มีให้ส่ง []"
-    },
-    ingest_memory: {
-      type: "string",
-      description: "เหตุการณ์สำคัญจากเทิร์นนี้ที่ควรเก็บเป็นความทรงจำระยะยาว; หากไม่มีให้ส่งค่าว่าง"
-    },
+    add_nicknames: { type: "array", items: { type: "string" }, description: "ฉายาใหม่ที่ไอล่าใช้เรียก {{partner}} จริงในคำตอบเทิร์นนี้" },
+    ingest_memory: { type: "string", description: "เหตุการณ์สำคัญจากเทิร์นนี้ที่ควรเก็บเป็นความทรงจำระยะยาว" },
   },
   required: ["affinity", "select_image"],
 } as const;
 
-/**
- * Which fields the model must answer for a user at `bond`.
- *
- * Exported so the prompt block and the parser agree on one rule instead of restating it twice — the
- * bug class this whole file exists to avoid is a required field nobody enforces.
- */
-export function requiredFieldsFor(bond: BondName | string | null | undefined): (keyof IslaState)[] {
-  const fields: (keyof IslaState)[] = ["affinity", "selectImage"];
-  if (romanticallyAvailable(bond)) fields.push("isFlirt");
-  if (bond === "crush") fields.push("approveLover");
-  if (bond === "lover") fields.push("approveSoulmate");
-  return fields;
-}
-
-/**
- * Can this rung still become romantic?
- *
- * `enemy` (level -1), `sibling` and `family` cannot, so flirt detection is pointless there and the
- * model is not asked. Everything else — including `stranger` — can.
- */
-export function romanticallyAvailable(bond: BondName | string | null | undefined): boolean {
-  return bond !== "enemy" && bond !== "sibling" && bond !== "family";
-}
-
-/** Keys accepted for each field, so a model that drifts on naming still gets read correctly. */
-const FIELD_KEYS: Record<string, string[]> = {
-  affinity: ["affinity", "xp", "delta", "relationship", "relation"],
-  isFlirt: ["is_flirt", "isFlirt", "flirt", "flirtatious"],
-  approveLover: ["approve_lover", "approveLover", "lover_accepted", "accept_lover"],
-  approveSoulmate: ["approve_soulmate", "approveSoulmate", "soulmate_accepted", "accept_soulmate"],
-  approveSibling: ["approve_sibling", "approveSibling", "sibling_accepted", "accept_sibling"],
-  approveFamily: ["approve_family", "approveFamily", "family_accepted", "accept_family"],
-  selectImage: ["select_image", "selectImage", "image", "expression"],
-  addFacts: ["add_facts", "addFacts", "facts"],
-  addNicknames: ["add_nicknames", "addNicknames", "nicknames", "nickname"],
-  ingestMemory: ["ingest_memory", "ingestMemory", "memory"],
-};
-
-/**
- * The first value present among `keys`, keeping the JSON type intact.
- *
- * Booleans must not be flattened to strings here — `is_flirt: false` is a real answer and `"false"`
- * would read as true.
- */
-function pickValue(record: Record<string, unknown>, keys: string[]): unknown {
-  for (const key of keys) {
-    const value = record[key];
-    if (value !== undefined && value !== null) return value;
-  }
-  return undefined;
-}
-
-/** Read a JSON object out of a reply, tolerating prose and code fences. */
-function extractJsonObject(text: string): Record<string, unknown> | null {
-  const candidates: string[] = [];
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  if (fenced?.[1]) candidates.push(fenced[1]);
-  candidates.push(text);
-  for (const source of candidates) {
-    const start = source.indexOf("{");
-    if (start === -1) continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < source.length; i++) {
-      const char = source[i];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (char === "\\") escaped = true;
-        else if (char === '"') inString = false;
-        continue;
-      }
-      if (char === '"') inString = true;
-      else if (char === "{") depth++;
-      else if (char === "}") {
-        depth--;
-        if (depth === 0) {
-          try {
-            const parsed = JSON.parse(source.slice(start, i + 1));
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-              return parsed as Record<string, unknown>;
-            }
-          } catch {
-            /* keep looking */
-          }
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function asBoolean(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") {
-    const text = value.trim().toLowerCase();
-    if (["true", "yes", "ya", "1", "ตกลง", "ใช่", "ครับ", "ค่ะ"].includes(text)) return true;
-    if (["false", "no", "0", "ไม่ใช่", "ไม่", "ปฎิเสธ", "ปฏิเสธ"].includes(text)) return false;
-  }
-  return undefined;
-}
-
-function asNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return undefined;
-}
-
-function asStringList(value: unknown): string[] {
-  const out: string[] = [];
-  const push = (item: unknown) => {
-    // Strings and `{text}` objects only. A bare number or null is not a fact — `String(7)` would
-    // store "7" as something Isla believes about the user.
-    if (typeof item === "string") {
-      const text = item.trim();
-      if (text) out.push(text);
-    } else if (item && typeof item === "object" && !Array.isArray(item)) {
-      const text = (item as Record<string, unknown>).text;
-      if (typeof text === "string" && text.trim()) out.push(text.trim());
-    }
-  };
-  if (Array.isArray(value)) for (const item of value) push(item);
-  else push(value);
-  return out;
-}
-
-/**
- * Read Gemini 2's reply into an `IslaState`.
- *
- * `bond` is the user's rung **before** this turn, which is what decides the required fields. A reply
- * that is not JSON at all yields `parsed: false` and an all-default state, so the caller can log it
- * and carry on with the user's answer already sent.
- */
-export function parseIslaState(raw: string, bond: BondName | string | null | undefined): IslaState {
-  const warnings: string[] = [];
-  const text = (raw ?? "").trim();
-  if (!text) {
-    return {
-      affinity: 0,
-      selectImage: "",
-      addFacts: [],
-      addNicknames: [],
-      ingestMemory: "",
-      parsed: false,
-      warnings: ["empty reply"],
-    };
-  }
-
-  const record = extractJsonObject(text);
-  if (!record) {
-    return {
-      affinity: 0,
-      selectImage: "",
-      addFacts: [],
-      addNicknames: [],
-      ingestMemory: "",
-      parsed: false,
-      warnings: ["reply was not JSON"],
-    };
-  }
-
-  const read = (field: keyof typeof FIELD_KEYS) => pickValue(record, FIELD_KEYS[field]);
-
-  // --- affinity ---
-  const rawAffinity = asNumber(read("affinity"));
-  let affinity = 0;
-  if (rawAffinity === undefined) {
-    warnings.push(`missing affinity -- no relationship change this turn`);
-  } else {
-    affinity = Math.round(rawAffinity);
-    if (affinity > AFFINITY_MAX) {
-      affinity = AFFINITY_MAX;
-      warnings.push(`affinity ${rawAffinity} clamped to ${AFFINITY_MAX}`);
-    } else if (affinity < AFFINITY_MIN) {
-      affinity = AFFINITY_MIN;
-      warnings.push(`affinity ${rawAffinity} clamped to ${AFFINITY_MIN}`);
-    } else if (affinity > 0 && affinity < AFFINITY_NEUTRAL_FLOOR) {
-      // The owner's floor: anything not negative is worth at least +10. Raised quietly — it is the
-      // rule, not an anomaly, and logging every normal turn would bury the warnings that matter.
-      affinity = AFFINITY_NEUTRAL_FLOOR;
-    }
-  }
-
-  const state: IslaState = { affinity, selectImage: "", addFacts: [], addNicknames: [], ingestMemory: "", parsed: true, warnings };
-
-  // --- is_flirt: only asked when the rung can still turn romantic ---
-  if (romanticallyAvailable(bond)) {
-    const value = asBoolean(read("isFlirt"));
-    if (value === undefined) {
-      state.isFlirt = false;
-      warnings.push(`missing is_flirt at bond "${bond ?? "stranger"}" -- treated as false`);
-    } else {
-      state.isFlirt = value;
-    }
-  } else if (asBoolean(read("isFlirt")) === true) {
-    warnings.push(`is_flirt ignored at bond "${bond}" -- this rung cannot become romantic`);
-  }
-
-  // --- approvals: each one only means something at one rung ---
-  // Typed as the four boolean fields, not `keyof IslaState`: writing through the wider union asks
-  // for the intersection of every value type (string[] & number & ... = never) and rejects `true`.
-  type ApprovalField = "approveLover" | "approveSoulmate" | "approveSibling" | "approveFamily";
-  const approvals: [ApprovalField, string, BondName | null][] = [
-    ["approveLover", "approve_lover", "crush"],
-    ["approveSoulmate", "approve_soulmate", "lover"],
-    ["approveSibling", "approve_sibling", null],
-    ["approveFamily", "approve_family", null],
-  ];
-  for (const [field, name, requiredAt] of approvals) {
-    const value = asBoolean(read(field));
-    if (requiredAt === null || bond !== requiredAt) {
-      // Outside its rung the answer is not needed; record it only when the model volunteered a yes,
-      // because that is a real acceptance of a real request and the ladder still has to honour it.
-      if (value === true) state[field] = true;
-      continue;
-    }
-    if (value === undefined) {
-      state[field] = false;
-      warnings.push(`missing ${name} at bond "${bond}" -- treated as false`);
-    } else {
-      state[field] = value;
-    }
-  }
-
-  // --- select_image ---
-  // Validated against the `images/` directory, not against a list copied into this file. The model
-  // may answer with a path prefix (`images/foo.jpg`) or with `none`; both are normal answers, and
-  // only a name that has no file behind it is a warning.
-  const rawImage = read("selectImage");
-  const image = typeof rawImage === "string" ? normalizeImageName(rawImage) : rawImage === undefined ? "" : normalizeImageName(String(rawImage));
-  if (!image || image.toLowerCase() === NO_IMAGE) {
-    // `none` is the model exercising its opt-out; an absent field is drift. Both mean "no picture",
-    // but only the second is worth a warning.
-    if (!image) warnings.push("no select_image -- no image this turn");
-  } else if (!isKnownImage(image)) {
-    warnings.push(`unknown select_image "${image}" -- no image this turn`);
-  } else {
-    state.selectImage = image;
-  }
-
-  state.addFacts = asStringList(read("addFacts"));
-  state.addNicknames = asStringList(read("addNicknames"));
-  const memory = read("ingestMemory");
-  state.ingestMemory = typeof memory === "string" ? memory.trim() : memory === undefined ? "" : String(memory).trim();
-
-  return state;
-}
+export function requiredFieldsFor(bond: BondName | string | null | undefined): (keyof IslaState)[] { const fields: (keyof IslaState)[] = ["affinity", "selectImage"]; if (romanticallyAvailable(bond)) fields.push("isFlirt"); if (bond === "crush") fields.push("approveLover"); if (bond === "lover") fields.push("approveSoulmate"); return fields; }
+export function romanticallyAvailable(bond: BondName | string | null | undefined): boolean { return bond !== "enemy" && bond !== "sibling" && bond !== "family"; }
+const FIELD_KEYS: Record<string, string[]> = { affinity: ["affinity", "xp", "delta", "relationship", "relation"], isFlirt: ["is_flirt", "isFlirt", "flirt", "flirtatious"], approveLover: ["approve_lover", "approveLover", "lover_accepted", "accept_lover"], approveSoulmate: ["approve_soulmate", "approveSoulmate", "soulmate_accepted", "accept_soulmate"], approveSibling: ["approve_sibling", "approveSibling", "sibling_accepted", "accept_sibling"], approveFamily: ["approve_family", "approveFamily", "family_accepted", "accept_family"], selectImage: ["select_image", "selectImage", "image", "expression"], addFacts: ["add_facts", "addFacts", "facts"], addNicknames: ["add_nicknames", "addNicknames", "nicknames", "nickname"], ingestMemory: ["ingest_memory", "ingestMemory", "memory"] };
+function pickValue(record: Record<string, unknown>, keys: string[]): unknown { for (const key of keys) { const value = record[key]; if (value !== undefined && value !== null) return value; } return undefined; }
+function extractJsonObject(text: string): Record<string, unknown> | null { const candidates: string[] = []; const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text); if (fenced?.[1]) candidates.push(fenced[1]); candidates.push(text); for (const source of candidates) { const start = source.indexOf("{"); if (start === -1) continue; let depth = 0, inString = false, escaped = false; for (let i = start; i < source.length; i++) { const char = source[i]; if (inString) { if (escaped) escaped = false; else if (char === "\\") escaped = true; else if (char === '"') inString = false; continue; } if (char === '"') inString = true; else if (char === "{") depth++; else if (char === "}") { depth--; if (depth === 0) { try { const parsed = JSON.parse(source.slice(start, i + 1)); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>; } catch {} } } } } return null; }
+function asBoolean(value: unknown): boolean | undefined { if (typeof value === "boolean") return value; if (typeof value === "number") return value !== 0; if (typeof value === "string") { const text = value.trim().toLowerCase(); if (["true", "yes", "ya", "1", "ตกลง", "ใช่", "ครับ", "ค่ะ"].includes(text)) return true; if (["false", "no", "0", "ไม่ใช่", "ไม่", "ปฎิเสธ", "ปฏิเสธ"].includes(text)) return false; } return undefined; }
+function asNumber(value: unknown): number | undefined { if (typeof value === "number" && Number.isFinite(value)) return value; if (typeof value === "string" && value.trim() !== "") { const parsed = Number(value); if (Number.isFinite(parsed)) return parsed; } return undefined; }
+function asStringList(value: unknown): string[] { const out: string[] = []; const push = (item: unknown) => { if (typeof item === "string") { const text = item.trim(); if (text) out.push(text); } else if (item && typeof item === "object" && !Array.isArray(item)) { const text = (item as Record<string, unknown>).text; if (typeof text === "string" && text.trim()) out.push(text.trim()); } }; if (Array.isArray(value)) for (const item of value) push(item); else push(value); return out; }
+function asFactProposals(value: unknown, warnings: string[]): FactProposal[] { if (!Array.isArray(value)) return []; const out: FactProposal[] = []; for (const item of value) { if (!item || typeof item !== "object" || Array.isArray(item)) { warnings.push("invalid fact proposal ignored"); continue; } const record = item as Record<string, unknown>; const text = typeof record.text === "string" ? record.text.trim() : ""; const ownerUserId = typeof record.owner_user_id === "string" ? record.owner_user_id.trim() : ""; const confirmedByOwner = asBoolean(record.confirmed_by_owner); const replacesFact = typeof record.replaces_fact === "string" ? record.replaces_fact.trim() : ""; if (!text || !ownerUserId || confirmedByOwner === undefined) { warnings.push("fact proposal missing text, owner_user_id, or confirmed_by_owner -- ignored"); continue; } out.push({ text, ownerUserId, confirmedByOwner, ...(replacesFact ? { replacesFact } : {}) }); } return out; }
+function emptyState(parsed: boolean, warnings: string[]): IslaState { return { affinity: 0, selectImage: "", addFacts: [], factProposals: [], addNicknames: [], ingestMemory: "", parsed, warnings }; }
+export function parseIslaState(raw: string, bond: BondName | string | null | undefined): IslaState { const warnings: string[] = []; const text = (raw ?? "").trim(); if (!text) return emptyState(false, ["empty reply"]); const record = extractJsonObject(text); if (!record) return emptyState(false, ["reply was not JSON"]); const read = (field: keyof typeof FIELD_KEYS) => pickValue(record, FIELD_KEYS[field]); const rawAffinity = asNumber(read("affinity")); let affinity = 0; if (rawAffinity === undefined) warnings.push("missing affinity -- no relationship change this turn"); else { affinity = Math.round(rawAffinity); if (affinity > AFFINITY_MAX) { affinity = AFFINITY_MAX; warnings.push(`affinity ${rawAffinity} clamped to ${AFFINITY_MAX}`); } else if (affinity < AFFINITY_MIN) { affinity = AFFINITY_MIN; warnings.push(`affinity ${rawAffinity} clamped to ${AFFINITY_MIN}`); } else if (affinity > 0 && affinity < AFFINITY_NEUTRAL_FLOOR) affinity = AFFINITY_NEUTRAL_FLOOR; } const factProposals = asFactProposals(read("addFacts"), warnings); const state: IslaState = { affinity, selectImage: "", addFacts: factProposals.map((fact) => fact.text), factProposals, addNicknames: [], ingestMemory: "", parsed: true, warnings }; if (romanticallyAvailable(bond)) { const value = asBoolean(read("isFlirt")); state.isFlirt = value === undefined ? false : value; if (value === undefined) warnings.push(`missing is_flirt at bond "${bond ?? "stranger"}" -- treated as false`); } else if (asBoolean(read("isFlirt")) === true) warnings.push(`is_flirt ignored at bond "${bond}" -- this rung cannot become romantic`); type ApprovalField = "approveLover" | "approveSoulmate" | "approveSibling" | "approveFamily"; const approvals: [ApprovalField, string, BondName | null][] = [["approveLover", "approve_lover", "crush"], ["approveSoulmate", "approve_soulmate", "lover"], ["approveSibling", "approve_sibling", null], ["approveFamily", "approve_family", null]]; for (const [field, name, requiredAt] of approvals) { const value = asBoolean(read(field)); if (requiredAt === null || bond !== requiredAt) { if (value === true) state[field] = true; continue; } state[field] = value === true; if (value === undefined) warnings.push(`missing ${name} at bond "${bond}" -- treated as false`); } const rawImage = read("selectImage"); const image = typeof rawImage === "string" ? normalizeImageName(rawImage) : rawImage === undefined ? "" : normalizeImageName(String(rawImage)); if (!image || image.toLowerCase() === NO_IMAGE) { if (!image) warnings.push("no select_image -- no image this turn"); } else if (!isKnownImage(image)) warnings.push(`unknown select_image "${image}" -- no image this turn`); else state.selectImage = image; state.addNicknames = asStringList(read("addNicknames")); const memory = read("ingestMemory"); state.ingestMemory = typeof memory === "string" ? memory.trim() : memory === undefined ? "" : String(memory).trim(); return state; }
