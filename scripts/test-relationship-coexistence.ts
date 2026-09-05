@@ -12,35 +12,29 @@ try {
   const { applyTurnStateAtomic } = await import("../src/sql/turn-transaction.js");
   migrateUserProfiles();
 
-  const alice = applyTurnStateAtomic(
-    {
-      userId: "alice",
-      userName: "Alice",
-      affinity: 900,
-      isFlirt: true,
-      approvals: { lover: true, soulmate: false, sibling: false, family: false },
-    },
-    [],
-    [],
-    "2026-09-05T10:00:00.000Z",
-    "discord:channel:global",
-  );
+  function makeLover(userId: string, userName: string, baseMinute: number) {
+    const sessionKey = "discord:channel:global";
+    applyTurnStateAtomic(
+      { userId, userName, affinity: 300, isFlirt: false, approvals: { lover: false, soulmate: false, sibling: false, family: false } },
+      [], [], `2026-09-05T10:${String(baseMinute).padStart(2, "0")}:00.000Z`, sessionKey,
+    );
+    for (let i = 1; i <= 5; i++) {
+      applyTurnStateAtomic(
+        { userId, userName, affinity: 0, isFlirt: true, approvals: { lover: false, soulmate: false, sibling: false, family: false } },
+        [], [], `2026-09-05T10:${String(baseMinute + i).padStart(2, "0")}:00.000Z`, sessionKey,
+      );
+    }
+    return applyTurnStateAtomic(
+      { userId, userName, affinity: 0, isFlirt: false, approvals: { lover: true, soulmate: false, sibling: false, family: false } },
+      [], [], `2026-09-05T10:${String(baseMinute + 6).padStart(2, "0")}:00.000Z`, sessionKey,
+    );
+  }
+
+  const alice = makeLover("alice", "Alice", 0);
   assert.equal(getUserProfile("alice")?.bond, "lover");
   assert.equal(alice.bondUnlocked, true);
 
-  const bob = applyTurnStateAtomic(
-    {
-      userId: "bob",
-      userName: "Bob",
-      affinity: 900,
-      isFlirt: true,
-      approvals: { lover: true, soulmate: false, sibling: false, family: false },
-    },
-    [],
-    [],
-    "2026-09-05T10:01:00.000Z",
-    "discord:channel:global",
-  );
+  const bob = makeLover("bob", "Bob", 10);
   assert.equal(getUserProfile("bob")?.bond, "lover");
   assert.equal(bob.bondUnlocked, true);
 
