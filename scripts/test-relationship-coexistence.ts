@@ -51,6 +51,10 @@ try {
   assert.match(prompt, /non-exclusive|ไม่ผูกขาด|หลายคน.*lover|lover.*หลายคน/i);
   assert.match(prompt, /อีกคน.*lover|another.*lover|relationship.*another person/i);
 
+  const statePrompt = await readFile(join(import.meta.dirname, "../src/gemini/prompts/isla-state.md"), "utf8");
+  assert.match(statePrompt, /ไม่ผูกขาด|non-exclusive/i);
+  assert.match(statePrompt, /ผู้ใช้อื่น.*ข้อจำกัด|another.*relationship.*constraint/i);
+
   console.log("relationship coexistence tests: OK");
 } finally {
   rmSync(dir, { recursive: true, force: true });
