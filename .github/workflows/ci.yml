@@ -28,6 +28,7 @@ jobs:
       - run: bun run scripts/test-episodic.ts
       - run: bun run scripts/test-sessions.ts
       - run: bun run scripts/test-turn-transaction.ts
+      - run: bun run scripts/test-memory-integrity.ts
       - run: bun run scripts/test-isla-dialogue-style.ts
       - run: bun run scripts/test-debug-turn-correlation.ts
       - run: bun run scripts/test-relationship-xp-thresholds.ts
