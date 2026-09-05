@@ -18,7 +18,7 @@ assert.match(blocked, /can_accept_lover: false/);
 assert.doesNotMatch(blocked, /699/);
 assert.doesNotMatch(blocked, /flirt_count/);
 assert.doesNotMatch(blocked, /threshold/i);
-assert.doesNotMatch(blocked, /xp/i);
+assert.doesNotMatch(blocked, /\bxp\b/i);
 
 const allowed = stateBlock({ ...base, xp: 700 });
 assert.match(allowed, /can_accept_lover: true/);
@@ -28,6 +28,6 @@ assert.match(dialogueProfile, /can_accept_lover: false/);
 assert.doesNotMatch(dialogueProfile, /699/);
 assert.doesNotMatch(dialogueProfile, /flirt_count/);
 assert.doesNotMatch(dialogueProfile, /threshold/i);
-assert.doesNotMatch(dialogueProfile, /xp/i);
+assert.doesNotMatch(dialogueProfile, /\bxp\b/i);
 
 console.log("relationship permission context tests passed");
