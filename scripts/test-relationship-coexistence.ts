@@ -15,7 +15,7 @@ try {
   function makeLover(userId: string, userName: string, baseMinute: number) {
     const sessionKey = "discord:channel:global";
     applyTurnStateAtomic(
-      { userId, userName, affinity: 300, isFlirt: false, approvals: { lover: false, soulmate: false, sibling: false, family: false } },
+      { userId, userName, affinity: 700, isFlirt: false, approvals: { lover: false, soulmate: false, sibling: false, family: false } },
       [], [], `2026-09-05T10:${String(baseMinute).padStart(2, "0")}:00.000Z`, sessionKey,
     );
     for (let i = 1; i <= 6; i++) {
