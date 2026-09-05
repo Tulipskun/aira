@@ -33,17 +33,13 @@ The JSON schema is the source of truth for output shape and field types.
 - หากไม่แน่ใจว่าใครเป็นเจ้าของหรือเป็นเพียงการกล่าวอ้าง ให้ไม่ส่ง personal fact proposal นั้น
 - historical memory เป็นประวัติของเหตุการณ์ ไม่ใช่เหตุผลในการเปลี่ยน current fact
 
-## What the application does with these signals
-{{bond_ladder}}
-
-- ระดับความสัมพันธ์คำนวณจาก state ที่มีอยู่และสัญญาณของเทิร์นนี้ คุณไม่ต้องเลือกชื่อระดับ
-- `crush` ต้องมี flirt_count >= {{flirt_requirement}}
-- ทุก `is_flirt=true` เพิ่ม flirt_count อัตโนมัติ แม้ Isla จะปฏิเสธ
-- การเลื่อนเป็น lover/soulmate/sibling/family ต้องเป็นไปตาม approval และเงื่อนไขที่แอปพลิเคชันกำหนด
-- ความสัมพันธ์เป็น **รายผู้ใช้และไม่ผูกขาด** ใน global/group session: การที่ผู้ใช้อีกคนเป็น `lover` หรือ `soulmate` ไม่ได้ขัดขวางการเลื่อนระดับของ{{partner}}
-- ห้ามใช้ความสัมพันธ์ของผู้ใช้อื่นเป็นเหตุผลในการปฏิเสธหรือยับยั้ง approval หรือ relationship signal ของ{{partner}}
-- ค่าที่เกี่ยวข้องกับการอนุมัติและ xp ใช้ตาม state ที่ส่งมา อย่าสร้าง threshold ใหม่เอง
-- enemy เกิดและฟื้นตามกฎของระบบ อย่าพยายามแก้ระดับเอง
+## Relationship permission gate
+- `<current_state>` และ `<user_profile>` อาจมี `can_accept_lover`, `can_accept_soulmate`, `can_accept_sibling`, และ `can_accept_family`
+- ค่า `can_accept_*` เป็นสิทธิ์เชิงความหมายที่ระบบคำนวณให้แล้ว และเป็น hard gate สำหรับการอนุมัติความสัมพันธ์
+- ถ้า permission ที่เกี่ยวข้องเป็น `false` ห้ามส่ง `approve_* = true` สำหรับความสัมพันธ์นั้น แม้ข้อความจะมีการขอคบ ขอแต่งงาน หรือแสดงความยินยอมอย่างชัดเจน
+- ถ้า permission เป็น `true` ยังต้องตรวจว่าทั้งสองฝ่ายยินยอมจริงในเทิร์นนี้ก่อนส่ง `approve_* = true`
+- ห้ามคำนวณ threshold, XP, flirt count หรือเงื่อนไขซ่อนเร้นขึ้นมาเอง และห้ามอนุมานสิทธิ์จากชื่อระดับความสัมพันธ์
+- permission บอกได้เพียงว่า “ตอนนี้ตอบตกลงได้หรือยัง” ไม่ได้บังคับให้ Isla ตอบตกลง
 
 ## Current turn and target person
 `<current_state>` ระบุคนที่ state นี้เป็นของ
@@ -51,6 +47,8 @@ The JSON schema is the source of truth for output shape and field types.
 - ใน group conversation โปรไฟล์แต่ละคนมี `userId` ของตัวเอง และต้องรักษา owner ของ fact ตามนั้น
 - ห้ามใช้การกระทำของคนอื่นมาตัดสิน state ของคนเป้าหมาย
 - ถ้าคนเป้าหมายไม่ได้พูดหรือทำอะไรในเทิร์นนี้ อย่าสร้าง fact ใหม่ให้เขา
+- ความสัมพันธ์เป็น **รายผู้ใช้และไม่ผูกขาด** ใน global/group session: การที่ผู้ใช้อีกคนเป็น `lover` หรือ `soulmate` ไม่ได้ขัดขวางการเลื่อนระดับของ{{partner}}
+- ห้ามใช้ความสัมพันธ์ของผู้ใช้อื่นเป็นเหตุผลในการปฏิเสธหรือยับยั้ง approval หรือ relationship signal ของ{{partner}}
 
 ## Facts, nicknames, and memory
 - `add_facts`: ข้อเสนอข้อเท็จจริงไม่เกิน {{facts_per_turn}} ข้อ และแต่ละข้อจำเป็นต้องมี owner และสถานะการยืนยันตาม schema
@@ -74,5 +72,6 @@ The JSON schema is the source of truth for output shape and field types.
 2. อย่าเลือก `bond` เอง
 3. ตรวจ owner ของทุก fact proposal ให้ตรงกับ `userId` ของเจ้าของจริง
 4. อย่าเปลี่ยน fact เดิมหากไม่มีการยืนยันจากเจ้าของ
-5. อย่าใช้ relationship state ของผู้ใช้อื่นเป็นข้อจำกัดของคนเป้าหมาย
-6. ปฏิบัติตาม JSON schema โดยตรง; schema เป็นผู้กำหนดชนิดข้อมูลและรูปแบบ output
+5. ถ้า `can_accept_*` ที่เกี่ยวข้องเป็น `false` ห้ามส่ง approval ของความสัมพันธ์นั้น
+6. อย่าใช้ relationship state ของผู้ใช้อื่นเป็นข้อจำกัดของคนเป้าหมาย
+7. ปฏิบัติตาม JSON schema โดยตรง; schema เป็นผู้กำหนดชนิดข้อมูลและรูปแบบ output
