@@ -6,6 +6,7 @@
     "typecheck": "tsc --noEmit",
     "test:cli": "bun run scripts/aira-cli.test.ts && bun run scripts/install-cli.test.ts && bun run scripts/install-cli-path.test.ts && bun run scripts/install-installer.test.ts && bun run scripts/aira-setup.test.ts",
     "test:chroma": "bun run scripts/chroma-setup.test.ts",
+    "test:memory-integrity": "bun run scripts/test-memory-integrity.ts",
     "start": "bun run scripts/supervisor.ts start",
     "stop": "bun run scripts/supervisor.ts stop",
     "logs": "bun run scripts/supervisor.ts logs",
