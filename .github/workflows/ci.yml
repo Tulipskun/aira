@@ -35,3 +35,4 @@ jobs:
       - run: bun run scripts/test-typing-race.ts
       - run: bun run scripts/test-relationship-coexistence.ts
       - run: bun run scripts/test-relationship-permissions.ts
+      - run: bun run scripts/test-relationship-permission-context.ts
