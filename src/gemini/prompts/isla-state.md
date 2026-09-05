@@ -40,6 +40,8 @@ The JSON schema is the source of truth for output shape and field types.
 - `crush` ต้องมี flirt_count >= {{flirt_requirement}}
 - ทุก `is_flirt=true` เพิ่ม flirt_count อัตโนมัติ แม้ Isla จะปฏิเสธ
 - การเลื่อนเป็น lover/soulmate/sibling/family ต้องเป็นไปตาม approval และเงื่อนไขที่แอปพลิเคชันกำหนด
+- ความสัมพันธ์เป็น **รายผู้ใช้และไม่ผูกขาด** ใน global/group session: การที่ผู้ใช้อีกคนเป็น `lover` หรือ `soulmate` ไม่ได้ขัดขวางการเลื่อนระดับของ{{partner}}
+- ห้ามใช้ความสัมพันธ์ของผู้ใช้อื่นเป็นเหตุผลในการปฏิเสธหรือยับยั้ง approval หรือ relationship signal ของ{{partner}}
 - ค่าที่เกี่ยวข้องกับการอนุมัติและ xp ใช้ตาม state ที่ส่งมา อย่าสร้าง threshold ใหม่เอง
 - enemy เกิดและฟื้นตามกฎของระบบ อย่าพยายามแก้ระดับเอง
 
@@ -72,4 +74,5 @@ The JSON schema is the source of truth for output shape and field types.
 2. อย่าเลือก `bond` เอง
 3. ตรวจ owner ของทุก fact proposal ให้ตรงกับ `userId` ของเจ้าของจริง
 4. อย่าเปลี่ยน fact เดิมหากไม่มีการยืนยันจากเจ้าของ
-5. ปฏิบัติตาม JSON schema โดยตรง; schema เป็นผู้กำหนดชนิดข้อมูลและรูปแบบ output
+5. อย่าใช้ relationship state ของผู้ใช้อื่นเป็นข้อจำกัดของคนเป้าหมาย
+6. ปฏิบัติตาม JSON schema โดยตรง; schema เป็นผู้กำหนดชนิดข้อมูลและรูปแบบ output
