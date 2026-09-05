@@ -1,0 +1,59 @@
+name: Extract dialogue frame
+
+on:
+  push:
+    branches: [dialogue]
+    paths:
+      - "InShot_20260905_125437083.jpg"
+      - "scripts/extract-dialogue-frame.py"
+      - ".github/workflows/dialogue-frame.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout dialogue branch
+        uses: actions/checkout@v4
+        with:
+          ref: dialogue
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install image processing tools
+        run: python -m pip install --disable-pip-version-check pillow opencv-python-headless numpy
+
+      - name: Extract test dialogue frame
+        env:
+          INPUT: InShot_20260905_125437083.jpg
+          OUTPUT: images/dialogue/dialogue_frame_test.png
+        run: |
+          if [ -f "$OUTPUT" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "Test PNG already exists; nothing to do."
+            exit 0
+          fi
+          python scripts/extract-dialogue-frame.py "$INPUT" "$OUTPUT"
+          file "$OUTPUT"
+          identify "$OUTPUT" 2>/dev/null || true
+
+      - name: Commit generated PNG
+        run: |
+          if git diff --quiet -- "$OUTPUT" 2>/dev/null && [ -f "$OUTPUT" ]; then
+            echo "No generated change."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add images/dialogue/dialogue_frame_test.png
+          git diff --cached --quiet && echo "Nothing staged." && exit 0
+          git commit -m "Generate dialogue frame test PNG"
+          git push origin HEAD:dialogue
