@@ -25,7 +25,8 @@ try {
     "2026-09-05T10:00:00.000Z",
     "discord:channel:global",
   );
-  assert.equal(alice.bond, "lover");
+  assert.equal(getUserProfile("alice")?.bond, "lover");
+  assert.equal(alice.bondUnlocked, true);
 
   const bob = applyTurnStateAtomic(
     {
@@ -40,7 +41,8 @@ try {
     "2026-09-05T10:01:00.000Z",
     "discord:channel:global",
   );
-  assert.equal(bob.bond, "lover");
+  assert.equal(getUserProfile("bob")?.bond, "lover");
+  assert.equal(bob.bondUnlocked, true);
 
   assert.equal(getUserProfile("alice")?.bond, "lover");
   assert.equal(getUserProfile("bob")?.bond, "lover");
