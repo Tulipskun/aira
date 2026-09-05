@@ -37,13 +37,7 @@ export type TurnApplyResult = { image?: string; status: UserStatus };
 export async function applyState(state: IslaState, userId: string, timestamp: string, userName: string, sessionKey = ""): Promise<TurnApplyResult> {
   if (!sessionKey) throw new Error("sessionKey is required for atomic turn state application");
   const xpDelta = state.affinity + (state.isFlirt === true ? FLIRT_XP_BONUS : 0);
-  const result = applyTurnStateAtomic({
-    userId,
-    userName,
-    affinity: xpDelta,
-    isFlirt: state.isFlirt,
-    approvals: { lover: state.approveLover === true, soulmate: state.approveSoulmate === true, sibling: state.approveSibling === true, family: state.approveFamily === true },
-  }, state.addFacts, state.addNicknames, timestamp, sessionKey);
+  const result = applyTurnStateAtomic({ userId, userName, affinity: xpDelta, isFlirt: state.isFlirt, approvals: { lover: state.approveLover === true, soulmate: state.approveSoulmate === true, sibling: state.approveSibling === true, family: state.approveFamily === true } }, state.factProposals, state.addNicknames, timestamp, sessionKey);
   if (!result.duplicate) {
     if (result.derivation.changed) console.log("[PIPELINE] " + userId + ": bond " + result.before + " -> " + result.after + " (" + result.derivation.reason + ")");
     if (result.factsAdded) console.log("[PIPELINE] " + userId + ": +" + result.factsAdded + " fact(s)");
