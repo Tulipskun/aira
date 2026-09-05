@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import { deriveBond, isBond, isBondUnlock, type ApprovalName, type BondDerivation, type BondLevel } from "./bonds.js";
-import { getUserProfile, MAX_FACTS, MAX_NICKNAMES, type UserProfile } from "./profile.js";
+import { getUserProfile, MAX_FACTS, MAX_NICKNAMES, type UserProfile, type UserFact } from "./profile.js";
 
 const path = process.env.SQLITE_PATH ?? "./.aira/aira.db";
 mkdirSync(dirname(path), { recursive: true });
@@ -28,6 +28,14 @@ type Change = {
   approvals?: Partial<Record<ApprovalName, boolean>>;
 };
 
+export type FactProposal = {
+  text: string;
+  ownerUserId: string;
+  confirmedByOwner: boolean;
+  /** Exact current fact this proposal explicitly supersedes, when applicable. */
+  replacesFact?: string;
+};
+
 export type AtomicTurnResult = {
   profile: UserProfile | null;
   before: BondLevel;
@@ -44,36 +52,35 @@ export type AtomicTurnResult = {
 
 function parseArray(value: unknown): unknown[] {
   if (typeof value !== "string") return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
 }
 
-function normalizeFacts(value: unknown, timestamp: string) {
-  const items = parseArray(value);
-  return items.map((item) => {
-    if (typeof item === "string") return { text: item.trim(), timestamp };
+function normalizeFacts(value: unknown, timestamp: string): UserFact[] {
+  return parseArray(value).map((item) => {
+    if (typeof item === "string") return item.trim() ? { text: item.trim(), timestamp, status: "confirmed" as const } : null;
     if (item && typeof item === "object") {
-      const text = typeof (item as { text?: unknown }).text === "string" ? (item as { text: string }).text.trim() : "";
-      const ts = typeof (item as { timestamp?: unknown }).timestamp === "string" ? (item as { timestamp: string }).timestamp : "";
-      return text ? { text, timestamp: ts } : null;
+      const record = item as Record<string, unknown>;
+      const text = typeof record.text === "string" ? record.text.trim() : "";
+      if (!text) return null;
+      const factTimestamp = typeof record.timestamp === "string" ? record.timestamp : "";
+      const status = record.status === "historical" ? "historical" as const : "confirmed" as const;
+      return { text, timestamp: factTimestamp, status };
     }
     return null;
-  }).filter((x): x is { text: string; timestamp: string } => !!x);
+  }).filter((x): x is UserFact => !!x);
 }
 
 function normalizeStrings(value: unknown): string[] {
-  return parseArray(value)
-    .filter((x): x is string => typeof x === "string" && !!x.trim())
-    .map((x) => x.trim());
+  return parseArray(value).filter((x): x is string => typeof x === "string" && !!x.trim()).map((x) => x.trim());
+}
+
+function sameFact(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
 export function applyTurnStateAtomic(
   change: Change,
-  facts: string[],
+  facts: FactProposal[],
   nicknames: string[],
   timestamp: string,
   sessionKey: string,
@@ -86,35 +93,17 @@ export function applyTurnStateAtomic(
       const profile = getUserProfile(change.userId);
       const bond = profile?.bond ?? "stranger";
       return {
-        profile,
-        before: bond,
-        after: bond,
-        xp: profile?.xp ?? 0,
-        flirtCount: profile?.flirtCount ?? 0,
-        flirtDelta: 0,
-        bondUnlocked: false,
-        derivation: deriveBond(bond, profile?.xp ?? 0, {
-          flirtCount: profile?.flirtCount ?? 0,
-          approvals: profile?.approvals ?? NO_APPROVALS,
-        }),
-        factsAdded: 0,
-        nicknamesAdded: 0,
-        duplicate: true,
+        profile, before: bond, after: bond, xp: profile?.xp ?? 0, flirtCount: profile?.flirtCount ?? 0,
+        flirtDelta: 0, bondUnlocked: false,
+        derivation: deriveBond(bond, profile?.xp ?? 0, { flirtCount: profile?.flirtCount ?? 0, approvals: profile?.approvals ?? NO_APPROVALS }),
+        factsAdded: 0, nicknamesAdded: 0, duplicate: true,
       };
     }
 
     const row = db.query(`SELECT user_id, user_name, bond, xp, flirt_count, approved_lover, approved_soulmate, approved_sibling, approved_family, facts_json, nickname_json FROM user_profiles WHERE user_id = ?`).get(change.userId) as {
-      user_id: string;
-      user_name: string;
-      bond: string;
-      xp: number;
-      flirt_count: number;
-      approved_lover: number;
-      approved_soulmate: number;
-      approved_sibling: number;
-      approved_family: number;
-      facts_json: string;
-      nickname_json: string;
+      user_id: string; user_name: string; bond: string; xp: number; flirt_count: number;
+      approved_lover: number; approved_soulmate: number; approved_sibling: number; approved_family: number;
+      facts_json: string; nickname_json: string;
     } | null;
 
     const before = isBond(row?.bond) ? row!.bond : "stranger";
@@ -123,25 +112,43 @@ export function applyTurnStateAtomic(
     const flirted = change.isFlirt === true;
     const flirtCount = (row?.flirt_count ?? 0) + (flirted ? 1 : 0);
     const approvals: Record<ApprovalName, boolean> = {
-      lover: !!row?.approved_lover,
-      soulmate: !!row?.approved_soulmate,
-      sibling: !!row?.approved_sibling,
-      family: !!row?.approved_family,
+      lover: !!row?.approved_lover, soulmate: !!row?.approved_soulmate, sibling: !!row?.approved_sibling, family: !!row?.approved_family,
     };
     for (const name of APPROVAL_NAMES) if (change.approvals?.[name]) approvals[name] = true;
-
     const derivation = deriveBond(before, xp, { flirtCount, approvals });
     for (const name of derivation.consumed) approvals[name] = false;
 
     const oldFacts = normalizeFacts(row?.facts_json, timestamp);
-    const existingFacts = new Set(oldFacts.map((f) => f.text.toLowerCase()));
-    const freshFacts: { text: string; timestamp: string }[] = [];
-    for (const fact of facts) {
-      const text = typeof fact === "string" ? fact.trim() : "";
-      if (!text || existingFacts.has(text.toLowerCase())) continue;
-      existingFacts.add(text.toLowerCase());
-      freshFacts.push({ text, timestamp });
+    const currentFacts = oldFacts.filter((fact) => fact.status !== "historical");
+    const historicalFacts = oldFacts.filter((fact) => fact.status === "historical");
+    const currentByText = new Map(currentFacts.map((fact) => [fact.text.toLowerCase(), fact]));
+    const changedCurrent = new Set<string>();
+    const freshFacts: UserFact[] = [];
+
+    for (const proposal of facts) {
+      const text = typeof proposal?.text === "string" ? proposal.text.trim() : "";
+      const ownerUserId = typeof proposal?.ownerUserId === "string" ? proposal.ownerUserId.trim() : "";
+      if (!text || ownerUserId !== change.userId) continue;
+
+      const replacementText = typeof proposal.replacesFact === "string" ? proposal.replacesFact.trim() : "";
+      const current = replacementText ? currentByText.get(replacementText.toLowerCase()) : currentByText.get(text.toLowerCase());
+
+      // A speaker may add a self-asserted fact, but only an explicit owner confirmation may replace
+      // an existing confirmed fact. Third-party claims never gain write authority through a group key.
+      if (current && !sameFact(current.text, text)) {
+        if (!proposal.confirmedByOwner) continue;
+        changedCurrent.add(current.text.toLowerCase());
+      } else if (current) {
+        continue;
+      }
+
+      if (freshFacts.some((fact) => sameFact(fact.text, text))) continue;
+      freshFacts.push({ text, timestamp, status: "confirmed" });
     }
+
+    const nextCurrent = currentFacts.filter((fact) => !changedCurrent.has(fact.text.toLowerCase()));
+    const replacedHistorical = currentFacts.filter((fact) => changedCurrent.has(fact.text.toLowerCase())).map((fact) => ({ ...fact, status: "historical" as const }));
+    const finalFacts = [...freshFacts, ...nextCurrent, ...replacedHistorical, ...historicalFacts].slice(0, MAX_FACTS);
 
     const oldNicknames = normalizeStrings(row?.nickname_json);
     const existingNicknames = new Set(oldNicknames.map((n) => n.toLowerCase()));
@@ -149,28 +156,18 @@ export function applyTurnStateAtomic(
     for (const nickname of nicknames) {
       const value = typeof nickname === "string" ? nickname.trim() : "";
       if (!value || existingNicknames.has(value.toLowerCase())) continue;
-      existingNicknames.add(value.toLowerCase());
-      freshNicknames.push(value);
+      existingNicknames.add(value.toLowerCase()); freshNicknames.push(value);
     }
 
     db.query(`INSERT INTO user_profiles (user_id, user_name, bond, xp, flirt_count, approved_lover, approved_soulmate, approved_sibling, approved_family, facts_json, nickname_json)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id) DO UPDATE SET
-        user_name=excluded.user_name, bond=excluded.bond, xp=excluded.xp, flirt_count=excluded.flirt_count,
-        approved_lover=excluded.approved_lover, approved_soulmate=excluded.approved_soulmate,
+      ON CONFLICT(user_id) DO UPDATE SET user_name=excluded.user_name, bond=excluded.bond, xp=excluded.xp,
+        flirt_count=excluded.flirt_count, approved_lover=excluded.approved_lover, approved_soulmate=excluded.approved_soulmate,
         approved_sibling=excluded.approved_sibling, approved_family=excluded.approved_family,
         facts_json=excluded.facts_json, nickname_json=excluded.nickname_json`).run(
-      change.userId,
-      userName,
-      derivation.bond,
-      xp,
-      flirtCount,
-      approvals.lover ? 1 : 0,
-      approvals.soulmate ? 1 : 0,
-      approvals.sibling ? 1 : 0,
-      approvals.family ? 1 : 0,
-      JSON.stringify([...freshFacts, ...oldFacts].slice(0, MAX_FACTS)),
-      JSON.stringify([...freshNicknames, ...oldNicknames].slice(0, MAX_NICKNAMES)),
+      change.userId, userName, derivation.bond, xp, flirtCount,
+      approvals.lover ? 1 : 0, approvals.soulmate ? 1 : 0, approvals.sibling ? 1 : 0, approvals.family ? 1 : 0,
+      JSON.stringify(finalFacts), JSON.stringify([...freshNicknames, ...oldNicknames].slice(0, MAX_NICKNAMES)),
     );
 
     db.query(`INSERT INTO turn_state_applied (session_key, user_id, event_timestamp, applied_at) VALUES (?, ?, ?, ?)`).run(sessionKey, change.userId, timestamp, new Date().toISOString());
@@ -178,17 +175,9 @@ export function applyTurnStateAtomic(
 
     const profile = getUserProfile(change.userId);
     return {
-      profile,
-      before,
-      after: derivation.bond,
-      xp,
-      flirtCount,
-      flirtDelta: flirted ? 1 : 0,
-      bondUnlocked: isBondUnlock(before, derivation.bond),
-      derivation,
-      factsAdded: freshFacts.length,
-      nicknamesAdded: freshNicknames.length,
-      duplicate: false,
+      profile, before, after: derivation.bond, xp, flirtCount, flirtDelta: flirted ? 1 : 0,
+      bondUnlocked: isBondUnlock(before, derivation.bond), derivation,
+      factsAdded: freshFacts.length, nicknamesAdded: freshNicknames.length, duplicate: false,
     };
   } catch (error) {
     try { db.run("ROLLBACK"); } catch {}
