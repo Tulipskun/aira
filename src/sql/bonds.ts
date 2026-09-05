@@ -114,8 +114,25 @@ export function bondForXp(xp: number): BondLevel {
   return "close_friend";
 }
 
-export type BondDerivation = { bond: BondLevel; xp: number; reason: string; changed: boolean; consumed: ApprovalName[] };
 export type ApprovalName = "lover" | "soulmate" | "sibling" | "family";
+export type RelationshipPermissions = Record<ApprovalName, boolean>;
+
+/**
+ * Semantic relationship permissions for the dialogue/state models.
+ * Numeric XP and flirt counts stay inside the application; models receive only these gates.
+ */
+export function relationshipPermissions(from: string | null | undefined, xp: number, flirtCount: number): RelationshipPermissions {
+  const current: BondLevel = isBond(from) ? from : "stranger";
+  const capped = isCappedBond(current);
+  return {
+    lover: !capped && current === "crush" && xp >= LOVER_XP_THRESHOLD && flirtCount >= FLIRT_REQUIREMENT,
+    soulmate: !capped && current === "lover" && xp >= SOULMATE_XP_THRESHOLD,
+    sibling: !capped && xp >= SPECIAL_XP,
+    family: !capped && xp >= SPECIAL_XP,
+  };
+}
+
+export type BondDerivation = { bond: BondLevel; xp: number; reason: string; changed: boolean; consumed: ApprovalName[] };
 export const PROPOSAL_XP = LOVER_XP_THRESHOLD;
 export type BondSignals = { flirtCount: number; approvals?: Partial<Record<ApprovalName, boolean>> };
 
