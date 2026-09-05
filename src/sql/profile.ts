@@ -23,6 +23,8 @@ export type UserFact = {
   text: string;
   /** ISO-8601 UTC, or "" for facts that predate per-fact timestamps. */
   timestamp: string;
+  /** Current facts are confirmed; replaced facts are retained as historical evidence. */
+  status?: "confirmed" | "historical";
 };
 
 export type UserProfile = {
@@ -110,8 +112,6 @@ function columnsOf(table: string): Set<string> {
  * display name, anything ending in `_json` gets an empty array.
  */
 function legacyRequiredColumns(): { column: string; value: (userName: string) => string }[] {
-  // `SELECT *` on purpose: naming `notnull`/`dflt_value` (even quoted) is rejected by this SQLite
-  // build's parser when combined with an alias, while `SELECT *` returns them fine.
   const rows = db.query(`SELECT * FROM pragma_table_info('user_profiles')`).all() as unknown as {
     name: string;
     notnull: number;
@@ -129,33 +129,13 @@ function legacyRequiredColumns(): { column: string; value: (userName: string) =>
   return fillers;
 }
 
-/** Recomputed once after the migration, because the columns cannot change while this process runs. */
 let legacyFillers: { column: string; value: (userName: string) => string }[] = [];
 
-/**
- * When set, the migration is **additive only**: it adds the merged columns, copies data across and
- * leaves `relationships` plus the legacy `user_profiles` columns in place.
- *
- * Needed when migrating a database a running bot still has open. That process has the *old*
- * module code in memory — it reads `user_profiles.name`/`nicknames_json` and writes
- * `relationships` — so removing either from under it would error on the next turn. Restart with
- * the flag unset (the normal state) and the leftovers are dropped.
- */
 function keepLegacySchema(): boolean {
   const raw = process.env.AIRA_KEEP_LEGACY_SCHEMA ?? "";
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
-/**
- * Bring `user_profiles` up to the merged schema and fold `relationships` into it.
- *
- * Written to be idempotent and to work on three starting points: a brand-new database, the old
- * two-table layout, and a half-migrated one (the bot was restarted mid-development). Every step
- * checks what is actually present instead of assuming, because `CREATE TABLE IF NOT EXISTS` never
- * alters a table that already exists.
- *
- * Exported so tests can run it against a hand-built legacy database.
- */
 export function migrateUserProfiles(): { created: boolean; mergedRelationships: number; droppedRelationships: boolean } {
   const had = columnsOf("user_profiles");
   const created = had.size === 0;
@@ -163,11 +143,8 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
   if (created) {
     db.run(`CREATE TABLE user_profiles (\n  ${DESIRED_COLUMNS.map(([n, t]) => `${n} ${t}`).join(",\n  ")}\n)`);
   } else {
-    // Add whatever the new shape needs. NOT NULL with a DEFAULT is legal on an existing table:
-    // SQLite fills the default into every existing row.
     for (const [name, ddl] of DESIRED_COLUMNS) {
       if (had.has(name)) continue;
-      // PRIMARY KEY cannot be added to an existing table; user_id is always present in practice.
       const addable = name === "user_id" ? "TEXT" : ddl;
       db.run(`ALTER TABLE user_profiles ADD COLUMN ${name} ${addable}`);
     }
@@ -176,7 +153,6 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
   const now = columnsOf("user_profiles");
   let mergedRelationships = 0;
 
-  // ---- legacy user_profiles: name -> user_name, nicknames_json -> nickname_json ----
   if (had.has("name") && now.has("user_name")) {
     db.run(`UPDATE user_profiles SET user_name = name WHERE (user_name = '' OR user_name IS NULL) AND name IS NOT NULL`);
   }
@@ -185,8 +161,6 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
             WHERE nickname_json = '[]' AND nicknames_json IS NOT NULL AND nicknames_json <> '[]'`);
   }
 
-  // ---- legacy facts: a flat string array becomes [{text, timestamp}] ----
-  // Done before merging relationships so the two never fight over the same column.
   if (now.has("facts_json")) {
     const rows = db.query(`SELECT user_id AS userId, facts_json AS factsJson FROM user_profiles`).all() as {
       userId: string;
@@ -199,9 +173,6 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
     }
   }
 
-  // ---- legacy relationships: state -> bond, xp -> xp ----
-  // `affinity` is NOT carried over: it was a second, differently-scaled copy of the same idea as
-  // xp, and the simplified model keeps only xp. See the note on `RETIRED_COLUMNS`.
   if (columnsOf("relationships").size > 0) {
     const rel = columnsOf("relationships");
     const select = [
@@ -217,7 +188,6 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
       xp: number | null;
     }[];
 
-    // Fill any legacy NOT NULL column the INSERT cannot skip (see legacyRequiredColumns).
     const fillers = legacyRequiredColumns();
     const merge = db.query(`
       INSERT INTO user_profiles (user_id, user_name, bond, xp${fillers.length ? ", " + fillers.map((f) => f.column).join(", ") : ""})
@@ -231,38 +201,21 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
     for (const row of rows) {
       const bond = isBond(row.state) ? row.state : "stranger";
       const userName = row.user_name ?? row.user_id;
-      merge.run(
-        row.user_id,
-        userName,
-        bond,
-        Number.isFinite(row.xp) ? Number(row.xp) : 0,
-        ...fillers.map((f) => f.value(userName)),
-      );
+      merge.run(row.user_id, userName, bond, Number.isFinite(row.xp) ? Number(row.xp) : 0, ...fillers.map((f) => f.value(userName)));
       mergedRelationships++;
     }
 
-    // Only drop the old table once every row is provably present in the new one.
-    const missing = db.query(
-      `SELECT COUNT(*) AS c FROM relationships
-       WHERE user_id NOT IN (SELECT user_id FROM user_profiles)`,
-    ).get() as { c: number };
+    const missing = db.query(`SELECT COUNT(*) AS c FROM relationships WHERE user_id NOT IN (SELECT user_id FROM user_profiles)`).get() as { c: number };
     if (missing.c > 0) {
-      console.warn(
-        `[SQL] kept relationships table: ${missing.c} row(s) did not make it into user_profiles`,
-      );
+      console.warn(`[SQL] kept relationships table: ${missing.c} row(s) did not make it into user_profiles`);
     } else if (keepLegacySchema()) {
-      // A bot process that is already running still has the old statements compiled and writes to
-      // `relationships`; dropping it from under that process would error on the next turn.
       console.log(`[SQL] user_profiles migrated; relationships kept (AIRA_KEEP_LEGACY_SCHEMA)`);
     } else {
       db.run(`DROP TABLE relationships`);
     }
   }
 
-  // ---- drop columns the simplified schema no longer uses ----
   if (!keepLegacySchema()) {
-    // `affinity`/`affection` are listed too: they were the same idea as xp on a different scale, and
-    // keeping one number per relationship is the whole point of the simplification.
     for (const legacy of ["name", "nicknames_json", "affinity", ...RETIRED_COLUMNS]) {
       if (!had.has(legacy) || !now.has(legacy)) continue;
       try {
@@ -277,8 +230,6 @@ export function migrateUserProfiles(): { created: boolean; mergedRelationships: 
 }
 
 migrateUserProfiles();
-// Recomputed after the migration so `upsertUserProfile` only fills columns that survived it
-// (additive mode). Before this line runs, the merge path queries the fillers directly.
 legacyFillers = legacyRequiredColumns();
 
 const SELECT = `SELECT user_id AS userId, user_name AS userName, nickname_json AS nicknameJson,
@@ -286,14 +237,6 @@ const SELECT = `SELECT user_id AS userId, user_name AS userName, nickname_json A
   approved_sibling AS approvedSibling, approved_family AS approvedFamily,
   facts_json AS factsJson FROM user_profiles`;
 
-/**
- * Read a row defensively.
- *
- * `bond` has no CHECK constraint (so a level can be added without ALTER TABLE), facts were once a
- * flat string array, and the approval flags are 0/1 integers that a half-migrated database may not
- * have at all (they read back as `undefined`). Anything unrecognisable degrades to the default
- * rather than throwing in the middle of a reply.
- */
 function hydrate(row: {
   userId: string;
   userName: string | null;
@@ -324,7 +267,6 @@ function hydrate(row: {
   };
 }
 
-/** 0/1 (or missing) column to boolean. Anything non-zero counts, so a legacy REAL 1.0 works too. */
 function truthyFlag(value: number | null | undefined): boolean {
   return Number.isFinite(value) ? Number(value) !== 0 : false;
 }
@@ -340,25 +282,17 @@ function normalizeStringArray(raw: string | null | undefined): string[] {
   }
 }
 
-/**
- * Accept both fact shapes: the current `[{text, timestamp}]` and the legacy `["text"]`.
- * Returns the list plus the JSON that should be stored, so the migration can tell whether a row
- * actually needed rewriting.
- */
+/** Accept both legacy and current fact records; legacy records hydrate as confirmed. */
 function normalizeFacts(raw: string | null | undefined): { facts: UserFact[]; serialized: string } {
   if (!raw) return { facts: [], serialized: "[]" };
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { facts: [], serialized: "[]" };
-  }
+  try { parsed = JSON.parse(raw); } catch { return { facts: [], serialized: "[]" }; }
   if (!Array.isArray(parsed)) return { facts: [], serialized: "[]" };
 
   const facts: UserFact[] = [];
   for (const item of parsed) {
     if (typeof item === "string") {
-      if (item.trim()) facts.push({ text: item.trim(), timestamp: "" });
+      if (item.trim()) facts.push({ text: item.trim(), timestamp: "", status: "confirmed" });
       continue;
     }
     if (item && typeof item === "object") {
@@ -366,7 +300,8 @@ function normalizeFacts(raw: string | null | undefined): { facts: UserFact[]; se
       const text = typeof record.text === "string" ? record.text.trim() : "";
       if (!text) continue;
       const timestamp = typeof record.timestamp === "string" ? record.timestamp : "";
-      facts.push({ text, timestamp });
+      const status = record.status === "historical" ? "historical" : "confirmed";
+      facts.push({ text, timestamp, status });
     }
   }
   return { facts, serialized: JSON.stringify(facts) };
@@ -385,66 +320,35 @@ export function getUserProfiles(userIds: string[]): UserProfile[] {
   return rows.map(hydrate);
 }
 
-/**
- * Create or update one user row. Only the fields present in `patch` are written, so a caller
- * adjusting xp never has to read the row first and never clobbers someone's facts.
- */
 export function upsertUserProfile(patch: UserProfilePatch): UserProfile | null {
   const columns: string[] = ["user_id"];
   const values: (string | number | null)[] = [patch.userId];
   const updates: string[] = [];
-
   const add = (column: string, value: string | number | null) => {
-    columns.push(column);
-    values.push(value);
-    updates.push(`${column} = excluded.${column}`);
+    columns.push(column); values.push(value); updates.push(`${column} = excluded.${column}`);
   };
-
   if (patch.userName !== undefined) add("user_name", patch.userName);
   if (patch.nickname !== undefined) add("nickname_json", JSON.stringify(patch.nickname));
   if (patch.bond !== undefined) add("bond", isBond(patch.bond) ? patch.bond : "stranger");
   if (patch.xp !== undefined) add("xp", Math.trunc(Number(patch.xp) || 0));
   if (patch.flirtCount !== undefined) add("flirt_count", Math.max(0, Math.trunc(Number(patch.flirtCount) || 0)));
-  if (patch.approvals !== undefined) {
-    for (const name of APPROVAL_NAMES) {
-      add(`approved_${name}`, patch.approvals[name] ? 1 : 0);
-    }
-  }
+  if (patch.approvals !== undefined) for (const name of APPROVAL_NAMES) add(`approved_${name}`, patch.approvals[name] ? 1 : 0);
   if (patch.facts !== undefined) add("facts_json", JSON.stringify(normalizeFacts(JSON.stringify(patch.facts)).facts));
-
-  // A brand-new row must also satisfy any legacy NOT NULL column still in the table.
   const name = patch.userName ?? getUserProfile(patch.userId)?.userName ?? patch.userId;
   for (const filler of legacyFillers) {
     if (columns.includes(filler.column)) continue;
     add(filler.column, filler.value(name));
   }
-
   if (updates.length) {
-    db.query(
-      `INSERT INTO user_profiles (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})
-       ON CONFLICT(user_id) DO UPDATE SET ${updates.join(", ")}`,
-    ).run(...values);
+    db.query(`INSERT INTO user_profiles (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT(user_id) DO UPDATE SET ${updates.join(", ")}`).run(...values);
   }
   return getUserProfile(patch.userId);
 }
 
-/**
- * Apply one turn's state — the only writer of `xp`, `flirt_count`, the approval flags and `bond`.
- *
- * Replaces `adjustProfileStats()` + `setBond()`, which let a caller name a rung directly. Now the
- * model reports what happened and `deriveBond()` decides the rung, so there is exactly one path onto
- * the ladder and it cannot be talked around.
- *
- * Every approval Isla accepted is recorded, even when the xp gate cannot grant the rung yet: she said
- * yes out loud, and forgetting that would contradict her own earlier message. `deriveBond()` clears a
- * flag only when it actually moved the rung (see `consumed`).
- */
 export type TurnStateChange = {
   userId: string;
   userName?: string;
-  /** Relationship points for this turn, already clamped by the parser (-100..100). */
   affinity: number;
-  /** The user flirted and she took it. */
   isFlirt?: boolean;
   approvals?: Partial<Record<ApprovalName, boolean>>;
 };
@@ -455,18 +359,7 @@ export type TurnStateResult = {
   after: BondLevel;
   xp: number;
   flirtCount: number;
-  /**
-   * Flirts this turn actually added to `flirtCount` — 1 or 0.
-   *
-   * Reported by the writer rather than read off `change.isFlirt` so the footer's `[Flirt +1]` can
-   * only ever appear on a turn that really incremented the counter.
-   */
   flirtDelta: number;
-  /**
-   * True when this turn *reached* a new rung worth announcing (`[Lover Unlocked]`).
-   *
-   * Narrower than `derivation.changed`, which is also true for a demotion — see `isBondUnlock()`.
-   */
   bondUnlocked: boolean;
   derivation: BondDerivation;
 };
@@ -476,58 +369,22 @@ export function applyTurnState(change: TurnStateChange): TurnStateResult {
   const current = getUserProfile(userId);
   const before = current?.bond ?? "stranger";
   const userName = change.userName ?? current?.userName ?? userId;
-
   const xp = (current?.xp ?? 0) + (Number.isFinite(change.affinity) ? Math.trunc(change.affinity) : 0);
   const flirted = change.isFlirt === true;
   const flirtCount = (current?.flirtCount ?? 0) + (flirted ? 1 : 0);
-
-  // Merge this turn's yeses into the pending ones; nothing is cleared here, only on consumption.
   const approvals: Record<ApprovalName, boolean> = { ...(current?.approvals ?? NO_APPROVALS) };
-  for (const name of APPROVAL_NAMES) {
-    if (change.approvals?.[name]) approvals[name] = true;
-  }
-
+  for (const name of APPROVAL_NAMES) if (change.approvals?.[name]) approvals[name] = true;
   const derivation = deriveBond(before, xp, { flirtCount, approvals });
-
-  // A granted proposal is no longer pending — otherwise the flag would keep re-firing the rule.
   for (const name of derivation.consumed) approvals[name] = false;
-
-  const profile = upsertUserProfile({
-    userId,
-    userName,
-    xp,
-    flirtCount,
-    approvals,
-    bond: derivation.bond,
-  });
-
-  return {
-    profile,
-    before,
-    after: derivation.bond,
-    xp,
-    flirtCount,
-    flirtDelta: flirted ? 1 : 0,
-    bondUnlocked: isBondUnlock(before, derivation.bond),
-    derivation,
-  };
+  const profile = upsertUserProfile({ userId, userName, xp, flirtCount, approvals, bond: derivation.bond });
+  return { profile, before, after: derivation.bond, xp, flirtCount, flirtDelta: flirted ? 1 : 0, bondUnlocked: isBondUnlock(before, derivation.bond), derivation };
 }
 
-/**
- * Set the bond without going through the ladder.
- *
- * Only the owner-facing CLI should call this (and nothing in the reply path does); it exists so a
- * human can fix a relationship without editing SQL.
- */
 export function forceBond(userId: string, bond: BondLevel, userName?: string): UserProfile | null {
   if (!isBond(bond)) return null;
   return upsertUserProfile({ userId, bond, ...(userName ? { userName } : {}) });
 }
 
-/**
- * Append facts, newest first, dropping duplicates and the oldest beyond `MAX_FACTS`.
- * Returns how many were actually added.
- */
 export function addFacts(userId: string, facts: string[], timestamp = new Date().toISOString(), userName?: string): number {
   const incoming = facts.map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean);
   if (!incoming.length) return 0;
@@ -537,26 +394,13 @@ export function addFacts(userId: string, facts: string[], timestamp = new Date()
   for (const text of incoming) {
     if (existing.has(text.toLowerCase())) continue;
     existing.add(text.toLowerCase());
-    fresh.push({ text, timestamp });
+    fresh.push({ text, timestamp, status: "confirmed" });
   }
   if (!fresh.length) return 0;
-  upsertUserProfile({
-    userId,
-    ...(userName ? { userName } : {}),
-    facts: [...fresh, ...(current?.facts ?? [])].slice(0, MAX_FACTS),
-  });
+  upsertUserProfile({ userId, ...(userName ? { userName } : {}), facts: [...fresh, ...(current?.facts ?? [])].slice(0, MAX_FACTS) });
   return fresh.length;
 }
 
-/**
- * Append nicknames Isla gave the user, newest first, dropping duplicates.
- *
- * `nickname_json` existed since the first schema but had **no writer at all** — the column was
- * always `[]`, so the footer's `#tag` slot could never fill. This is that writer; it is called from
- * `applyState()` with whatever Gemini 2 detected in her reply.
- *
- * Returns how many were actually added.
- */
 export function addNicknames(userId: string, nicknames: string[], userName?: string): number {
   const incoming = nicknames.map((n) => (typeof n === "string" ? n.trim() : "")).filter(Boolean);
   if (!incoming.length) return 0;
@@ -569,22 +413,16 @@ export function addNicknames(userId: string, nicknames: string[], userName?: str
     fresh.push(nickname);
   }
   if (!fresh.length) return 0;
-  upsertUserProfile({
-    userId,
-    ...(userName ? { userName } : {}),
-    nickname: [...fresh, ...(current?.nickname ?? [])].slice(0, MAX_NICKNAMES),
-  });
+  upsertUserProfile({ userId, ...(userName ? { userName } : {}), nickname: [...fresh, ...(current?.nickname ?? [])].slice(0, MAX_NICKNAMES) });
   return fresh.length;
 }
 
-/** Replace the whole nickname list. */
 export function setNicknames(userId: string, nicknames: unknown): string[] {
   const normalized = normalizeStringArray(JSON.stringify(Array.isArray(nicknames) ? nicknames : []));
   upsertUserProfile({ userId, nickname: normalized.slice(0, MAX_NICKNAMES) });
   return getUserProfile(userId)?.nickname ?? [];
 }
 
-/** Remove one nickname by exact (case-insensitive) text. Returns how many were removed. */
 export function removeNickname(userId: string, nickname: string): number {
   const current = getUserProfile(userId);
   if (!current) return 0;
@@ -595,14 +433,12 @@ export function removeNickname(userId: string, nickname: string): number {
   return removed;
 }
 
-/** Replace the whole fact list. Entries may be strings or `{text, timestamp}`. */
 export function setFacts(userId: string, facts: unknown): UserFact[] {
   const normalized = normalizeFacts(JSON.stringify(Array.isArray(facts) ? facts : [])).facts;
   upsertUserProfile({ userId, facts: normalized.slice(0, MAX_FACTS) });
   return getUserProfile(userId)?.facts ?? [];
 }
 
-/** Delete one fact by exact (case-insensitive) text. Returns how many rows were removed. */
 export function removeFact(userId: string, text: string): number {
   const current = getUserProfile(userId);
   if (!current) return 0;
@@ -613,13 +449,11 @@ export function removeFact(userId: string, text: string): number {
   return removed;
 }
 
-/** Every user, for admin/inspection output. */
 export function listUserProfiles(limit = 100): UserProfile[] {
   const rows = db.query(`${SELECT} ORDER BY xp DESC, user_name ASC LIMIT ?`).all(limit) as Parameters<typeof hydrate>[0][];
   return rows.map(hydrate);
 }
 
-/** `bond` plus its Thai label, for prompt blocks. */
 export function bondDescription(profile: Pick<UserProfile, "bond"> | null | undefined): string {
   if (!profile) return "ไม่มีข้อมูลความสัมพันธ์";
   return `${bondLabel(profile.bond)} (${profile.bond}, ระดับ ${bondLevel(profile.bond)})`;
