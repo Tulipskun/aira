@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: dialogue
-          fetch-depth: 1
+          fetch-depth: 2
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,6 +46,14 @@ jobs:
           file "$OUTPUT"
           identify "$OUTPUT" 2>/dev/null || true
 
+      - name: Upload generated PNG for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: dialogue-frame-test
+          path: images/dialogue/dialogue_frame_test.png
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Commit generated PNG
         env:
           OUTPUT: images/dialogue/dialogue_frame_test.png
@@ -57,6 +65,8 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin dialogue
+          git rebase origin/dialogue
           git add "$OUTPUT"
 
           if git diff --cached --quiet; then
