@@ -1,0 +1,16 @@
+node_modules/
+package-lock.json
+.aira/
+data/
+*.db
+*.db-shm
+*.db-wal
+.gemini-key-state.json
+.env
+.env.*
+!.env.example
+*.bak
+.discord-attachments/
+project_knowledge.md
+.aixodia-todo.json
+.aixodia-jobs/
