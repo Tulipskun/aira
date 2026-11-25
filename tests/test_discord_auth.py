@@ -92,6 +92,18 @@ class DiscordAuthTests(unittest.TestCase):
                 config = config_module.Config()
             self.assertEqual(config.discord_token, "legacy-token")
 
+
+    def test_token_with_embedded_whitespace_is_rejected_before_request(self):
+        with self.assertRaises(InvalidDiscordToken):
+            validate_discord_token("bad token", opener=lambda *_args, **_kwargs: self.fail("request should not run"))
+
+    def test_discord_403_is_not_misreported_as_invalid_token(self):
+        def opener(request, timeout):
+            raise HTTPError(request.full_url, 403, "Forbidden", {}, None)
+
+        with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+            validate_discord_token("valid-looking-token", opener=opener)
+
     def test_discord_rejects_non_bot_identity(self):
         class FakeResponse(io.BytesIO):
             pass
