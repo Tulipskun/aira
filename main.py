@@ -34,8 +34,12 @@ def configure_logging() -> None:
 
 def main() -> int:
     try:
-        from dotenv import load_dotenv
-        load_dotenv(ROOT / ".env", override=False)
+        try:
+            from dotenv import load_dotenv
+        except ImportError:
+            load_dotenv = None
+        if load_dotenv is not None:
+            load_dotenv(ROOT / ".env", override=False)
         configure_logging()
         from aira.discord_auth import get_discord_token
         os.environ["DISCORD"] = get_discord_token()
