@@ -20,6 +20,16 @@ def _env_or_setting(env: str, setting: str, default: str) -> str:
     return os.getenv(env) or str(_load_panel_settings().get(setting) or default)
 
 
+def _load_discord_token() -> str:
+    try:
+        token = (ROOT / ".aira" / "discord.token").read_text("utf-8").strip()
+        if token:
+            return token
+    except OSError:
+        pass
+    return os.getenv("DISCORD", "").strip()
+
+
 def _split_keys(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
@@ -31,7 +41,7 @@ def _resolve_path(value: str) -> Path:
 
 @dataclass
 class Config:
-    discord_token: str = field(default_factory=lambda: os.getenv("DISCORD", "").strip())
+    discord_token: str = field(default_factory=_load_discord_token)
     owner_id: str = field(default_factory=lambda: os.getenv("DISCORD_OWNER_ID", "").strip())
     response_channel_id: str = field(default_factory=lambda: os.getenv("DISCORD_RESPONSE_CHANNEL_ID", "").strip())
     gemini_keys: list[str] = field(default_factory=lambda: _split_keys(
