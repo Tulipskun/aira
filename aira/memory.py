@@ -78,7 +78,7 @@ async def save_memory(text: str, user_id: str, timestamp: str, session_key: str,
 def save_memory_vector(text: str, vector: list[float], user_id: str, timestamp: str,
                        session_key: str, metadata: dict | None = None, memory_id: str | None = None) -> str:
     ident = memory_id or str(uuid.uuid4())
-    meta = dict(metadata or {})
+    meta = {"userId": str(user_id) if user_id is not None else "", "timestamp": timestamp, "sessionKey": session_key, **(metadata or {})}
     store.db.execute("""INSERT INTO semantic_memories
         (id,text,embedding_json,user_id,timestamp,session_key,metadata_json)
         VALUES(?,?,?,?,?,?,?)
