@@ -37,10 +37,10 @@ def main() -> int:
         from dotenv import load_dotenv
         load_dotenv(ROOT / ".env", override=False)
         configure_logging()
+        from aira.discord_auth import get_discord_token
+        os.environ["DISCORD"] = get_discord_token()
         from aira.config import config
         from aira.discord_app import run_bot
-        if not config.discord_token:
-            raise RuntimeError("DISCORD environment variable is required")
         if not config.gemini_keys:
             logging.getLogger("aira").warning(
                 "GEMINI_API_KEY is not set; add it through the Aira Control Panel after the bot starts"
