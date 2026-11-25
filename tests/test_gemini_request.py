@@ -66,9 +66,10 @@ class GeminiRequestTests(unittest.TestCase):
         request = live.calls[0]
         self.assertEqual(request["model"], "gemini-3.8-live")
         self.assertEqual(request["config"].response_modalities, ["TEXT"])
-        self.assertEqual(request["config"].system_instruction, "system")
-        self.assertEqual(request["config"].generation_config.response_mime_type, "application/json")
-        self.assertEqual(request["config"].generation_config.response_schema.model_dump(exclude_none=True), {"properties": {"Isla": {"type": "STRING"}}, "type": "OBJECT"})
+        self.assertTrue(request["config"].system_instruction.startswith("system"))
+        self.assertIsNone(request["config"].generation_config)
+        self.assertIn('"type":"object"', request["config"].system_instruction)
+        self.assertIn("JSON", request["config"].system_instruction)
         sent = live.sessions[0].sent[0]["turns"]
         self.assertIn("hello", sent.parts[0].text)
         self.assertIn("ผลจาก search_memory", sent.parts[1].text)

@@ -537,14 +537,15 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
     max_keys = max(1, len(_keys(stage)))
     chosen_model = config.gemini2_model if stage == "gemini2" else config.gemini1_model
     content_parts = _live_parts(input_parts, temporary_steps)
-    generation_config = types.GenerationConfig(
-        response_mime_type="application/json" if response_schema else "text/plain",
-        response_schema=response_schema,
-    )
+    if response_schema:
+        system_instruction = "\n\n".join([
+            system_instruction,
+            "ส่งคำตอบเป็น JSON ที่ถูกต้องเท่านั้น ห้ามใส่ Markdown หรือข้อความนอก JSON และต้องทำตาม JSON Schema นี้:",
+            json.dumps(response_schema, ensure_ascii=False, separators=(",", ":")),
+        ])
     live_config = types.LiveConnectConfig(
         response_modalities=[types.Modality.TEXT],
         system_instruction=system_instruction,
-        generation_config=generation_config,
     )
     while key_attempts < max_keys:
         client = _client(stage)
@@ -558,7 +559,6 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
         debug_dump({**debug_meta, "event": "request", "payload": {
             "system_instruction": system_instruction,
             "parts": [{"text": p.text} if p.text is not None else {"mime_type": p.inline_data.mime_type} for p in content_parts],
-            "generation_config": generation_config.model_dump(exclude_none=True),
         }})
         try:
             output = []
