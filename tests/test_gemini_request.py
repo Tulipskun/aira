@@ -160,6 +160,8 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertEqual(result, ["nova"])
         self.assertEqual(captured["stage"], "gemini2")
         self.assertIn("เงียบ", captured["prompt"])
+        self.assertIn("ไม่จำเป็นต้องมี Isla", captured["prompt"])
+        self.assertIn("ตัวละครเสริมสองตัวพร้อมกัน", captured["prompt"])
         self.assertIn("Isla: เรื่องนั้นน่าสนใจ", captured["prompt"])
         self.assertEqual(captured["schema"]["required"], ["speakers"])
 

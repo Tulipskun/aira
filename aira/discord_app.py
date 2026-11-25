@@ -306,7 +306,11 @@ class AiraBot(commands.Bot):
     async def setup_hook(self):
         from .memory import (
             migrate_character_memory_sessions, migrate_legacy_chroma, migrate_memory_sessions,
+            reset_persistent_memory_once,
         )
+        reset = reset_persistent_memory_once()
+        if reset.get("reset"):
+            log.warning("Performed approved one-time fresh-memory reset: %s", reset)
         legacy = migrate_legacy_chroma()
         if legacy.get("migrated"):
             log.info("Imported legacy Chroma memories into SQLite: %s", legacy)

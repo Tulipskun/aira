@@ -84,9 +84,10 @@ def resolve_character_speakers(characters: list[Character], mentioned: list[Char
         if char.id not in seen:
             seen.add(char.id)
             selected.append(char)
-    primary = next((char for char in selected if char.id == "isla"), None)
-    secondary = next((char for char in selected if char.id != "isla"), None)
-    return [char for char in (primary, secondary) if char is not None]
+    selected = selected[:2]
+    if any(char.id == "isla" for char in selected):
+        selected.sort(key=lambda char: char.id != "isla")
+    return selected
 
 
 def save_character(character_id: str, name: str, aliases: list[str], prompt: str, enabled: bool = True) -> None:

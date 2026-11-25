@@ -26,6 +26,64 @@ class MemoryTests(unittest.TestCase):
         config.episode_min_similarity=self.old_min
         self.temp.cleanup()
 
+    def test_approved_fresh_memory_reset_clears_all_old_state_once_and_preserves_credentials(self):
+        from aira import memory as memory_module
+        from unittest.mock import patch
+        runtime = Path(self.temp.name) / ".aira"
+        runtime.mkdir()
+        (runtime / "discord.token").write_text("keep-token", encoding="utf-8")
+        (runtime / "settings.json").write_text('{"geminiApiKeys":["keep"]}', encoding="utf-8")
+        (runtime / "gemini-thought-signatures.json").write_text("old-context", encoding="utf-8")
+        chroma = runtime / "chroma"
+        chroma.mkdir()
+        (chroma / "old-vector.bin").write_bytes(b"old")
+
+        memory.save_memory_vector("old semantic", [1, 0, 0], "u1", "2026-11-25T00:00:00Z", "group:1")
+        episode = {"id":"old-episode","text":"old episode","session_key":"group:1",
+                   "date":"2026-11-25","period":"night","start_time":"2026-11-25T00:00:00Z",
+                   "end_time":"2026-11-25T00:01:00Z","participants":["u1"],
+                   "created_at":"2026-11-25T00:01:00Z"}
+        memory.save_episode_vector(episode, [1, 0, 0])
+        memory.store.save_message("user", "old chat", "2026-11-25T00:00:00Z", "group:1", "u1", "Alice")
+        memory.store.save_message("model", "old reply", "2026-11-25T00:01:00Z", "group:1",
+                                  None, "Isla", None, "old summary", "isla")
+        memory.store.db.execute("INSERT INTO user_profiles(user_id,user_name) VALUES('u1','Alice')")
+        memory.store.save_character_relationship("isla", "u1", "old relationship")
+        memory.store.save_character_pair_relationship("rem", "bocchi", "old character relationship")
+        memory.store.db.execute("INSERT INTO turn_state_applied VALUES('group:1','u1','old-time','old-time')")
+        memory.store.db.execute("CREATE TABLE relationships(user_id TEXT PRIMARY KEY, state TEXT)")
+        memory.store.db.execute("INSERT INTO relationships VALUES('u1','friend')")
+
+        with patch.object(memory_module, "ROOT", Path(self.temp.name)):
+            result = memory_module.reset_persistent_memory_once(runtime)
+            self.assertTrue(result["reset"])
+            self.assertEqual(result["messages"], 2)
+            self.assertEqual(result["semantic_memories"], 1)
+            self.assertEqual(result["episodic_memories"], 1)
+            self.assertEqual(result["user_profiles"], 1)
+            self.assertEqual(result["character_relationships"], 1)
+            self.assertEqual(result["character_pair_relationships"], 1)
+            self.assertEqual(result["turn_state_applied"], 1)
+            self.assertEqual(result["relationships"], 1)
+            self.assertEqual(memory.count_memories(), 0)
+            self.assertEqual(memory.store.db.execute("PRAGMA secure_delete").fetchone()[0], 1)
+            self.assertEqual(memory.store.count_messages(), 0)
+            self.assertEqual(memory.store.list_profiles(), [])
+            self.assertEqual(memory.store.get_character_relationship("isla", "u1"),
+                             "ยังไม่เคยสร้างความสัมพันธ์")
+            self.assertEqual(memory.store.get_character_pair_relationship("rem", "bocchi"), "")
+            self.assertEqual(memory.store.db.execute("SELECT COUNT(*) FROM turn_state_applied").fetchone()[0], 0)
+            self.assertFalse(chroma.exists())
+            self.assertFalse((runtime / "gemini-thought-signatures.json").exists())
+            self.assertTrue((runtime / "chroma-migration-v1").exists())
+            self.assertEqual((runtime / "discord.token").read_text("utf-8"), "keep-token")
+            self.assertEqual((runtime / "settings.json").read_text("utf-8"), '{"geminiApiKeys":["keep"]}')
+
+            memory.save_memory_vector("new memory", [1, 0, 0], "u2", "2026-11-25T01:00:00Z", "group:1")
+            again = memory_module.reset_persistent_memory_once(runtime)
+            self.assertFalse(again["reset"])
+            self.assertEqual(memory.count_memories(), 1)
+
     def test_semantic_memory_is_session_scoped(self):
         memory.save_memory_vector("Alice likes tea",[1,0,0],"1","2026-11-25T00:00:00Z","user:1")
         memory.save_memory_vector("Bob likes coffee",[0,1,0],"2","2026-11-25T00:00:00Z","user:2")

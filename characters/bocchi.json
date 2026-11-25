@@ -1,0 +1,11 @@
+{
+  "id": "bocchi",
+  "name": "Hitori Gotoh",
+  "aliases": [
+    "Bocchi",
+    "โบจจิ",
+    "ฮิโตริ"
+  ],
+  "promptFile": "prompts/bocchi.md",
+  "enabled": true
+}

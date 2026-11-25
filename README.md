@@ -7,7 +7,7 @@ Discord AI character bot powered by Gemini and SQLite. Runtime: Python 3.13.
 - One Discord bot with Isla and multiple configurable characters.
 - Gemini 1 generates character dialogue; Gemini 2 selects speakers and analyzes relationship state, facts and memory.
 - Multi-user group chats with a social speaker scheduler: characters may stay silent or join when relevant.
-- Isla and one additional character can speak in the same turn; direct character mentions take priority.
+- Up to two characters can speak in the same turn, including Rem and Bocchi together without Isla; direct mentions take priority.
 - Each character has isolated semantic/episodic memories and its own perspective on other characters.
 - Shared per-channel conversation history, per-user relationship state and SQLite long-term memory.
 - Owner-only Discord Control Panel for Gemini keys/models, response channel and character prompts.
@@ -27,9 +27,11 @@ Invite the bot with bot and applications.commands OAuth scopes. Grant View Chann
 
 Keep .aira/ persistent across restarts and code updates. It contains aira.db, credentials, API keys, model settings, selected channel and key state. Do not delete or replace it during deployment.
 
+On the first startup of this release, Aira performs the approved one-time fresh-memory reset before importing any legacy memory: conversation history, user profiles/facts, character-to-user and character-to-character relationships, semantic/episodic memories, legacy Chroma vectors and saved Gemini thought signatures are erased. Discord credentials, owner ID, API keys, model settings and selected response channel are preserved. The .aira/fresh-memory-v1 marker makes the reset idempotent; later restarts do not erase newly created memories.
+
 Aira stores conversation history, semantic embeddings and episodic embeddings in the same SQLite database at .aira/aira.db. Semantic search uses cosine similarity in Python; no separate vector database, Chroma server, native extension, Node.js or Bun runtime is required.
 
-If an older installation has .aira/chroma/, the new version attempts a one-time import when the Chroma package is still available in the existing runtime. Imported records are written to SQLite and the old Chroma files are retained. If Chroma is unavailable, the old files are left untouched and the new SQLite memory starts empty; do not delete .aira/chroma/ until the legacy data has been migrated or intentionally retired.
+Legacy .aira/chroma/ files are intentionally deleted by the approved fresh-memory reset before the legacy importer can run. The reset also creates the Chroma migration marker so erased vectors cannot be imported again.
 
 ## Local run
 

@@ -18,7 +18,7 @@ Create the prompt at `characters/prompts/luna.md`. The prompt defines that chara
 
 ## Hybrid behavior
 
-- A Gemini speaker scheduler may choose silence, Isla, one additional character, or Isla plus one additional character. A character is not required to answer every user message.
+- A Gemini speaker scheduler may choose silence or any combination of up to two characters. Rem and Bocchi can speak together without Isla; no character is required to answer every user message.
 - Mentioning a character by name or alias gives that character priority and requires a response.
 - Every selected character sees the shared Discord room history. When two characters are selected, the later speaker sees the first character's newly saved message and may reply to it.
 - Every character, including Isla, stores semantic and episodic memories in its own SQLite session namespace; another character cannot retrieve those memories.

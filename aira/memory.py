@@ -6,6 +6,7 @@ import math
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import ROOT, config
@@ -282,6 +283,63 @@ async def recall_episodes(vector: list[float], session_key: str, query_text: str
                      "created_at": row["created_at"], "score": score})
     rows.sort(key=lambda row: (row["score"], row["end_time"]), reverse=True)
     return rows[:config.episode_max_results]
+
+
+def reset_persistent_memory_once(runtime_dir=None) -> dict[str, int]:
+    """Erase all pre-v1 persistent conversation/memory state once on the next deployment."""
+    import shutil
+
+    runtime = Path(runtime_dir) if runtime_dir is not None else ROOT / ".aira"
+    runtime.mkdir(parents=True, exist_ok=True)
+    marker = runtime / "fresh-memory-v1"
+    if marker.exists():
+        return {"reset": False, "reason": "already_reset"}
+
+    tables = (
+        "messages", "semantic_memories", "episodic_memories", "user_profiles",
+        "character_relationships", "character_pair_relationships",
+        "turn_state_applied", "relationships",
+    )
+    counts = {}
+    store.db.execute("PRAGMA secure_delete=ON")
+    with store.transaction(immediate=True):
+        existing = {row["name"] for row in store.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        for table in tables:
+            if table in existing:
+                counts[table] = int(store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                store.db.execute(f"DELETE FROM {table}")
+            else:
+                counts[table] = 0
+
+    # Reclaim deleted SQLite pages and truncate any WAL containing old records.
+    store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    store.db.execute("VACUUM")
+
+    legacy_chroma = runtime / "chroma"
+    if legacy_chroma.is_symlink() or legacy_chroma.is_file():
+        legacy_chroma.unlink()
+    elif legacy_chroma.exists():
+        shutil.rmtree(legacy_chroma)
+    (runtime / "chroma-migration-v1").write_text("intentionally-cleared\n", encoding="utf-8")
+
+    thought_state = runtime / "gemini-thought-signatures.json"
+    if thought_state.exists():
+        thought_state.unlink()
+
+    temporary = marker.with_suffix(".tmp")
+    temporary.write_text("Aira fresh memory reset v1\n", encoding="utf-8")
+    try:
+        temporary.chmod(0o600)
+    except OSError:
+        pass
+    temporary.replace(marker)
+    try:
+        marker.chmod(0o600)
+    except OSError:
+        pass
+    return {"reset": True, **counts}
 
 
 async def migrate_memory_sessions() -> dict[str, int]:

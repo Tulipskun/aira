@@ -1,0 +1,10 @@
+{
+  "id": "rem",
+  "name": "Rem",
+  "aliases": [
+    "เรม",
+    "เรม Re Zero"
+  ],
+  "promptFile": "prompts/rem.md",
+  "enabled": true
+}

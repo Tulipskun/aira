@@ -11,6 +11,19 @@ from aira.characters import (
 
 
 class CharacterTests(unittest.TestCase):
+    def test_approved_anime_characters_are_registered_with_distinct_personalities(self):
+        from aira.characters import load_characters, load_character_prompt
+        characters = {item.id: item for item in load_characters()}
+        self.assertTrue({"isla", "rem", "bocchi"}.issubset(characters))
+        self.assertEqual(characters["rem"].name, "Rem")
+        self.assertEqual(characters["bocchi"].name, "Hitori Gotoh")
+        rem_prompt = load_character_prompt(characters["rem"])
+        bocchi_prompt = load_character_prompt(characters["bocchi"])
+        self.assertIn("เด็ดเดี่ยว", rem_prompt)
+        self.assertIn("ขี้อาย", bocchi_prompt)
+        self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ", rem_prompt)
+        self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ", bocchi_prompt)
+
     def test_prompt_path_must_stay_inside_repository(self):
         with self.assertRaises(ValueError):
             _validate({"id": "x", "name": "X", "promptFile": "../../etc/passwd"}, "x.json")
@@ -25,9 +38,13 @@ class CharacterTests(unittest.TestCase):
         selected = resolve_character_speakers(chars, mentioned, ["isla", "second"])
         self.assertEqual([x.id for x in selected], ["isla", "nova"])
         selected = resolve_character_speakers(chars, [], ["second", "nova"])
-        self.assertEqual([x.id for x in selected], ["second"])
+        self.assertEqual([x.id for x in selected], ["second", "nova"])
         selected = resolve_character_speakers(chars, [], ["nova", "isla"])
         self.assertEqual([x.id for x in selected], ["isla", "nova"])
+        rem = Character("rem", "Rem", ("Rem",), Path("rem.md"))
+        bocchi = Character("bocchi", "Hitori Gotoh", ("Bocchi",), Path("bocchi.md"))
+        selected = resolve_character_speakers([isla, rem, bocchi], [], ["rem", "bocchi"])
+        self.assertEqual([x.id for x in selected], ["rem", "bocchi"])
 
     def test_every_character_including_isla_has_an_isolated_memory_namespace(self):
         self.assertEqual(character_session_key("group:9", "isla"), "group:9:character:isla")

@@ -16,6 +16,11 @@ Episodes are built from recent SQLite turn summaries, filtered by the character 
 
 On startup, Aira attempts a one-time import from .aira/chroma/ when the old Chroma Python package is still available. Imported vectors retain their IDs and metadata; the legacy files are not deleted. If Chroma is not installed, migration is deferred and a warning is logged. Do not remove the legacy directory until migration is verified or its data is intentionally retired.
 
-Each character also stores directed relationship notes about other characters (A's view of B is independent from B's view of A). The shared room transcript remains visible to every character; only long-term semantic/episodic recall is isolated. On startup, legacy room-level memories are moved into Isla's namespace, while existing character-scoped memories are preserved.
+Each character also stores directed relationship notes about other characters (A's view of B is independent from B's view of A). The shared room transcript remains visible to every character; only long-term semantic/episodic recall is isolated. The approved v0.4.0 first-start reset clears all pre-release memories and relationship records rather than migrating them.
 
 The memory list and clear operations include semantic and episodic records. User-filtered deletion removes semantic records belonging to that user and episodes listing that user as a participant.
+
+
+## Fresh-memory release reset
+
+The approved fresh-memory release performs a one-time reset before any legacy Chroma import or memory migration. It clears messages, user profiles/facts, all character relationship records, turn-state idempotency rows, semantic memories and episodic memories; it also removes legacy Chroma files and Gemini thought-signature carry-over. Credentials, owner identity, API keys, model settings and channel configuration remain intact. The .aira/fresh-memory-v1 marker prevents later restarts from clearing memories created after deployment.
