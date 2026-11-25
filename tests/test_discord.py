@@ -136,7 +136,9 @@ class DiscordTests(unittest.TestCase):
                     self.assertIn("ดีใจ", embed.footer.text)
                     self.assertIn("attachment://smile.png", embed.image.url)
                     self.assertEqual(kwargs["files"][0].filename, "smile.png")
-                    self.assertEqual(kwargs["avatar_url"], "https://example.com/rem.png")
+                    # The avatar belongs to the webhook itself; per-message overrides made
+                    # Discord drop the avatar whenever its URL fetch failed.
+                    self.assertNotIn("avatar_url", kwargs)
                     self.assertNotIn("xp", embed.footer.text.lower())
                     for file in kwargs.get("files", []):
                         file.close()

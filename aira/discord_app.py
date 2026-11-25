@@ -637,8 +637,6 @@ class AiraBot(commands.Bot):
 
         webhook = await self._character_webhook(channel, character)
         send_kwargs = {"username": character.name, "wait": True, "embed": embed}
-        if character.avatar_url:
-            send_kwargs["avatar_url"] = character.avatar_url
         if isinstance(channel, discord.Thread):
             send_kwargs["thread"] = channel
         if files:
@@ -648,10 +646,10 @@ class AiraBot(commands.Bot):
         sent = await webhook.send(**send_kwargs)
         if sent is None:
             raise RuntimeError(f"Discord did not return the sent message for {character.id}")
-        returned_avatar = getattr(getattr(sent, "author", None), "avatar", None)
-        log.info("Discord webhook send succeeded: message=%s channel=%s character=%s sent_message=%s avatar_configured=%s avatar_applied=%s webhook=%s",
+        log.info("Discord webhook send succeeded: message=%s channel=%s character=%s sent_message=%s "
+                 "webhook_avatar=%s webhook=%s",
                  batch_id, last["channel_id"], character.id, sent.id,
-                 bool(character.avatar_url), bool(returned_avatar), getattr(webhook, "id", None))
+                 bool(getattr(webhook, "avatar", None)), getattr(webhook, "id", None))
         return sent
 
     async def _process_batch(self, messages: list[dict]):

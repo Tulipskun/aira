@@ -40,10 +40,10 @@ class FakeLive:
 
 
 class GeminiRequestTests(unittest.TestCase):
-    def test_live_request_uses_audio_transcription_and_preserves_memory_context_and_json_schema(self):
+    def test_live_request_uses_text_for_json_schema_and_preserves_memory_context(self):
         server_content = SimpleNamespace(
-            model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
-            output_transcription=SimpleNamespace(text='{"Isla":"Hello"}'),
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(text='{"Isla":"Hello"}')]),
+            output_transcription=None,
             turn_complete=True,
         )
         live = FakeLive([SimpleNamespace(server_content=server_content)])
@@ -60,8 +60,8 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertEqual(output, '{"Isla":"Hello"}')
         request = live.calls[0]
         self.assertEqual(request["model"], "gemini-3.8-live")
-        self.assertEqual(request["config"].response_modalities, ["AUDIO"])
-        self.assertIsInstance(request["config"].output_audio_transcription, gemini.types.AudioTranscriptionConfig)
+        self.assertEqual(request["config"].response_modalities, ["TEXT"])
+        self.assertIsNone(request["config"].output_audio_transcription)
         self.assertTrue(request["config"].system_instruction.startswith("system"))
         self.assertIsNone(request["config"].generation_config)
         compression = request["config"].context_window_compression
