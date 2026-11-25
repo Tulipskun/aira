@@ -226,7 +226,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             selected = await pipeline.select_characters({
                 "text": "ทุกคนทักทายโอริกามิกันหน่อย", "session_key": "group:all",
             })
-        self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
+        # Room-wide requests follow the room order, not the model's list order.
+        self.assertEqual([item.id for item in selected], [item.id for item in chars])
         self.assertIn("เลือกได้ 0-4 คน", captured["prompt"])
 
     async def test_a_call_to_the_whole_room_wakes_every_character(self):
@@ -245,7 +246,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             selected = await pipeline.select_characters({
                 "text": "ทุกคนคิดว่ายังไงบ้าง", "session_key": "group:room4",
             })
-        self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
+        self.assertEqual([item.id for item in selected], [item.id for item in chars])
 
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({
