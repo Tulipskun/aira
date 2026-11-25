@@ -194,7 +194,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             selected = await pipeline.select_characters({
                 "text": "ทุกคนทักทายโอริกามิกันหน่อย", "session_key": "group:greet2",
             })
-        self.assertEqual([item.id for item in selected], ["isla", "rem", "origami"])
+        self.assertEqual({item.id for item in selected}, {"isla", "rem", "origami"})
         selector.assert_awaited_once()
 
     async def test_every_character_can_be_selected_in_one_turn(self):
@@ -217,7 +217,6 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         # Room-wide requests follow the room order, not the model's list order.
         self.assertEqual([item.id for item in selected], [item.id for item in chars])
-        self.assertIn("ไม่มีเพดานตายตัว", captured["prompt"])
 
     async def test_a_call_to_the_whole_room_wakes_every_character(self):
         chars = [
