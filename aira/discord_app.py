@@ -274,7 +274,7 @@ class IslaCommands(app_commands.Group):
         response_channel = get_response_channel_id()
         if response_channel and channel_id != response_channel:
             lines.append(f"หมายเหตุ: Aira รับข้อความเฉพาะ <#{response_channel}>")
-        await interaction.response.send_message("\\n".join(lines), ephemeral=True)
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="leaderboard", description="ดู 10 อันดับผู้ใช้ที่มี XP สูงสุด")
     async def leaderboard(self, interaction: discord.Interaction):
