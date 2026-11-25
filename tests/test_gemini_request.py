@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from aira import gemini
 from aira.token_budget import SlidingWindowTokenBudget
@@ -179,6 +179,52 @@ class GeminiRequestTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 asyncio.run(gemini.generate_character_reply("system", "context"))
+
+    def test_text_model_is_used_when_the_api_reports_generate_content(self):
+        captured = {}
+
+        class FakeModels:
+            async def get(self, model):
+                return SimpleNamespace(supported_actions=["generateContent"])
+
+            async def generate_content(self, model, contents, config):
+                captured["model"] = model
+                captured["config"] = config
+                captured["prompt"] = contents[0].text
+                return SimpleNamespace(text='{"Isla":"Hello"}')
+
+        fake_client = SimpleNamespace(aio=SimpleNamespace(models=FakeModels()))
+        gemini._TEXT_MODEL_CACHE.clear()
+        with (
+            patch.object(gemini, "_client", return_value=fake_client),
+            patch.object(gemini.config, "gemini1_model", "gemini-3.8-flash"),
+        ):
+            output = asyncio.run(gemini.generate_text("gemini1", "hello", "system",
+                                                      schema={"type": "object"}))
+        self.assertEqual(output, '{"Isla":"Hello"}')
+        self.assertEqual(captured["model"], "gemini-3.8-flash")
+        self.assertEqual(captured["config"].response_mime_type, "application/json")
+
+    def test_audio_only_model_still_uses_the_live_path(self):
+        live = FakeLive([SimpleNamespace(server_content=SimpleNamespace(
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
+            output_transcription=SimpleNamespace(text="hello"),
+            turn_complete=True,
+        ))])
+        fake_client = SimpleNamespace(
+            aio=SimpleNamespace(live=live, models=SimpleNamespace(
+                get=AsyncMock(return_value=SimpleNamespace(supported_actions=["bidiGenerateContent"]))))
+        )
+        gemini._TEXT_MODEL_CACHE.clear()
+        with (
+            patch.object(gemini, "_live_client", return_value=fake_client),
+            patch.object(gemini, "_client", return_value=fake_client),
+            patch.object(gemini, "_model_input_limit", return_value=131072),
+            patch.object(gemini, "live_token_budget", SlidingWindowTokenBudget(limit=1_000_000)),
+        ):
+            output = asyncio.run(gemini.generate_text("gemini1", "hello", "system"))
+        self.assertEqual(output, "hello")
+        self.assertEqual(len(live.calls), 1)
 
     def test_embedding_2_uses_query_and_document_instruction_prefixes(self):
         captured = []

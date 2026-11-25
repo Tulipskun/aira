@@ -459,10 +459,68 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
     raise RuntimeError(f"All API keys rate limited for {stage}")
 
 
+_TEXT_MODEL_CACHE: dict[str, bool] = {}
+
+
+def _stage_model(stage: str) -> str:
+    return config.gemini2_model if stage == "gemini2" else config.gemini1_model
+
+
+async def _supports_generate_content(stage: str) -> bool:
+    """Ask the API once whether the configured model can answer with exact text."""
+    model = _stage_model(stage)
+    cached = _TEXT_MODEL_CACHE.get(model)
+    if cached is not None:
+        return cached
+    supports = False
+    try:
+        info = await _client(stage).aio.models.get(model=model)
+        supports = "generateContent" in (getattr(info, "supported_actions", None) or [])
+    except Exception:
+        log.exception("Could not read the supported actions of %s; assuming audio only", model)
+    _TEXT_MODEL_CACHE[model] = supports
+    return supports
+
+
+async def _create_text_response(stage: str, prompt: str, system_instruction: str,
+                                media_parts: list[dict] | None = None,
+                                schema: dict | None = None, fast: bool = False) -> str:
+    """Generate with a text model: the wording is exact instead of being transcribed from speech."""
+    client = _client(stage)
+    model = _stage_model(stage)
+    parts = [types.Part.from_text(text=prompt), *_live_parts(media_parts or [])]
+    request = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        response_mime_type="application/json" if schema else None,
+        response_schema=schema,
+        max_output_tokens=DECISION_MAX_OUTPUT_TOKENS if fast else None,
+    )
+    for attempt in range(3):
+        try:
+            result = await client.aio.models.generate_content(model=model, contents=parts, config=request)
+            text = (getattr(result, "text", None) or "").strip()
+            if text:
+                return text
+            raise RuntimeError(f"{model} returned an empty text response")
+        except Exception as exc:
+            status = _status(exc)
+            if status and 500 <= status <= 599 and attempt < 2:
+                await asyncio.sleep(0.3 * (2 ** attempt) + random.random() * 0.1)
+                continue
+            raise
+    raise RuntimeError(f"{model} kept returning server errors")
+
+
 async def generate_text(stage: str, prompt: str, system_instruction: str,
                         media_parts: list[dict] | None = None, schema: dict | None = None,
                         debug_context: dict | None = None, fast: bool = False) -> str:
-    """Run one live turn. ``fast`` caps the answer for short structured decisions."""
+    """Run one turn. Text models give exact wording; audio-only models are transcribed.
+
+    ``fast`` caps the answer for short structured decisions.
+    """
+    if await _supports_generate_content(stage):
+        return await _create_text_response(stage, prompt, system_instruction,
+                                           media_parts=media_parts, schema=schema, fast=fast)
     parts = [{"type": "text", "text": prompt}, *(media_parts or [])]
     return await _create_live_response(
         stage, parts, system_instruction, response_schema=schema,
