@@ -68,7 +68,6 @@ def main() -> int:
                 "GEMINI_API_KEY is not set; add it through the Aira Control Panel after the bot starts"
             )
         config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        config.chroma_path.mkdir(parents=True, exist_ok=True)
         logging.getLogger("aira").info(
             "Starting Aira Python %s | Python %s | SQLite %s",
             __import__("aira").__version__, sys.version.split()[0], config.sqlite_path,
