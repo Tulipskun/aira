@@ -270,9 +270,9 @@ class AiraBot(commands.Bot):
         self.started_at = time.time()
         self.health_server = None
         self._closed = False
+        # AiraBot uses commands.Bot (single gateway connection), not AutoShardedBot.
         self.liveness = Liveness(
-            lambda: ({key: shard.is_closed() is False for key, shard in self.shards.items()}
-                     if self.shards else {0: self.is_ready()}),
+            lambda: {0: self.is_ready()},
             get_response_channel_id,
         )
 

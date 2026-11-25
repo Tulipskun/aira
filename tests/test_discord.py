@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import patch
 
 import discord
 
@@ -12,6 +13,11 @@ class DiscordTests(unittest.TestCase):
         try:
             self.assertEqual([command.name for command in bot.tree.get_commands()], ["aira"])
             self.assertEqual(len(PanelView(bot).children), 5)
+            self.assertEqual(bot.liveness.state()["shards"], {0: False})
+            self.assertFalse(bot.liveness.state()["ok"])
+            with patch.object(bot, "is_ready", return_value=True):
+                self.assertEqual(bot.liveness.state()["shards"], {0: True})
+                self.assertTrue(bot.liveness.state()["ok"])
         finally:
             asyncio.run(bot.close())
 
