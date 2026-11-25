@@ -1,133 +1,51 @@
 # Aira
 
-Discord AI character bot powered by Gemini, SQLite and Chroma. Runtime: Python 3.13. Isla is the default character; additional characters can join the same bot and Discord response channel.
+Discord AI character bot powered by Gemini and SQLite. Runtime: Python 3.13.
 
 ## Features
 
-- One Discord bot with Isla and multiple configurable characters. Isla always replies first; Gemini can invite at most one additional character, and direct character mentions take priority.
-- Gemini 1 generates dialogue and summaries. Gemini 2 analyzes relationship changes, facts, nicknames, memory and Isla's expression image.
-- Per-user relationship state, XP, accepted flirt count, gated proposals, facts and nicknames. Each Discord channel has one shared conversation context; users in the same channel share history and memory while personal profiles remain separate.
-- SQLite conversation history and atomic, idempotent relationship-state updates.
-- Chroma semantic and episodic memory, separated by conversation session and character.
+- One Discord bot with Isla and multiple configurable characters.
+- Gemini 1 generates dialogue; Gemini 2 analyzes relationship state, facts and memory.
+- Per-user relationship state and per-channel shared conversation context.
+- SQLite conversation history, structured user state, semantic memory and episodic memory.
 - Owner-only Discord Control Panel for Gemini keys/models, response channel and character prompts.
-- Attachment understanding for images, audio, video, PDF and text; images are resized before being sent to Gemini.
-- Debounced message batching, typing indicator, RPS interactions, slash commands and a loopback health endpoint.
-- Admin CLI for reviewing and selectively deleting history and memories. Destructive commands are dry-run unless `--yes` is supplied.
+- Attachment understanding for images, audio, video, PDF and text.
 
-## Pterodactyl deployment
+## Deployment
 
-Use a **Python 3.13** egg/image and deploy the public Git repository:
+Use a Python 3.13 egg/image and deploy https://github.com/Tulipskun/aira on main. Use the host's configured startup command to install requirements.txt and run main.py in the foreground.
 
-| Setting | Value |
-| --- | --- |
-| Git repository | `https://github.com/Tulipskun/aira` |
-| Branch | `main` |
-| User upload | `0` |
-| Auto update | `1` |
-| Startup command | `python -m pip install -r requirements.txt && python main.py` |
+No environment variables or .env file are required. On first start, paste the Discord bot token and Discord owner user ID into Console. Aira validates and saves them under .aira/discord.token and .aira/owner.id; later starts reuse them. Keep Console history private because the hosting panel may retain pasted input.
 
-Set these environment variables in the panel:
+After login, run /aira to open the private owner-only panel. Configure Gemini API keys, model names, response channel and characters there. Panel settings are stored privately in .aira/settings.json.
 
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `DISCORD` | No (legacy) | Optional migration source. Without it, enter the bot token in the server Console on first start; Aira saves it in `.aira/discord.token`. |
-| `DISCORD_OWNER_ID` | Recommended | Optional migration source. If absent, enter the owner user ID in Console on first start; Aira saves it in `.aira/owner.id`. |
-| `GEMINI_API_KEY` | No | Optional shared comma-separated Gemini API key pool. Can also be configured after startup through the owner-only Discord Control Panel. |
-| `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, `GEMINI_EMBEDDING2_API_KEYS` | No | Optional stage-specific key pools; fall back to `GEMINI_API_KEY`. |
-| `DISCORD_RESPONSE_CHANNEL_ID` | No | Optional initial response channel. The panel can select/change it later. |
-| `GEMINI1_MODEL` | No | Gemini dialogue model; defaults to `gemini-3.1-flash-lite`. |
-| `GEMINI2_MODEL` | No | Gemini analysis model; defaults to `gemini-3.5-flash-lite`. |
-| `GEMINI_EMBEDDING2_MODEL` | No | Embedding model; defaults to `gemini-embedding-2`. |
-| `CHROMA_URL` | No | Optional remote Chroma server. Leave empty to use embedded persistent Chroma in `.aira/chroma`. |
-| `SQLITE_PATH` | No | Defaults to `.aira/aira.db`. |
-| `ISLA_TIMEZONE` | No | Defaults to `Asia/Bangkok`. |
+Invite the bot with bot and applications.commands OAuth scopes. Grant View Channels, Send Messages, Read Message History, Embed Links and Attach Files. Enable Message Content Intent in the Discord Developer Portal.
 
-The startup command installs the pinned Python requirements and runs the bot in the foreground. Logs are written to the panel console and to the private rotating file `.aira/aira.log`. The process handles SIGTERM and SIGINT and drains queued turns before exiting.
+## Persistent data
 
-**Discord setup:** invite the application with the `bot` and `applications.commands` OAuth scopes. Grant View Channels, Send Messages, Read Message History, Embed Links and Attach Files in the response channel. Enable the privileged **Message Content Intent** in the Discord Developer Portal.
+Keep .aira/ persistent across restarts and code updates. It contains aira.db, credentials, API keys, model settings, selected channel and key state. Do not delete or replace it during deployment.
 
-On first start, enter the Discord bot token and your Discord user ID in the server Console when prompted. Aira verifies and saves the token at `.aira/discord.token` and saves the owner ID at `.aira/owner.id`; later starts reuse both. Keep the server Console history private because panel behavior determines whether pasted input is echoed or retained. After login, use `/aira` to open a private admin panel. Only the exact Discord user ID entered in Console can open or use it. Add a Gemini key in the panel before asking Aira to respond if `GEMINI_API_KEY` was not supplied at deployment.
+Aira stores conversation history, semantic embeddings and episodic embeddings in the same SQLite database at .aira/aira.db. Semantic search uses cosine similarity in Python; no separate vector database, Chroma server, native extension, Node.js or Bun runtime is required.
 
-### Persistent data
-
-Keep the Pterodactyl server's filesystem persistent across restarts and redeployments. Aira writes its SQLite database, Chroma data, model settings, selected channel and API-key state under `.aira/`. This directory is excluded from Git. When moving an existing installation, preserve/copy its existing `.aira/` directory; deploying the source code alone does not transfer private data from another server. Do not replace an existing `.aira/` directory with an empty one during an update.
-
-Aira uses embedded Chroma by default, and the pinned Python FFmpeg package supplies GIF-to-video conversion without requiring an OS-level FFmpeg installation. No Node.js runtime, Bun runtime, shell installer or separate Chroma container is required. To use an external Chroma server, set `CHROMA_URL` to its URL. The optional `docker-compose.yml` starts a local Chroma service; when using it, set `CHROMA_URL=http://127.0.0.1:8000`.
+If an older installation has .aira/chroma/, the new version attempts a one-time import when the Chroma package is still available in the existing runtime. Imported records are written to SQLite and the old Chroma files are retained. If Chroma is unavailable, the old files are left untouched and the new SQLite memory starts empty; do not delete .aira/chroma/ until the legacy data has been migrated or intentionally retired.
 
 ## Local run
 
-Python 3.13 is recommended.
+    python -m venv .venv
+    . .venv/bin/activate
+    python -m pip install -r requirements.txt
+    python main.py
 
-```bash
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
-# Start and paste the Discord bot token into the console when prompted:
-python main.py
-```
+On first launch, enter the Discord bot token and owner ID in Console. Add Gemini API keys in /aira after the bot connects.
 
-The bot runs in the foreground. On first launch, enter the Discord bot token in the console; it is validated and saved under `.aira/` for subsequent launches. The legacy `DISCORD` environment variable is also supported and migrated when present. Gemini credentials can be supplied through `GEMINI_API_KEY` or added through the Discord Control Panel. On startup, Aira performs a bounded DNS/HTTPS warm-up before connecting to Discord.
+## Discord command
 
-## Discord commands
+- /aira — open the private owner-only admin panel.
 
-- `/aira` — open the private owner-only admin panel.
-
-After a slash-command schema change, the next startup replaces the global slash-command list with exactly `/aira`; all other global slash commands are removed. The schema version is stored under `.aira/` to avoid syncing on every restart. Manual registration remains available with `python -m aira.register_commands --dry-run` followed by `python -m aira.register_commands`.
-
-Unknown prefix commands are ignored. Normal messages outside the configured response channel are ignored. Bot-authored messages are never fed back into the pipeline.
-
-## Characters
-
-Each `characters/*.json` file registers a character. Prompts are Markdown files within the repository. Isla remains enabled and is the default character. Character definitions are loaded when a turn is processed, so file-based changes apply without a restart. The Discord Control Panel can also add/edit character profiles and prompts.
-
-Example:
-
-```json
-{
-  "id": "nova",
-  "name": "Nova",
-  "aliases": ["โนวา"],
-  "promptFile": "prompts/nova.md",
-  "enabled": true
-}
-```
-
-Additional characters use a separate Chroma memory namespace and separate relationship record per user. They share the current Discord conversation history with Isla.
+After a slash-command schema change, the next startup replaces the global slash-command list with exactly /aira. Unknown prefix commands are ignored.
 
 ## Data and admin commands
 
-SQLite is authoritative for structured user state and conversation history. Chroma holds semantic and episodic vectors. The bot stores UTC timestamps and renders them in the configured timezone.
+Inspect history and memory with aira.cli. Destructive commands are dry-run by default; add --yes to execute.
 
-Inspect history for a channel (replace CHANNEL_ID with its Discord ID):
-
-```bash
-python -m aira.cli history list --session group:CHANNEL_ID
-python -m aira.cli memory list --session group:CHANNEL_ID
-python -m aira.cli memory search "กาแฟ" --session group:CHANNEL_ID
-```
-
-Legacy `user:DISCORD_USER_ID` sessions remain available for inspecting older personal history.
-
-Destructive commands are dry-run by default. Add `--yes` to execute:
-
-```bash
-python -m aira.cli history clear --session group:CHANNEL_ID --yes
-python -m aira.cli memory clear --user DISCORD_USER_ID --yes
-python -m aira.cli history clear --all --yes
-python -m aira.cli memory clear --all --yes
-```
-
-Use these commands only when the bot is stopped or when you understand that deleted records cannot be recovered. No automatic backup is created by the admin CLI.
-
-## Development and tests
-
-```bash
-python -m pip install -r requirements.txt
-python -m compileall -q aira tests main.py
-python -m unittest discover -s tests -v
-```
-
-See `docs/` for the architecture, Discord, Gemini, memory, pipeline, scheduler and SQLite details. See `SECURITY.md` for responsible vulnerability reporting.
-
-Aira is licensed under AGPL-3.0-only. Network users of modified versions must be offered the corresponding source under the same license.
+Aira is licensed under AGPL-3.0-only.
