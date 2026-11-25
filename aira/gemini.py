@@ -538,15 +538,42 @@ async def embed(text: str, task: str = "query") -> list[float]:
 
 
 
+PARTIAL_REPLY = re.compile(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)')
+
+
+def _salvage_reply(raw: str) -> str:
+    """Recover the spoken sentence from an answer the transcription cut short."""
+    match = PARTIAL_REPLY.search(raw or "")
+    if not match:
+        return ""
+    try:
+        return json.loads('"' + match.group(1) + '"').strip()
+    except ValueError:  # the cut left an escape sequence unfinished
+        return match.group(1).strip()
+
+
+def _salvage_character_reply(raw: str) -> dict | None:
+    """Keep the reply text when the audio transcription stopped inside the JSON object."""
+    reply = _salvage_reply(raw)
+    if not reply:
+        return None
+    log.warning("Salvaged a truncated character answer: chars=%s raw_chars=%s", len(reply), len(raw or ""))
+    return {"reply": reply, "summary": "", "memory": "", "relationship": "",
+            "character_relationships": [], "next_speaker_id": "", "mood": "",
+            "color": None, "select_image": "none"}
+
+
 async def generate_json(stage: str, prompt: str, system_instruction: str,
                         media_parts: list[dict] | None = None, schema: dict | None = None,
-                        debug_context: dict | None = None, attempts: int = 2) -> dict | None:
+                        debug_context: dict | None = None, attempts: int = 2,
+                        salvage=None) -> dict | None:
     """Return a parsed JSON answer, retrying the lossy audio transcription channel.
 
     The live model answers with audio and the JSON only arrives as its transcription, so an
-    answer can be cut off mid-object. A second request usually completes the same decision,
-    and callers keep their own policy when every attempt fails.
+    answer can be cut off mid-object. A second request usually completes the same decision;
+    callers that can live with partial data pass ``salvage`` to keep what did arrive.
     """
+    raw = ""
     for attempt in range(1, attempts + 1):
         raw = await generate_text(stage, prompt, system_instruction, media_parts=media_parts,
                                   schema=schema, debug_context=debug_context)
@@ -555,7 +582,7 @@ async def generate_json(stage: str, prompt: str, system_instruction: str,
             return parsed
         log.warning("Structured Gemini answer was not parseable JSON: stage=%s attempt=%s/%s chars=%s",
                     stage, attempt, attempts, len(raw))
-    return None
+    return salvage(raw) if salvage is not None else None
 
 
 async def generate_character_reply(prompt: str, context: str,
@@ -575,7 +602,8 @@ async def generate_character_reply(prompt: str, context: str,
     }, "required": ["reply", "summary", "memory", "relationship", "character_relationships",
                    "next_speaker_id", "mood", "color", "select_image"]}
     parsed = await generate_json("gemini1", context, prompt, media_parts=media_parts,
-                                 schema=schema, debug_context=debug_context)
+                                 schema=schema, debug_context=debug_context,
+                                 salvage=_salvage_character_reply)
     if not parsed:
         # Never expose malformed model output (including fenced/raw JSON) as a Discord reply.
         log.error("Gemini character response was not valid JSON; refusing to publish raw output")

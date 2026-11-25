@@ -105,6 +105,26 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertEqual(parsed, {"Isla": "Hello"})
         self.assertEqual(len(live.calls), 2)
 
+    def test_truncated_character_answer_keeps_the_spoken_reply(self):
+        truncated = '{"reply": "สวัสดีค่ะ ยินดีต้อนรับนะคะ", "summary": "ต้'
+        server_content = SimpleNamespace(
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
+            output_transcription=SimpleNamespace(text=truncated),
+            turn_complete=True,
+        )
+        live = FakeLive([SimpleNamespace(server_content=server_content)])
+        fake_client = SimpleNamespace(aio=SimpleNamespace(live=live))
+        with (
+            patch.object(gemini, "_live_client", return_value=fake_client),
+            patch.object(gemini, "_model_input_limit", return_value=131072),
+            patch.object(gemini, "live_token_budget", SlidingWindowTokenBudget(limit=1_000_000)),
+        ):
+            output = asyncio.run(gemini.generate_character_reply("system", "context"))
+        self.assertEqual(output["reply"], "สวัสดีค่ะ ยินดีต้อนรับนะคะ")
+        self.assertEqual(output["mood"], "")
+        self.assertIsNone(output["color"])
+        self.assertEqual(len(live.calls), 2)
+
     def test_embedding_2_uses_query_and_document_instruction_prefixes(self):
         captured = []
         class Models:
