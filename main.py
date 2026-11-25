@@ -36,8 +36,8 @@ def main() -> int:
     try:
         configure_logging()
         from aira.discord_auth import get_discord_owner_id, get_discord_token
-        os.environ["DISCORD"] = get_discord_token()
-        os.environ["DISCORD_OWNER_ID"] = get_discord_owner_id()
+        get_discord_token()
+        get_discord_owner_id()
         from aira.config import config
 
         # Replace the global command schema once per version.
