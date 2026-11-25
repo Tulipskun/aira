@@ -24,18 +24,8 @@ ISLA_COMMAND = {
     "options": [
         {
             "type": 1,
-            "name": "join-group",
-            "description": "เข้าร่วม session รวมของแชแนลนี้ (แชร์ context กับสมาชิกคนอื่นที่เข้าร่วม)",
-        },
-        {
-            "type": 1,
-            "name": "leave-group",
-            "description": "ออกจาก session รวม กลับไปใช้ session ส่วนตัว",
-        },
-        {
-            "type": 1,
             "name": "status",
-            "description": "ดูสถานะ session ปัจจุบัน และรายชื่อคนที่เข้าร่วมในแชแนลนี้",
+            "description": "ดูสถานะบทสนทนาของห้องนี้",
         },
         {
             "type": 1,
