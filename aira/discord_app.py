@@ -348,19 +348,6 @@ class AiraBot(commands.Bot):
         text = message.clean_content.strip()
         if text.startswith("!"):
             self.liveness.note("command")
-            name = text[1:].strip().split(maxsplit=1)[0].lower() if text[1:].strip() else ""
-            if name in VALID_PREFIX_COMMANDS:
-                if not self.is_owner(message.author.id):
-                    log.warning("Owner command ignored: %s", name)
-                    return
-                if name == "islacomehere":
-                    set_response_channel_id(str(message.channel.id))
-                    await message.reply("Locked to this channel.")
-                else:
-                    set_response_channel_id(None)
-                    await message.reply("Channel lock removed.")
-                return
-            # Never feed arbitrary prefix commands into the character pipeline.
             return
         response_channel = get_response_channel_id()
         if not response_channel or str(message.channel.id) != response_channel:
