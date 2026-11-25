@@ -22,6 +22,12 @@ class RegisterCommandTests(unittest.TestCase):
         self.assertEqual(sum(command["name"] == "isla" for command in result), 1)
         self.assertIn("unrelated", [command["name"] for command in result])
 
+    def test_only_channel_status_and_leaderboard_are_registered(self):
+        self.assertEqual(
+            [command["name"] for command in ISLA_COMMAND["options"]],
+            ["status", "leaderboard"],
+        )
+
     def test_all_slash_command_descriptions_meet_discord_limit(self):
         self.assertLessEqual(len(ISLA_COMMAND["description"]), 100)
         for command in ISLA_COMMAND["options"]:
