@@ -206,6 +206,29 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.id for item in selected], ["isla", "rem", "origami"])
         selector.assert_awaited_once()
 
+    async def test_every_character_can_be_selected_in_one_turn(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
+            Character("origami", "Origami Tobiichi", ("Origami",), Path("origami.md")),
+        ]
+        captured = {}
+
+        async def fake_generate(stage, prompt, system, **kwargs):
+            captured["prompt"] = prompt
+            return {"addressed_to": "room",
+                    "selected_character_ids": ["bocchi", "isla", "origami", "rem"],
+                    "reason": "ผู้ใช้ขอให้ทั้งห้องทักทาย"}
+
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(side_effect=fake_generate)):
+            selected = await pipeline.select_characters({
+                "text": "ทุกคนทักทายโอริกามิกันหน่อย", "session_key": "group:all",
+            })
+        self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
+        self.assertIn("เลือกได้ 0-4 คน", captured["prompt"])
+
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({
             "user_id": "alice", "user": "Alice", "text": "Hi Isla",

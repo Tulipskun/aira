@@ -183,7 +183,7 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
     history_lines, unanswered, last_speaker = _transcript_with_replies(history[-16:], names)
     catalog = [{"id": item.id, "name": item.name, "aliases": list(item.aliases)} for item in characters]
     media_summary = getattr(prepared_media, "summary", "") or message.get("media_summary", "")
-    max_speakers = min(len(characters), MAX_SPEAKERS_PER_TURN) if broadcast else min(3, len(characters))
+    max_speakers = min(len(characters), MAX_SPEAKERS_PER_TURN)
     attended = (
         "ผู้ใช้กำลังพูดกับทั้งห้องหรือเรียกหลายคนในข้อความเดียว ให้เลือกทุกคนที่ถูกเรียกหรือเกี่ยวข้องกันจริง "
         f"ได้สูงสุด {max_speakers} คน เพื่อให้แต่ละคนได้ตอบในเทิร์นนี้"
@@ -202,7 +202,9 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         "อ่านว่าข้อความล่าสุดกำลัง 'พูดกับ' ใคร หรือแค่ 'พูดถึง' ใคร: ถ้าเรียก ถาม แซว หรือสั่งคนนั้นตรง ๆ ให้เลือกคนนั้น "
         "แต่ถ้าเพียงเอ่ยถึงเขาเป็นบุคคลที่สาม (เล่าเรื่อง พูดกับคนอื่นอยู่ หรือพูดลอย ๆ) อย่าเลือกเขาเพียงเพราะมีชื่ออยู่",
         "ดูประวัติว่าใครกำลังคุยกับใครอยู่ รวมถึงสิ่งที่ตัวละครพูดล่าสุดและคนที่มันตอบ แล้วเลือกคนที่ต่อบทสนทนานั้นได้จริง",
-        "ห้ามเลือก Isla เป็นค่าเริ่มต้น ห้ามเลือกทุกคนเพื่อให้ดูคึกคัก และอย่าเลือกคนเดิมซ้ำเพียงเพราะเป็นผู้ตอบก่อนหน้า",
+        "ห้ามเลือก Isla เป็นค่าเริ่มต้น และอย่าเลือกคนเดิมซ้ำเพียงเพราะเป็นผู้ตอบก่อนหน้า",
+        f"ไม่ต้องเลือกครบทุกคนเพียงเพื่อให้ห้องดูคึกคัก แต่ถ้าผู้ใช้ขอให้ทั้งห้องตอบหรือทักทายกันจริง ๆ "
+        f"ให้เลือกได้ถึง {max_speakers} คน",
         attended,
         f"เลือกได้ 0-{max_speakers} คน โดยเลือกคนที่ต่อยอดบทสนทนาเดิมได้ดีที่สุดก่อน",
         "รายชื่อตัวละคร: " + __import__('json').dumps(catalog, ensure_ascii=False),
@@ -251,9 +253,9 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         if selected:
             log.info("Character selector kept the room silent; continuing with %s",
                      [item.id for item in selected])
-    log.info("Character selector decision: selected=%s addressed=%s mentioned_only=%s "
+    log.info("Character selector decision: selected=%s max=%s addressed=%s mentioned_only=%s "
              "name_hits=%s ms=%s reason=%s",
-             [item.id for item in selected], addressed or "-",
+             [item.id for item in selected], max_speakers, addressed or "-",
              [str(value) for value in (parsed.get("mentioned_only") or []) if isinstance(value, str)],
              [item.id for item in mentioned], decision_ms, str(parsed.get("reason") or "")[:200])
     return selected
