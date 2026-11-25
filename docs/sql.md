@@ -6,7 +6,7 @@ SQLite is the source of truth for conversation history and structured user state
 
 - `messages`: user/model messages, timestamps, file names, summaries and session keys.
 - `user_profiles`: display names, nicknames, relationship bond, XP, flirt count, pending approvals and confirmed facts.
-- `group_sessions`: legacy membership data retained for backward compatibility; current runtime no longer uses join/leave membership.
+- Older databases may contain `group_sessions` from the former opt-in model; the current runtime does not read or write this legacy table.
 - `character_relationships`: independent relationship description per non-Isla character and user.
 - `turn_state_applied`: idempotency keys for state updates.
 
