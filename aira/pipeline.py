@@ -144,7 +144,7 @@ def _silence_breaker(characters: list[Character], text: str, rows: list[dict], t
     return [by_id[last_speaker]] if last_speaker in by_id else []
 
 
-async def select_characters(message: dict, prepared_media=None) -> list[Character]:
+async def select_characters(message: dict, prepared_media=None, superseded=None) -> list[Character]:
     """Choose room participants before generation; never assign Isla as an implicit default."""
     characters = load_characters()
     mentioned = find_mentioned_characters(str(message.get("text") or ""), characters)
@@ -189,6 +189,7 @@ async def select_characters(message: dict, prepared_media=None) -> list[Characte
         debug_context={"user_id": str(message.get("user_id") or ""),
                        "user_name": str(message.get("user") or ""),
                        "character_id": "orchestrator", "turn_id": str(uuid.uuid4())},
+        retry_guard=superseded,
     )
     if not parsed or not isinstance(parsed.get("selected_character_ids"), list):
         log.error("Character selector returned invalid structured output; no character will be defaulted")
@@ -209,7 +210,7 @@ async def select_characters(message: dict, prepared_media=None) -> list[Characte
 
 
 async def process_character_reply(message: dict, character: Character, prepared_media=None,
-                                  input_saved: bool = False) -> dict:
+                                  input_saved: bool = False, superseded=None) -> dict:
     """Generate every character turn through one shared memory/relationship/metadata pipeline."""
     started = datetime.now(timezone.utc)
     base_session = str(message["session_key"])
@@ -351,6 +352,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
         raw_prompt, "\n".join(context_lines), media.parts if not character_turn else [],
         debug_context={"user_id": user_id, "user_name": owner_name,
                        "character_id": character.id, "turn_id": str(uuid.uuid4())},
+        retry_guard=superseded,
     )
     text = result["reply"]
     timestamp = str(message.get("timestamp") or utc_now())

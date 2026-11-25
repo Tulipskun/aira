@@ -105,6 +105,26 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertEqual(parsed, {"Isla": "Hello"})
         self.assertEqual(len(live.calls), 2)
 
+    def test_generate_json_skips_the_retry_when_a_newer_message_is_waiting(self):
+        schema = {"type": "object", "properties": {"Isla": {"type": "string"}}}
+        server_content = SimpleNamespace(
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
+            output_transcription=SimpleNamespace(text='{"Isla": "Hel'),
+            turn_complete=True,
+        )
+        live = FakeLive([SimpleNamespace(server_content=server_content)])
+        fake_client = SimpleNamespace(aio=SimpleNamespace(live=live))
+        with (
+            patch.object(gemini, "_live_client", return_value=fake_client),
+            patch.object(gemini, "_model_input_limit", return_value=131072),
+            patch.object(gemini, "live_token_budget", SlidingWindowTokenBudget(limit=1_000_000)),
+        ):
+            parsed = asyncio.run(gemini.generate_json(
+                "gemini1", "hello", "system", schema=schema, retry_guard=lambda: True))
+        self.assertIsNone(parsed)
+        # The queued message owns the next turn, so the stale attempt is not repeated.
+        self.assertEqual(len(live.calls), 1)
+
     def test_truncated_character_answer_keeps_the_spoken_reply(self):
         truncated = '{"reply": "สวัสดีค่ะ ยินดีต้อนรับนะคะ", "summary": "ต้'
         server_content = SimpleNamespace(

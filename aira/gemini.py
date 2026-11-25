@@ -566,12 +566,15 @@ def _salvage_character_reply(raw: str) -> dict | None:
 async def generate_json(stage: str, prompt: str, system_instruction: str,
                         media_parts: list[dict] | None = None, schema: dict | None = None,
                         debug_context: dict | None = None, attempts: int = 2,
-                        salvage=None) -> dict | None:
+                        salvage=None, retry_guard=None) -> dict | None:
     """Return a parsed JSON answer, retrying the lossy audio transcription channel.
 
     The live model answers with audio and the JSON only arrives as its transcription, so an
     answer can be cut off mid-object. A second request usually completes the same decision;
     callers that can live with partial data pass ``salvage`` to keep what did arrive.
+
+    ``retry_guard`` is asked before the second request; when the room moved on while the
+    first answer was generated, asking again would only produce a duplicate turn.
     """
     raw = ""
     for attempt in range(1, attempts + 1):
@@ -582,12 +585,16 @@ async def generate_json(stage: str, prompt: str, system_instruction: str,
             return parsed
         log.warning("Structured Gemini answer was not parseable JSON: stage=%s attempt=%s/%s chars=%s",
                     stage, attempt, attempts, len(raw))
+        if attempt < attempts and retry_guard is not None and retry_guard():
+            log.info("Not retrying the structured answer: newer messages are waiting")
+            break
     return salvage(raw) if salvage is not None else None
 
 
 async def generate_character_reply(prompt: str, context: str,
                                    media_parts: list[dict] | None = None,
-                                   debug_context: dict | None = None) -> dict:
+                                   debug_context: dict | None = None,
+                                   retry_guard=None) -> dict:
     schema = {"type": "object", "properties": {
         "reply": {"type": "string"}, "summary": {"type": "string"},
         "memory": {"type": "string"}, "relationship": {"type": "string"},
@@ -603,7 +610,7 @@ async def generate_character_reply(prompt: str, context: str,
                    "next_speaker_id", "mood", "color", "select_image"]}
     parsed = await generate_json("gemini1", context, prompt, media_parts=media_parts,
                                  schema=schema, debug_context=debug_context,
-                                 salvage=_salvage_character_reply)
+                                 salvage=_salvage_character_reply, retry_guard=retry_guard)
     if not parsed:
         # Never expose malformed model output (including fenced/raw JSON) as a Discord reply.
         log.error("Gemini character response was not valid JSON; refusing to publish raw output")

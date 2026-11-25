@@ -574,6 +574,7 @@ class AiraBot(commands.Bot):
                 try:
                     response = await process_character_reply(
                         turn_message, next_character, prepared_media=None, input_saved=True,
+                        superseded=lambda: self.scheduler.has_pending_session(session_key),
                     )
                 except Exception:
                     log.exception("Autonomous generation failed for %s; preserving continuation and retrying",
@@ -688,7 +689,12 @@ class AiraBot(commands.Bot):
                 incoming["session_key"], incoming["user_id"], incoming["user"],
                 incoming["file_name"], None,
             )
-            selected = await select_characters(incoming, prepared)
+            # A retry must not answer twice: if another message is already queued for this
+            # room, its batch owns the next turn and the stale attempt is dropped.
+            def superseded() -> bool:
+                return self.scheduler.has_pending_session(incoming["session_key"])
+
+            selected = await select_characters(incoming, prepared, superseded=superseded)
             log.info("Character selection complete: message=%s selected=%s",
                      batch_id, [character.id for character in selected])
             if not selected:
@@ -701,7 +707,7 @@ class AiraBot(commands.Bot):
                 try:
                     log.info("Generating character reply: message=%s character=%s", batch_id, character.id)
                     response = await process_character_reply(
-                        incoming, character, prepared, input_saved=True,
+                        incoming, character, prepared, input_saved=True, superseded=superseded,
                     )
                     if response["text"]:
                         outputs.append(response)
