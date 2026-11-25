@@ -20,6 +20,7 @@ jobs:
       - run: bun run typecheck
       - run: bun run test:cli
       - run: bun run test:chroma
+      - run: bun run test:characters
       - run: bun run scripts/start-readiness.test.ts
       - run: bun run scripts/stop-all-instances.test.ts
       - run: bun run scripts/test-gemini-api-key-config.ts

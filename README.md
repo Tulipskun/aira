@@ -46,6 +46,14 @@ Discord message
 
 The scheduler groups messages per session before the pipeline runs. A session is identified by `sessionKey`; group sessions can contain multiple speakers, while each speaker keeps a separate SQLite profile and relationship state.
 
+### Hybrid multi-character conversations
+
+Aira uses one Discord bot and one response channel for all characters. Isla remains the default and always runs through the existing relationship-aware pipeline. When more character definitions are present in `characters/*.json`, a Gemini 2 router may select at most one additional character per user turn. Directly mentioning a character by its configured name or alias forces that character to join.
+
+All selected characters see the shared SQLite conversation history, so an additional character can react to Isla's response in the same turn. Each non-Isla character has its own Chroma memory namespace and its own SQLite relationship row per Discord user. Character replies are sent as separately named embeds. Bot-authored messages are ignored by the gateway, so characters cannot recursively trigger one another indefinitely.
+
+To add a character, create a JSON definition and its prompt file under `characters/`; see [characters/README.md](characters/README.md). Restart Aira after adding or editing character definitions.
+
 ## State persistence and idempotency
 
 The response-critical structured state write is atomic. `src/sql/turn-transaction.ts` applies the state changes from one completed turn in a single SQLite transaction. Relationship level, XP, flirt count, approval flags, facts, and nicknames are committed together or not at all.
@@ -109,7 +117,7 @@ Group sessions use `/isla join-group` and share conversation history and semanti
 
 | Store | Responsibility |
 | --- | --- |
-| SQLite | Conversation history, user profiles, relationship state, XP, flirt/approval state, facts, nicknames, and episode source history |
+| SQLite | Conversation history, user profiles, Isla relationship state, per-character relationship state, XP, flirt/approval state, facts, nicknames, and episode source history |
 | Chroma | Long-term semantic memory and episodic memory vectors |
 | `images/` | Bundled local emotion assets selected by filename |
 | `.aira/` | Persistent runtime configuration, Chroma environment/data, and local service state; not committed |

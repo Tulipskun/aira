@@ -6,6 +6,7 @@ import {
   type ReplyOptions,
 } from "discord.js";
 import { processMessage, type ProcessMessageResult, type TurnSpeaker } from "../pipeline/pipeline.js";
+import { processCharacterReply, selectCharacters } from "../pipeline/characters.js";
 import type { ScheduledMessage } from "../pipeline/scheduler.js";
 import { fetchEmotionImage } from "./images.js";
 import { buildFooterText, type UserStatus } from "./embed-footer.js";
@@ -108,8 +109,9 @@ export function createOnFlush(
     onBusy(true);
     try {
       let result: ProcessMessageResult;
+      let additionalReplies: { character: { name: string }; text: string }[] = [];
       try {
-        result = await processMessage({
+        const incoming = {
           userId: last.userId,
           user: last.user,
           text: input,
@@ -118,7 +120,16 @@ export function createOnFlush(
           mediaSources,
           sessionKey: first.sessionKey,
           speakers,
-        });
+        };
+        const selected = await selectCharacters(incoming);
+        result = await processMessage(incoming);
+        for (const character of selected.filter((item) => item.id !== "isla")) {
+          try {
+            additionalReplies.push(await processCharacterReply(incoming, character));
+          } catch (error) {
+            console.error(`[CHARACTERS] ${character.id} failed for ${last.userId}: ${String((error as Error)?.stack ?? error)}`);
+          }
+        }
       } catch (error) {
         console.error(`[PIPELINE] processMessage failed for ${first.userId}: ${String((error as Error)?.stack ?? error)}`);
         await pauseTyping();
@@ -160,6 +171,14 @@ export function createOnFlush(
           console.log(
             `[DISCORD] ${last.user}: reply sent, asked=${anchor ?? "none"}, echoed=${echoed ?? "none"}, mood=${result.mood ?? "none"}, color=${embedColor}, image=${result.image ?? "none"}, session=${first.sessionKey}, footer=${JSON.stringify(buildFooterText({ ...result.status, mood: result.mood, privateSession: isUserSession(first.sessionKey) }))}`,
           );
+        }
+        for (const additional of additionalReplies) {
+          const characterEmbed = new EmbedBuilder()
+            .setAuthor({ name: additional.character.name })
+            .setDescription(additional.text)
+            .setTimestamp(new Date());
+          await channel.send({ embeds: [characterEmbed], ...replyReference() });
+          console.log(`[DISCORD] Character ${additional.character.name}: reply sent, session=${first.sessionKey}`);
         }
       } catch (error) {
         console.error(`[DISCORD] Failed to send reply: ${String((error as Error)?.message ?? error)}`);

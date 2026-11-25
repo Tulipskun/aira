@@ -7,6 +7,7 @@
     "test:cli": "bun run scripts/aira-cli.test.ts && bun run scripts/install-cli.test.ts && bun run scripts/install-cli-path.test.ts && bun run scripts/install-installer.test.ts && bun run scripts/aira-setup.test.ts",
     "test:chroma": "bun run scripts/chroma-setup.test.ts",
     "test:memory-integrity": "bun run scripts/test-memory-integrity.ts",
+    "test:characters": "bun run scripts/test-character-registry.ts",
     "test:rps": "bun run scripts/test-rps.ts",
     "start": "bun run scripts/supervisor.ts start",
     "stop": "bun run scripts/supervisor.ts stop",
