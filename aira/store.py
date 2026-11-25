@@ -31,14 +31,6 @@ def group_session_key(channel_id: str) -> str:
     return GROUP_PREFIX + str(channel_id)
 
 
-def is_group_session(key: str) -> bool:
-    return key.startswith(GROUP_PREFIX)
-
-
-def group_channel_of(key: str) -> str | None:
-    return key[len(GROUP_PREFIX):] if is_group_session(key) else None
-
-
 def _json_array(raw: Any) -> list:
     if isinstance(raw, list):
         return raw
