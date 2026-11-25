@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
@@ -144,6 +144,65 @@ class DiscordTests(unittest.TestCase):
                         file.close()
                 finally:
                     await bot.close()
+        asyncio.run(run_test())
+
+    def test_character_webhook_uploads_the_whole_avatar_body(self):
+        async def run_test():
+            import aira.discord_app as app
+            body = b"\x89PNG\r\n\x1a\n" + b"a" * 200_000
+
+            class FakeResponse:
+                headers = {"Content-Type": "image/png"}
+                content_length = len(body)
+
+                def raise_for_status(self):
+                    return None
+
+                async def read(self):
+                    return body
+
+            class FakeSession:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *exc):
+                    return False
+
+                def get(self, url, allow_redirects=True):
+                    class Context:
+                        async def __aenter__(inner):
+                            return FakeResponse()
+
+                        async def __aexit__(inner, *exc):
+                            return False
+
+                    return Context()
+
+            parent = MagicMock(spec=discord.TextChannel)
+            parent.id = 9
+            parent.guild = SimpleNamespace(me=SimpleNamespace(id=1))
+            parent.permissions_for = lambda member: SimpleNamespace(manage_webhooks=True)
+            parent.webhooks = AsyncMock(return_value=[])
+            created = MagicMock()
+            created.id = 42
+            created.edit = AsyncMock(return_value=SimpleNamespace(id=42, avatar="hash"))
+            parent.create_webhook = AsyncMock(return_value=created)
+            character = Character("rem", "Rem", ("Rem",), Path("rem.md"),
+                                  avatar_url="https://example.com/rem.png")
+            bot = AiraBot()
+            try:
+                app.CHARACTER_WEBHOOKS.clear()
+                app.CHARACTER_WEBHOOK_AVATARS.clear()
+                with patch.object(app.aiohttp, "ClientSession", FakeSession):
+                    webhook = await bot._character_webhook(parent, character)
+                # A partial read used to send a truncated image, so Discord kept the old avatar.
+                self.assertEqual(created.edit.await_args.kwargs["avatar"], body)
+                self.assertIs(webhook, created.edit.return_value)
+            finally:
+                await bot.close()
         asyncio.run(run_test())
 
     def test_autonomous_channel_guard_returns_wait_instead_of_dropping_conversation(self):

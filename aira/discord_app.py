@@ -429,7 +429,10 @@ class AiraBot(commands.Bot):
                         content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
                         if not content_type.startswith("image/"):
                             raise ValueError(f"Character avatar URL returned non-image content: {content_type}")
-                        avatar_bytes = await response.content.read(8 * 1024 * 1024 + 1)
+                        declared = response.content_length
+                        if declared is not None and declared > 8 * 1024 * 1024:
+                            raise ValueError("Character avatar image exceeds 8 MiB")
+                        avatar_bytes = await response.read()
                         if not avatar_bytes or len(avatar_bytes) > 8 * 1024 * 1024:
                             raise ValueError("Character avatar image is empty or exceeds 8 MiB")
                 updated = await webhook.edit(avatar=avatar_bytes, reason=f"Set {character.id} character avatar")
