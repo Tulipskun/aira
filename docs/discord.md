@@ -4,11 +4,11 @@ Aira uses `discord.py` with guild, guild-message and message-content intents. En
 
 ## Routing
 
-Only normal messages in the configured response channel enter the scheduler. Unknown prefix commands are ignored. `!islacomehere` and `!unset` are owner-only and change the configured response channel. Bot-authored messages are discarded to prevent recursive replies.
+Only normal messages in the configured response channel enter the scheduler. Unknown prefix commands are ignored. Messages beginning with `!` are ignored; administration is available only through `/aira`. Bot-authored messages are discarded to prevent recursive replies.
 
 ## Control Panel
 
-The bot publishes a persistent Control Panel in an available guild text channel after login. Only the application owner or `DISCORD_OWNER_ID` may use it. It provides:
+The bot does not publish a public panel. The exact Discord user ID entered in Console is the sole owner. `/aira` opens an ephemeral private admin panel, and every component checks the same owner ID. It provides:
 
 - Gemini API-key pool configuration.
 - Gemini 1, Gemini 2 and embedding model configuration.
@@ -19,10 +19,9 @@ Settings are written under `.aira/` with restrictive file permissions. Do not up
 
 ## Slash commands
 
-- `/isla status` shows the current channel's shared conversation session.
-- `/isla leaderboard` shows the highest XP profiles.
+- `/aira` opens the private owner-only admin panel.
 
-After a command schema update, the next startup synchronizes the `/isla` command group once, preserving unrelated application commands. The schema version is stored under `.aira/` to avoid syncing on every restart.
+After a command schema update, the next startup replaces the global slash-command list with exactly `/aira`; other global commands are removed. The schema version is stored under `.aira/` to avoid syncing on every restart.
 
 Each channel selected as Aira's response channel has its own conversation history and semantic/episodic memory. Everyone speaking in that channel shares its context automatically; users do not need to join or leave a group. When the owner changes the response channel, that channel uses its own isolated history.
 
