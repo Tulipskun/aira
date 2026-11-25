@@ -164,9 +164,6 @@ class Store:
                     WHERE user_id NOT IN (SELECT user_id FROM user_profiles)""").fetchone()[0]
                 if not missing:
                     self.db.execute("DROP TABLE relationships")
-        self.db.execute("""CREATE TABLE IF NOT EXISTS group_sessions(
-            user_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, joined_at TEXT NOT NULL)""")
-        self.db.execute("CREATE INDEX IF NOT EXISTS idx_group_sessions_channel ON group_sessions(channel_id)")
         self.db.execute("""CREATE TABLE IF NOT EXISTS character_relationships(
             character_id TEXT NOT NULL, user_id TEXT NOT NULL, relationship TEXT NOT NULL,
             updated_at TEXT NOT NULL, PRIMARY KEY(character_id,user_id))""")
@@ -335,34 +332,6 @@ class Store:
             sql = "DELETE FROM messages" + (" WHERE " + " AND ".join(where) if where else "")
         cur = self.db.execute(sql, args)
         return cur.rowcount
-
-    def join_group(self, user_id: str, channel_id: str) -> dict:
-        previous = self.db.execute("SELECT * FROM group_sessions WHERE user_id=?", (user_id,)).fetchone()
-        if previous and previous["channel_id"] == channel_id:
-            return {"status": "already", "current": dict(previous)}
-        joined = utc_now()
-        self.db.execute("""INSERT INTO group_sessions(user_id,channel_id,joined_at) VALUES(?,?,?)
-            ON CONFLICT(user_id) DO UPDATE SET channel_id=excluded.channel_id,joined_at=excluded.joined_at""",
-            (user_id, channel_id, joined))
-        current = {"user_id": user_id, "channel_id": channel_id, "joined_at": joined}
-        return {"status": "moved" if previous else "joined", "current": current,
-                **({"previous_channel": previous["channel_id"]} if previous else {})}
-
-    def leave_group(self, user_id: str) -> dict | None:
-        row = self.db.execute("SELECT * FROM group_sessions WHERE user_id=?", (user_id,)).fetchone()
-        if row:
-            self.db.execute("DELETE FROM group_sessions WHERE user_id=?", (user_id,))
-            return dict(row)
-        return None
-
-    def group_membership(self, user_id: str) -> dict | None:
-        row = self.db.execute("SELECT * FROM group_sessions WHERE user_id=?", (user_id,)).fetchone()
-        return dict(row) if row else None
-
-    def group_members(self, channel_id: str) -> list[dict]:
-        return [dict(row) for row in self.db.execute(
-            "SELECT * FROM group_sessions WHERE channel_id=? ORDER BY joined_at", (channel_id,)
-        ).fetchall()]
 
     def session_key_for(self, user_id: str, channel_id: str | None) -> str:
         # Every conversation is scoped to its Discord channel, never to a user's opt-in state.
