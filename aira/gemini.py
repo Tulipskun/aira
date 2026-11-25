@@ -94,7 +94,7 @@ def _keys(stage: str) -> list[str]:
 def _key(stage: str) -> str:
     keys = _keys(stage)
     if not keys:
-        raise RuntimeError("GEMINI_API_KEY is required")
+        raise RuntimeError("Gemini API key is missing; configure it in the /aira admin panel")
     index = int(_key_state.get(stage, 0)) % len(keys)
     return keys[index]
 
