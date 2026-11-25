@@ -6,5 +6,6 @@
     "ไอลา"
   ],
   "promptFile": "../prompts/isla.md",
-  "enabled": true
+  "enabled": true,
+  "avatarUrl": "https://raw.githubusercontent.com/Tulipskun/aira/main/images/isla_icon_pout_blush.png"
 }

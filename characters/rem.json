@@ -6,5 +6,6 @@
     "เรม Re Zero"
   ],
   "promptFile": "prompts/rem.md",
-  "enabled": true
+  "enabled": true,
+  "avatarUrl": "https://pbs.twimg.com/media/CnlMSHLVIAAiqix.jpg"
 }

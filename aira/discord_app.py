@@ -26,6 +26,7 @@ log = logging.getLogger("aira.discord")
 DISCORD_CONFIG = ROOT / ".aira" / "discord-config.json"
 RPS_CHOICES = {"rock": ("ค้อน", "✊🏻"), "paper": ("กระดาษ", "🖐🏻"), "scissors": ("กรรไกร", "✌🏻")}
 RPS_GAMES: dict[str, dict] = {}
+CHARACTER_WEBHOOKS: dict[tuple[int, str], discord.Webhook] = {}
 
 
 def _load_discord_config() -> dict:
@@ -424,6 +425,28 @@ class AiraBot(commands.Bot):
                 await asyncio.sleep(0.5)
         self.typing_tasks[channel_id] = asyncio.create_task(loop())
 
+    async def _character_webhook(self, channel, character):
+        parent = channel.parent if isinstance(channel, discord.Thread) else channel
+        if not isinstance(parent, discord.TextChannel):
+            raise RuntimeError("Character webhooks require a text channel")
+        cache_key = (parent.id, character.id)
+        cached = CHARACTER_WEBHOOKS.get(cache_key)
+        if cached is not None:
+            return cached
+        me = parent.guild.me
+        permissions = parent.permissions_for(me) if me else None
+        if not permissions or not permissions.manage_webhooks:
+            raise PermissionError("Aira needs Manage Webhooks permission in the response channel")
+        hooks = await parent.webhooks()
+        hook_name = f"Aira Character ({character.id})"
+        webhook = next((item for item in hooks
+                        if item.name == hook_name and item.user and self.user
+                        and item.user.id == self.user.id), None)
+        if webhook is None:
+            webhook = await parent.create_webhook(name=hook_name, reason="Separate Aira character identities")
+        CHARACTER_WEBHOOKS[cache_key] = webhook
+        return webhook
+
     async def _flush(self, messages: list[dict]):
         if not messages or messages[0]["channel_id"] != get_response_channel_id():
             return
@@ -477,11 +500,6 @@ class AiraBot(commands.Bot):
                     failed.append(character.name)
                     log.exception("Character %s failed for %s", character.id, last["user_id"])
 
-            reference = discord.MessageReference(
-                message_id=int(messages[-1]["message_id"]),
-                channel_id=int(last["channel_id"]),
-                fail_if_not_exists=False,
-            )
             sent = None
             for output in outputs:
                 character = output["character"]
@@ -510,20 +528,35 @@ class AiraBot(commands.Bot):
                             "channel_id": last["channel_id"], "message_id": last["message_id"],
                         }
                         view = RpsView(self, game_id)
-                    sent = await channel.send(embed=embed, files=files, view=view, reference=reference)
                 else:
                     embed = discord.Embed(description=output["text"])
-                    embed.set_author(name=character.name)
                     embed.timestamp = discord.utils.utcnow()
-                    sent = await channel.send(embed=embed, reference=reference)
-                reference = sent.to_reference(fail_if_not_exists=False)
+                webhook = await self._character_webhook(channel, character)
+                send_kwargs = {
+                    "username": character.name,
+                    "wait": True,
+                }
+                if character.avatar_url:
+                    send_kwargs["avatar_url"] = character.avatar_url
+                if isinstance(channel, discord.Thread):
+                    send_kwargs["thread"] = channel
+                if character.id == "isla":
+                    send_kwargs.update(embed=embed, files=files, view=view)
+                else:
+                    send_kwargs["embed"] = embed
+                sent = await webhook.send(**send_kwargs)
+                if sent is None:
+                    raise RuntimeError(f"Discord did not return the sent message for {character.id}")
 
             if failed and not outputs and len(failed) == len(selected):
                 raise RuntimeError("All selected characters failed: " + ", ".join(failed))
-        except Exception:
+        except Exception as exc:
             log.exception("Message pipeline failed")
             try:
-                await channel.send("ขออภัยค่ะ... ไอลาประมวลผลข้อความนี้ไม่สำเร็จ กรุณาลองใหม่อีกครั้งนะคะ")
+                if isinstance(exc, PermissionError):
+                    await channel.send("Aira ต้องได้รับสิทธิ์ Manage Webhooks ในห้องนี้ก่อน จึงจะแสดงชื่อและรูปประจำตัวของแต่ละตัวละครได้")
+                else:
+                    await channel.send("ขออภัยค่ะ... ไอลาประมวลผลข้อความนี้ไม่สำเร็จ กรุณาลองใหม่อีกครั้งนะคะ")
             except discord.HTTPException:
                 log.exception("Could not send failure notice")
         finally:

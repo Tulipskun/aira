@@ -15,6 +15,7 @@ class Character:
     aliases: tuple[str, ...]
     prompt_file: Path
     enabled: bool = True
+    avatar_url: str | None = None
 
 
 CHAR_DIR = ROOT / "characters"
@@ -37,7 +38,11 @@ def _validate(value: object, filename: str) -> Character:
     prompt_path = (CHAR_DIR / prompt).resolve()
     if prompt_path != ROOT and ROOT not in prompt_path.parents:
         raise ValueError(f"Character prompt escapes project directory: {filename}")
-    return Character(character_id, name.strip(), tuple([name.strip(), *aliases]), prompt_path, value.get("enabled") is not False)
+    avatar_url = value.get("avatarUrl")
+    if avatar_url is not None and (not isinstance(avatar_url, str) or not avatar_url.startswith("https://")):
+        raise ValueError(f"Invalid avatarUrl: {filename}")
+    return Character(character_id, name.strip(), tuple([name.strip(), *aliases]), prompt_path,
+                     value.get("enabled") is not False, avatar_url)
 
 
 def load_characters() -> list[Character]:
@@ -105,10 +110,14 @@ def save_character(character_id: str, name: str, aliases: list[str], prompt: str
     prompt_dir = CHAR_DIR / "prompts"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     (prompt_dir / f"{character_id}.md").write_text(prompt.strip() + "\n", encoding="utf-8")
+    previous_path = CHAR_DIR / f"{character_id}.json"
+    previous = json.loads(previous_path.read_text("utf-8")) if previous_path.is_file() else {}
     definition = {
         "id": character_id, "name": name.strip(), "aliases": aliases,
         "promptFile": f"prompts/{character_id}.md", "enabled": enabled,
     }
+    if isinstance(previous.get("avatarUrl"), str) and previous["avatarUrl"].startswith("https://"):
+        definition["avatarUrl"] = previous["avatarUrl"]
     (CHAR_DIR / f"{character_id}.json").write_text(
         json.dumps(definition, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

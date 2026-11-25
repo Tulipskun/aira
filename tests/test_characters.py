@@ -24,6 +24,15 @@ class CharacterTests(unittest.TestCase):
         self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ", rem_prompt)
         self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ", bocchi_prompt)
 
+    def test_character_avatar_url_must_be_https(self):
+        character = _validate({"id": "rem", "name": "Rem", "promptFile": "prompts/rem.md",
+                               "avatarUrl": "https://example.com/rem.png"}, "rem.json")
+        self.assertEqual(character.avatar_url, "https://example.com/rem.png")
+        self.assertTrue(character.enabled)
+        with self.assertRaises(ValueError):
+            _validate({"id": "rem", "name": "Rem", "promptFile": "prompts/rem.md",
+                       "avatarUrl": "http://example.com/rem.png"}, "rem.json")
+
     def test_prompt_path_must_stay_inside_repository(self):
         with self.assertRaises(ValueError):
             _validate({"id": "x", "name": "X", "promptFile": "../../etc/passwd"}, "x.json")

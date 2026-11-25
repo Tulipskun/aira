@@ -21,7 +21,7 @@ No environment variables or .env file are required. On first start, paste the Di
 
 After login, run /aira to open the private owner-only panel. Configure Gemini API keys, model names, response channel and characters there. Panel settings are stored privately in .aira/settings.json.
 
-Invite the bot with bot and applications.commands OAuth scopes. Grant View Channels, Send Messages, Read Message History, Embed Links and Attach Files. Enable Message Content Intent in the Discord Developer Portal.
+Invite the bot with bot and applications.commands OAuth scopes. Grant View Channels, Send Messages, Read Message History, Embed Links, Attach Files and Manage Webhooks. Aira uses one reusable webhook per character and response channel so each character has its own display name and avatar. Enable Message Content Intent in the Discord Developer Portal.
 
 ## Persistent data
 

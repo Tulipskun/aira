@@ -7,5 +7,6 @@
     "ฮิโตริ"
   ],
   "promptFile": "prompts/bocchi.md",
-  "enabled": true
+  "enabled": true,
+  "avatarUrl": "https://bocchi.rocks/tv/_teaser/assets/img/special/icon_present/files/dc_icon_1.png"
 }
