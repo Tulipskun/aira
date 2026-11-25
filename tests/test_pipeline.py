@@ -71,6 +71,58 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
              patch.object(pipeline, "generate_json", new=AsyncMock(return_value=None)):
             self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
 
+    async def test_selector_sees_unanswered_messages_and_breaks_a_silent_room(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
+        ]
+        session = "group:silence"
+        self.store.save_message("model", "เดี๋ยวเรมไปดูให้นะคะ", utc_now(), session, None, "Rem", None, None, "rem")
+        self.store.save_message("user", "ว่าไงบ้าง", utc_now(), session, "1", "Farris", None, None)
+        self.store.save_message("user", "น้องเงียบเลย 5555", utc_now(), session, "2", "Yuuta", None, None)
+        captured = {}
+
+        async def fake_generate(stage, prompt, system, **kwargs):
+            captured["prompt"] = prompt
+            return {"selected_character_ids": [], "reason": "ไม่มีใครจำเป็นต้องตอบ"}
+
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(side_effect=fake_generate)):
+            selected = await pipeline.select_characters({
+                "text": "น้องเงียบเลย 5555", "session_key": session, "user_id": "2", "user": "Yuuta",
+            })
+        # Two unanswered messages in a row: the last speaker keeps the conversation going.
+        self.assertEqual([item.id for item in selected], ["rem"])
+        self.assertIn("ข้อความนี้ยังไม่มีตัวละครตอบ", captured["prompt"])
+        self.assertIn("จำนวนข้อความท้ายห้องที่ยังไม่มีตัวละครตอบ: 2", captured["prompt"])
+
+    async def test_selector_still_allows_silence_for_laughter_or_a_first_message(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+        ]
+        session = "group:noise"
+        self.store.save_message("model", "ค่ะ", utc_now(), session, None, "Rem", None, None, "rem")
+        self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(
+                 return_value={"selected_character_ids": [], "reason": "เสียงหัวเราะล้วน ๆ"})):
+            # A single unanswered laugh stays silent.
+            self.assertEqual(await pipeline.select_characters({
+                "text": "55555", "session_key": session, "user_id": "1", "user": "Yuuta",
+            }), [])
+        session = "group:noise2"
+        self.store.save_message("model", "ค่ะ", utc_now(), session, None, "Rem", None, None, "rem")
+        self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
+        self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(
+                 return_value={"selected_character_ids": [], "reason": "เสียงหัวเราะล้วน ๆ"})):
+            self.assertEqual(await pipeline.select_characters({
+                "text": "55555", "session_key": session, "user_id": "1", "user": "Yuuta",
+            }), [])
+
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({
             "user_id": "alice", "user": "Alice", "text": "Hi Isla",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -99,6 +100,50 @@ async def process_message(message: dict, prepared_media=None, input_saved: bool 
     return await process_character_reply(message, character, prepared_media, input_saved)
 
 
+UNANSWERED_BEFORE_CONTINUING = 2
+NOISE_TEXT = re.compile(r"^[\W_\d]+$")
+LAUGHTER_TEXT = re.compile(r"^(?:5{2,}|(?:ha){2,}|(?:ehe)+|lol|lmao|kek|555+)$", re.I)
+
+
+def _substantive_text(text: str) -> bool:
+    """True when a message carries something a character could answer."""
+    compact = re.sub(r"[^0-9A-Za-z\u0E00-\u0E7F]", "", text or "")
+    if len(compact) < 6:
+        return False
+    return LAUGHTER_TEXT.fullmatch(compact) is None and NOISE_TEXT.fullmatch(compact) is None
+
+
+def _transcript_with_replies(rows: list[dict], names: dict[str, str]) -> tuple[list[str], int, str]:
+    """Mark which user messages stayed unanswered and report the trailing silence run."""
+    lines: list[str] = []
+    last_speaker = ""
+    for index, row in enumerate(rows):
+        if row.get("role") == "model":
+            speaker = names.get(str(row.get("character_id") or "")) or str(row.get("user_name") or "ตัวละคร")
+            last_speaker = str(row.get("character_id") or last_speaker)
+            lines.append(f"{speaker}: {row.get('text') or ''}")
+            continue
+        lines.append(f"{row.get('user_name') or 'ผู้ใช้'}: {row.get('text') or ''}")
+        following = rows[index + 1] if index + 1 < len(rows) else None
+        if following is None or following.get("role") == "user":
+            lines.append("(ข้อความนี้ยังไม่มีตัวละครตอบ)")
+    trailing = 0
+    for row in reversed(rows):
+        if row.get("role") == "model":
+            break
+        trailing += 1
+    return lines, trailing, last_speaker
+
+
+def _silence_breaker(characters: list[Character], text: str, rows: list[dict], trailing: int,
+                     last_speaker: str) -> list[Character]:
+    """Keep a conversation alive when the selector leaves two messages unanswered."""
+    if trailing < UNANSWERED_BEFORE_CONTINUING or not _substantive_text(text):
+        return []
+    by_id = {item.id: item for item in characters}
+    return [by_id[last_speaker]] if last_speaker in by_id else []
+
+
 async def select_characters(message: dict, prepared_media=None) -> list[Character]:
     """Choose room participants before generation; never assign Isla as an implicit default."""
     characters = load_characters()
@@ -114,20 +159,22 @@ async def select_characters(message: dict, prepared_media=None) -> list[Characte
     )
     history_lines = []
     names = {item.id: item.name for item in characters}
-    for row in history[-16:]:
-        speaker = (names.get(row.get("character_id")) or row.get("user_name") or "ผู้ใช้") if row.get("role") == "model" else (row.get("user_name") or "ผู้ใช้")
-        history_lines.append(f"{speaker}: {row.get('text', '')}")
+    history_lines, unanswered, last_speaker = _transcript_with_replies(history[-16:], names)
     catalog = [{"id": item.id, "name": item.name, "aliases": list(item.aliases)} for item in characters]
     media_summary = getattr(prepared_media, "summary", "") or message.get("media_summary", "")
     prompt = "\n".join([
         "เลือกตัวละครที่ควรเข้าร่วมตอบข้อความล่าสุดในห้องแชทนี้ โดยดูบริบทและบุคลิกจากรายชื่อตัวละคร",
-        "เลือกได้ 0 คน (ไม่มีใครอยากพูด), 1 คน หรือหลายคน เฉพาะคนที่มีเหตุผลจะพูดจริง ๆ",
+        "ห้องนี้เป็นแชทกลุ่มเล็ก ๆ ที่มีตัวละคร 3 ตัวคุยกับคนจริง เป้าหมายคือบทสนทนาที่ต่อเนื่องเป็นธรรมชาติ ไม่ใช่การตอบเฉพาะเมื่อถูกถามตรง ๆ",
+        "โดยปกติควรมีคนตอบ: ถ้าข้อความล่าสุดเป็นการแซว ทัก ชวนเล่น แสดงอารมณ์ แชร์อะไร หรือเล่าเรื่อง ให้เลือกตัวละครที่เกี่ยวข้องหรือมีบุคลิกเข้ากับจังหวะนั้น",
+        "ให้เงียบ (เลือก 0 คน) เฉพาะเมื่อไม่มีอะไรให้ตอบจริง ๆ เช่น อีโมจิหรือเสียงหัวเราะล้วน ๆ สติกเกอร์ คนอื่นคุยกันเองในเรื่องส่วนตัวที่ไม่เกี่ยวกับตัวละคร หรือตัวละครที่เกี่ยวข้องเพิ่งตอบไปแล้วในรอบเดียวกัน",
+        "ถ้าในประวัติมีบรรทัด '(ข้อความนี้ยังไม่มีตัวละครตอบ)' หรือบทสนทนากำลังเงียบ ให้ถือว่ามีเหตุผลพอที่จะตอบ อย่าปล่อยให้ห้องเงียบต่อเนื่องหลายข้อความ",
+        "ปิดบทสนทนาเฉพาะเมื่ออีกฝ่ายจบจริง ๆ ถ้าคนยังเล่นหรือยังแซวอยู่ ให้ตอบต่อ",
         "ห้ามเลือก Isla เป็นค่าเริ่มต้น ห้ามเลือกทุกคนเพื่อให้ดูคึกคัก และอย่าเลือกคนเดิมซ้ำเพียงเพราะเป็นผู้ตอบก่อนหน้า",
-        "ถ้าข้อความเป็นคำถามทั่วไป ให้เลือกคนที่เหมาะกับหัวข้อหรือมีปฏิกิริยาที่เป็นธรรมชาติ",
-        "ถ้าเป็นการพูดคุยต่อเนื่อง ให้พิจารณาว่าใครสนใจหรือเกี่ยวข้อง ไม่จำเป็นต้องตอบทุกข้อความ",
+        "เลือกได้ 0-3 คน โดยเลือกคนที่ต่อยอดบทสนทนาเดิมได้ดีที่สุดก่อน",
         "รายชื่อตัวละคร: " + __import__('json').dumps(catalog, ensure_ascii=False),
-        "ประวัติห้อง:\n" + ("\n".join(history_lines) or "(ยังไม่มีประวัติ)"),
+        "ประวัติห้อง (ล่าสุดอยู่ท้าย):\n" + ("\n".join(history_lines) or "(ยังไม่มีประวัติ)"),
         "ข้อความล่าสุดจากผู้ใช้: " + current,
+        f"จำนวนข้อความท้ายห้องที่ยังไม่มีตัวละครตอบ: {unanswered}",
         "ไฟล์แนบ: " + str(media_summary),
     ])
     schema = {"type": "object", "properties": {
@@ -148,6 +195,12 @@ async def select_characters(message: dict, prepared_media=None) -> list[Characte
         return []
     selected_ids = [str(value).strip() for value in parsed["selected_character_ids"] if isinstance(value, str)]
     selected = resolve_character_speakers(characters, [], selected_ids[:3])
+    if not selected:
+        selected = _silence_breaker(characters, str(message.get("text") or ""), history[-16:],
+                                    unanswered, last_speaker)
+        if selected:
+            log.info("Character selector kept the room silent; continuing with %s",
+                     [item.id for item in selected])
     log.info("Character selector decision: selected=%s reason=%s", [item.id for item in selected],
              str(parsed.get("reason") or "")[:240])
     return selected
