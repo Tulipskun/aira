@@ -58,7 +58,7 @@ def main() -> int:
                 from aira.register_commands import register_commands
                 asyncio.run(register_commands(config.discord_token))
                 temporary_marker = command_marker.with_suffix(".tmp")
-                temporary_marker.write_text(command_version + "\\n", encoding="utf-8")
+                temporary_marker.write_text(command_version + "\n", encoding="utf-8")
                 os.chmod(temporary_marker, 0o600)
                 temporary_marker.replace(command_marker)
                 logging.getLogger("aira").info("Discord slash commands updated")
