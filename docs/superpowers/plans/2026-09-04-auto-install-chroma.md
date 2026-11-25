@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `aira start` automatically provision Python/Chroma when the private Chroma environment is missing and set the requested Gemini model defaults.
+**Goal:** Make `aira start` automatically provision Python/Chroma when the local Chroma environment is missing and set the requested Gemini model defaults.
 
 **Architecture:** Add a focused bootstrap module under `scripts/` with an injectable command runner for tests. The supervisor calls it before starting Chroma; the module detects Python and an OS package manager, installs missing Python prerequisites, creates `.aira/chroma-venv`, and installs `chromadb` there. Existing Chroma data and HTTP health-check behavior remain unchanged.
 

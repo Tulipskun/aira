@@ -26,4 +26,4 @@ Create the prompt at `characters/prompts/luna.md`. The prompt defines that chara
 - Each non-Isla character has a separate SQLite relationship record per Discord user; Isla keeps her existing relationship system.
 - Bot-authored messages are ignored by the Discord gateway, preventing character replies from recursively triggering another round.
 
-New character files are loaded at process startup; restart the bot after adding or changing a definition.
+Character definitions are loaded when a turn selects characters. File-based additions and edits therefore apply to subsequent turns without restarting the bot. The Discord Control Panel can also create and edit definitions and prompts while Aira is running.

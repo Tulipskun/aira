@@ -1,6 +1,6 @@
 # Gemini
 
-Gemini 1 and Gemini 2 are separate model roles. They are configured from one shared `GEMINI_API_KEY` pool, while the runtime maintains independent rotation state for each stage.
+Gemini 1 and Gemini 2 are separate model roles. They are configured from one shared `GEMINI_API_KEY` pool, while the runtime maintains independent rotation state for each stage. The pool can be set in `.env` or through the owner-only Discord Control Panel; panel settings are stored in `.aira/settings.json`.
 
 ## Gemini 1
 
@@ -36,7 +36,7 @@ The stage-specific `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, and `GEMINI_EMBEDDING
 
 ## Embedding
 
-Gemini Embedding 2 is configured separately from the dialogue/analyzer models. Retrieval uses the `query` task and memory/episode ingestion uses the `document` task.
+Gemini Embedding 2 uses its own model name, configured through `GEMINI_EMBEDDING2_MODEL` or the Control Panel. It uses the same shared API-key pool as the dialogue/analyzer stages. Retrieval uses the `query` task and memory/episode ingestion uses the `document` task.
 
 ## Thought signatures
 

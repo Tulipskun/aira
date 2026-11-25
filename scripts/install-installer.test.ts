@@ -11,6 +11,7 @@ assert.match(installer, /Installing unzip \(required by Bun on Linux\)/);
 assert.match(installer, /git -C "\$INSTALL_ROOT" pull --ff-only/);
 assert.match(installer, /AIRA_REPO_URL/);
 assert.match(installer, /bun install --frozen-lockfile/);
+assert.match(installer, /bun run scripts\/register-commands\.ts/);
 assert.match(installer, /scripts\/supervisor\.ts start/);
 assert.match(installer, /AIRA_TOKEN_TO_SAVE/);
 assert.match(installer, /chmodSync\(file, 0o600\)/);

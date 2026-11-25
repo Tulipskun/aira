@@ -36,7 +36,7 @@ The structured state mutation is response-critical and atomic in SQLite. Chroma 
 
 ## Model configuration
 
-All model names are configurable from `.env` and are centralized in `src/config.ts`. Code should not hardcode model names in individual pipeline modules.
+Model names are centralized in `src/config.ts`. They can be supplied through `.env` or changed at runtime through the owner-only Discord Control Panel; panel values are persisted in `.aira/settings.json` and take effect on subsequent requests. Code should not hardcode model names in individual pipeline modules.
 
 - `GEMINI1_MODEL` — Gemini 1 dialogue/character response model.
 - `GEMINI2_MODEL` — Gemini 2 post-response analyzer/state model.
@@ -79,10 +79,11 @@ All application runtime data belongs under `.aira/` by default:
 
 - `.aira/aira.db` — SQLite conversation history, relationship and profile data, and applied-turn idempotency records.
 - `.aira/discord-config.json` — persistent Discord channel lock.
+- `.aira/settings.json` — Gemini API keys and model names configured through the Control Panel (mode `0600`).
 - `.aira/gemini-key-state.json` — persistent Gemini key rotation state.
 - `.aira/chroma/` — persistent Chroma storage.
 
-`.aira/` is ignored by Git and must never be committed.
+`.aira/` is ignored by Git and must never be committed. The Discord token is kept separately in `.env`, also ignored by Git and written with mode `0600`.
 
 ## Multi-user input
 
@@ -102,3 +103,7 @@ Messages beginning with `!` never enter the AI pipeline. Registered commands are
 - `!unset`: removes the channel lock.
 
 The channel lock persists across restart. Normal messages from other channels are ignored.
+
+## Discord Control Panel
+
+After the Discord gateway is ready, the bot publishes or updates the `Aira • Control Panel` message in the first writable guild text channel it finds. The Discord application owner is resolved from the application metadata and is the only user authorized to interact with the panel. It manages the response channel, shared Gemini API-key pool, three model names, and character definitions/prompts. Settings are persisted in `.aira/settings.json` with restrictive file permissions. The panel's posting channel is not automatically the response channel; the owner must select the latter explicitly.

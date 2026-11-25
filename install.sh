@@ -82,6 +82,9 @@ unset AIRA_TOKEN_TO_SAVE
 say "Installing dependencies..."
 bun install --frozen-lockfile
 
+say "Registering Discord slash commands..."
+bun run scripts/register-commands.ts
+
 say "Starting Aira Discord bot..."
 bun run scripts/supervisor.ts start
 say "Aira is running. Use 'aira logs' to inspect logs if the CLI is installed."

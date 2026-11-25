@@ -6,7 +6,7 @@
 - Messages beginning with `!` are command messages and never enter the AI pipeline.
 - Unknown `!` commands are ignored.
 - Registered commands are `!islacomehere` and `!unset`.
-- Registered commands are owner-only via `DISCORD_OWNER_ID`.
+- The `!islacomehere` and `!unset` prefix commands are restricted to the Discord application owner resolved at runtime. Slash commands are not subject to Aira’s owner check; actual availability follows the Discord application command permissions.
 
 ## Channel lock
 
@@ -16,9 +16,9 @@ The AI responds only in the configured channel.
 
 `!unset` clears the channel lock.
 
-The configuration is persisted in `.aira/discord-config.json` and therefore survives process restart. `.aira/` is runtime state and is gitignored.
+The configuration is persisted in `.aira/discord-config.json` and therefore survives process restart. `.aira/` is runtime state and is gitignored. The channel lock is also configurable from the owner-only Control Panel.
 
-If no channel is configured, normal messages are ignored.
+If no channel is configured, normal messages are ignored. On first startup the Control Panel is posted in the first writable text channel the bot finds; that does not automatically make the panel channel the response channel. The application owner must select a response channel from the panel.
 
 ## AI response
 
@@ -48,20 +48,18 @@ memory are read and written inside that stream only.
   stream: their messages merge into a single turn, she answers once, and memories written there are
   retrievable by the whole room.
 
-Slash commands (all replies are ephemeral, so a session change is never announced to the room):
+Slash commands:
 
 | command | effect |
 |---|---|
 | `/isla join-group` | share this channel's stream with everyone else who joined it |
 | `/isla leave-group` | back to a private stream (idempotent) |
 | `/isla status` | which stream the *next* message lands in, and who else is in it |
-| `/isla say <args>` | acknowledgement only; feeds nothing into the pipeline |
+| `/isla leaderboard` | public top-10 XP leaderboard |
 
 Membership is stored in SQLite (`group_sessions`) and survives restarts. Joining is per channel: a
 user who joined in channel A and writes in channel B is routed to their private stream, because they
-are not in A's room. The command payload lives in `src/bot/interactions.ts`
-(`islaCommandPayload()`) and is applied with `bun run scripts/register-commands.ts` — Discord rejects
-a subcommand registered beside any other option type, so the free-text form moved under `say`.
+are not in A's room. The command payload lives in `src/bot/interactions.ts` (`islaCommandPayload()`) and is applied with `bun run scripts/register-commands.ts`. Join, leave and status replies are ephemeral; the leaderboard is intentionally public.
 
 ## Identity and attachments
 
@@ -84,3 +82,17 @@ Accepted messages are passed to `MessageScheduler`. Scheduling is per **session*
 same stream merge into one turn (5-second debounce, 12-second maximum wait), and a message from a
 different session interrupts the pending batch so the other conversation can be answered immediately.
 See `docs/scheduler.md`.
+
+## Owner-only Control Panel
+
+When the Discord gateway becomes ready, Aira publishes or refreshes an `Aira • Control Panel` embed in the first guild text channel where it can view and send messages. Only the Discord application owner can use its controls. The panel supports:
+
+- Select the channel where Aira should process and answer normal messages.
+- Set one or more comma-separated Gemini API keys.
+- Set the Gemini 1 dialogue, Gemini 2 analyzer and embedding model names.
+- Create or edit a character definition, aliases, prompt and enabled state. Isla cannot be disabled. Character changes are loaded for subsequent turns; no restart is required.
+- Refresh the displayed settings.
+
+Gemini keys and model settings are stored in `.aira/settings.json` with mode `0600`. The bot token is stored separately in `.env` with mode `0600`. Keep `.aira/` and `.env` private and out of Git.
+
+The Control Panel is not a Discord slash command. It is a persistent message with interactive components. If the bot cannot find a writable text channel, it logs a warning and does not publish the panel.

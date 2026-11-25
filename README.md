@@ -52,7 +52,7 @@ Aira uses one Discord bot and one response channel for all characters. Isla rema
 
 All selected characters see the shared SQLite conversation history, so an additional character can react to Isla's response in the same turn. Each non-Isla character has its own Chroma memory namespace and its own SQLite relationship row per Discord user. Character replies are sent as separately named embeds. Bot-authored messages are ignored by the gateway, so characters cannot recursively trigger one another indefinitely.
 
-To add a character, create a JSON definition and its prompt file under `characters/`; see [characters/README.md](characters/README.md). Restart Aira after adding or editing character definitions.
+To add a character, create a JSON definition and its prompt file under `characters/`; see [characters/README.md](characters/README.md). Character definitions are loaded during each selection, so file-based changes apply to subsequent turns without a restart. The Discord Control Panel can also create and edit characters while the bot is running.
 
 ## State persistence and idempotency
 
@@ -128,7 +128,7 @@ SQLite is authoritative for structured state. Chroma is an auxiliary long-term m
 
 The development checkout and the runtime installation are intentionally separate:
 
-- `/root/aira` — development checkout. Edit code here, run tests, then commit and push to GitHub.
+- `$HOME/aira` — an example development checkout used for editing, testing, committing and pushing to GitHub.
 - `~/.local/share/aira` — runtime checkout. Do not edit source files here.
 
 The installed `aira` CLI operates on the runtime checkout. After a development commit is pushed, run `aira update`; it pulls the new commit, runs `bun install --frozen-lockfile` when the revision changes, registers Discord commands, and restarts Aira if it was running. Runtime `.env` and `.aira/` are preserved because they are local and ignored by Git.
@@ -136,7 +136,7 @@ The installed `aira` CLI operates on the runtime checkout. After a development c
 Recommended workflow:
 
 ```bash
-cd /root/aira
+cd "$HOME/aira"
 bun run typecheck
 bun run test:cli
 git add .
@@ -156,11 +156,11 @@ export DISCORD=YOUR_DISCORD_BOT_TOKEN
 curl -fsSL https://github.com/Tulipskun/aira/raw/refs/heads/main/install.sh | bash
 ```
 
-The installer downloads or updates Aira in `~/.local/share/aira`, installs Bun if needed, installs locked dependencies, saves the token in `.env` with mode `0600`, and starts the bot. Existing `.aira/` settings and data are preserved. No GitHub login, npm login, `aira setup`, or separate `aira start` command is required.
+The installer downloads or updates Aira in `~/.local/share/aira`, installs Bun if needed, installs locked dependencies, registers the `/isla` slash commands, saves the token in `.env` with mode `0600`, and starts the bot. Existing `.aira/` settings and data are preserved. No GitHub login, npm login, `aira setup`, or separate `aira start` command is required.
 
-When the bot connects, it posts an Aira Control Panel in the first server text channel where it can send messages. The Discord application owner can use the panel to choose the response channel and configure Gemini API keys and models. API keys are accepted through an ephemeral modal and stored in `.aira/settings.json` with restricted file permissions.
+When the bot connects, it posts an Aira Control Panel in the first server text channel where it can send messages. This panel location is only where the controls are posted; the bot does not process ordinary messages until a response channel is selected. The Discord application owner can use the panel to choose that response channel, configure Gemini API keys and model names, and create/edit character definitions and prompts. API keys are accepted through an ephemeral modal and stored in `.aira/settings.json` with mode `0600`; the panel is restricted to the Discord application owner.
 
-The bot must be invited to a server with View Channels, Send Messages, Read Message History, and Message Content intent enabled. A Gemini API key can be added after startup through the panel.
+Invite the bot with the `bot` and `applications.commands` OAuth scopes. Grant it View Channels, Send Messages, Read Message History, and Embed Links in the channels it uses, and enable the Message Content privileged intent in the Discord Developer Portal. A Gemini API key can be added after startup through the panel; without a key, Gemini-powered replies cannot run.
 
 To run the installer again after an update, repeat the same command. It updates the existing Git checkout and starts/restarts through the supervisor. To use another installation directory, set `AIRA_INSTALL_ROOT` before running the installer.
 
@@ -198,10 +198,15 @@ aira logs
 
 All commands return to the shell. `log` and `logs` print the last 100 lines instead of following the log stream.
 
+## Security and license
+
+Keep `.env`, `.aira/`, database files, logs and real API credentials private. See [SECURITY.md](SECURITY.md) for vulnerability reporting. This repository currently has no `LICENSE` file; public visibility does not grant a license to reuse, modify or redistribute the source.
+
 ## Documentation
 
 Detailed component contracts are maintained under `docs/`:
 
+- `docs/installation.md` — requirements, one-command install, Discord setup and runtime files.
 - `docs/architecture.md` — overall architecture and component boundaries.
 - `docs/pipeline.md` — turn-processing pipeline and response flow.
 - `docs/memory.md` — semantic and episodic memory behavior.
@@ -210,4 +215,4 @@ Detailed component contracts are maintained under `docs/`:
 - `docs/discord.md` — Discord commands and channel/session behavior.
 - `docs/scheduler.md` — per-session scheduling and debounce behavior.
 
-The README describes the current system at a high level; the component documents are the detailed contracts for individual subsystems.
+The README describes the current system at a high level; the component documents are the detailed contracts for individual subsystems. Older dated plans and design notes under `docs/superpowers/` are historical records, not current operational instructions.
