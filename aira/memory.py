@@ -131,6 +131,34 @@ async def is_duplicate_memory(vector: list[float], session_key: str) -> dict | N
     return found[0] if found and found[0]["score"] >= config.memory_dedupe_similarity else None
 
 
+async def ingest_memory_background(text: str, user_id: str, timestamp: str, session_key: str) -> None:
+    """Embed and persist a semantic memory without blocking the Discord reply pipeline."""
+    if not text or not text.strip():
+        return
+    try:
+        vector = await embed(text, "document")
+        duplicate = await is_duplicate_memory(vector, session_key)
+        if duplicate:
+            log.info("Skipped duplicate memory for user %s, score=%.2f", user_id, duplicate["score"])
+            return
+        save_memory_vector(
+            text, vector, user_id, timestamp, session_key,
+            {"eventTimestamp": timestamp, "createdAt": datetime.now(timezone.utc).isoformat()},
+        )
+    except Exception:
+        log.exception("Memory ingestion failed for user %s", user_id)
+
+
+async def persist_episode_background(session_key: str) -> None:
+    """Build and persist the latest episode for a session in the background."""
+    try:
+        episode = await build_recent_episode(session_key)
+        if episode:
+            await save_episode(episode)
+    except Exception:
+        log.exception("Episode persistence failed for session %s", session_key)
+
+
 def _local_parts(timestamp: str) -> tuple[str, int]:
     try:
         dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
