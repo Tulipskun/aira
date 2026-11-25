@@ -4,4 +4,4 @@ The scheduler holds a queue per session key. Incoming messages in the same sessi
 
 A message marked immediate flushes the existing batch and itself. Activity in another session flushes that session's pending messages. On process shutdown, queued batches are flushed and active background tasks are drained for a bounded period.
 
-Session keys are `user:<Discord user id>` for private conversations and `group:<Discord channel id>` for a joined group session.
+Session keys are `group:<Discord channel id>`. All users in the same Discord channel share one queue and conversation session; different channels remain isolated.
