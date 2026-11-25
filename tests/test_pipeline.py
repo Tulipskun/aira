@@ -188,7 +188,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
         self.assertIn("ชื่อที่ตัวจับชื่อเห็นในข้อความนี้ (เบาะแสเท่านั้น", captured["prompt"])
-        self.assertIn("เลือกได้ 0-4 คน", captured["prompt"])
+        self.assertIn("ไม่มีเพดานตายตัว", captured["prompt"])
 
     async def test_broadcast_word_keeps_the_selector_in_charge(self):
         chars = [
@@ -228,7 +228,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         # Room-wide requests follow the room order, not the model's list order.
         self.assertEqual([item.id for item in selected], [item.id for item in chars])
-        self.assertIn("เลือกได้ 0-4 คน", captured["prompt"])
+        self.assertIn("ไม่มีเพดานตายตัว", captured["prompt"])
 
     async def test_a_call_to_the_whole_room_wakes_every_character(self):
         chars = [
@@ -245,6 +245,20 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
              ):
             selected = await pipeline.select_characters({
                 "text": "ทุกคนคิดว่ายังไงบ้าง", "session_key": "group:room4",
+            })
+        self.assertEqual([item.id for item in selected], [item.id for item in chars])
+
+    async def test_no_speaker_cap_lets_every_character_answer(self):
+        chars = [Character(f"c{index}", f"C{index}", (f"C{index}",), Path(f"c{index}.md"))
+                 for index in range(6)]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(
+                 return_value={"addressed_to": "room",
+                               "selected_character_ids": [item.id for item in chars],
+                               "reason": "ทั้งห้องแชร์ความเห็น"})
+             ):
+            selected = await pipeline.select_characters({
+                "text": "ทุกคนช่วยแชร์ความเห็นหน่อย", "session_key": "group:nocap",
             })
         self.assertEqual([item.id for item in selected], [item.id for item in chars])
 
