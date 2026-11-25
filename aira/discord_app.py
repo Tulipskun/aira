@@ -304,10 +304,13 @@ class AiraBot(commands.Bot):
         return embed
 
     async def setup_hook(self):
-        from .memory import migrate_memory_sessions
+        from .memory import migrate_legacy_chroma, migrate_memory_sessions
+        legacy = migrate_legacy_chroma()
+        if legacy.get("migrated"):
+            log.info("Imported legacy Chroma memories into SQLite: %s", legacy)
         migration = await migrate_memory_sessions()
         if migration["backfilled"]:
-            log.info("Chroma memory sessions backfilled: %s", migration)
+            log.info("SQLite memory sessions backfilled: %s", migration)
         self.add_view(PanelView(self))
         log.info("Registered owner-only /aira admin panel command")
 
