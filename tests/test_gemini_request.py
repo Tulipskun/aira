@@ -162,8 +162,9 @@ class GeminiRequestTests(unittest.TestCase):
             output = asyncio.run(gemini.generate_character_reply("system", "context"))
         self.assertEqual(output["reply"], prose)
 
-    def test_json_like_output_is_never_published(self):
-        broken = '{"reply": "x", "summary": kom'
+    def test_json_like_output_without_a_finished_reply_is_never_published(self):
+        # Looks like JSON but no complete reply field: nothing usable may reach Discord.
+        broken = '{"summary": "x", "mood": kom'
         server_content = SimpleNamespace(
             model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
             output_transcription=SimpleNamespace(text=broken),
