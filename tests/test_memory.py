@@ -3,6 +3,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 from aira import memory
 from aira.config import config
 from aira.store import Store
@@ -83,5 +84,23 @@ class MemoryTests(unittest.TestCase):
         memory.save_memory_vector("far",[0,1,0],"1","2026-11-25T00:00:00Z","user:1")
         rows=memory.search_memories_by_vector([1,0,0],"user:1",2)
         self.assertEqual([row["text"] for row in rows],["nearest","far"])
+
+    def test_background_ingestion_saves_and_deduplicates_memory(self):
+        with patch.object(memory, "embed", new=AsyncMock(return_value=[1, 0, 0])) as embed_mock:
+            asyncio.run(memory.ingest_memory_background(
+                "Alice likes tea", "1", "2026-11-25T00:00:00Z", "user:1"))
+            asyncio.run(memory.ingest_memory_background(
+                "Alice likes tea", "1", "2026-11-25T00:00:00Z", "user:1"))
+        self.assertEqual(embed_mock.await_count, 2)
+        self.assertEqual(memory.count_memories({"session_key": "user:1"}), 1)
+
+    def test_background_episode_persistence(self):
+        episode = {"id": "episode-background", "text": "Alice event"}
+        with patch.object(memory, "build_recent_episode", new=AsyncMock(return_value=episode)) as build, \
+             patch.object(memory, "save_episode", new=AsyncMock()) as save:
+            asyncio.run(memory.persist_episode_background("user:1"))
+        build.assert_awaited_once_with("user:1")
+        save.assert_awaited_once_with(episode)
+
 
 if __name__=="__main__": unittest.main()

@@ -137,16 +137,12 @@ def get_discord_owner_id(owner_path: Path = OWNER_ID_PATH,
     value = saved
     if not value:
         reader = prompt or input
-        while True:
-            try:
-                value = reader("Discord Owner User ID: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                raise RuntimeError("No Discord owner ID was entered; startup cancelled") from None
-            if value.isdigit() and 17 <= len(value) <= 20:
-                break
-            notify("Enter a valid Discord user ID (17–20 digits).")
+        try:
+            value = reader("Discord Owner User ID: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise RuntimeError("No Discord owner ID was entered; startup cancelled") from None
     if not value.isdigit() or not 17 <= len(value) <= 20:
-        raise RuntimeError("Saved Discord owner ID is invalid; correct .aira/owner.id")
+        raise RuntimeError("Enter a valid Discord user ID (17–20 digits).")
     if not saved:
         parent = owner_path.parent
         parent.mkdir(mode=0o700, parents=True, exist_ok=True)

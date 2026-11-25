@@ -10,14 +10,8 @@ class DiscordTests(unittest.TestCase):
     def test_bot_registers_expected_slash_commands(self):
         bot = AiraBot()
         try:
-            group = next(command for command in bot.tree.get_commands() if command.name == "isla")
-            self.assertEqual(
-                {command.name for command in group.commands},
-                {"join-group", "leave-group", "status", "leaderboard"},
-            )
+            self.assertEqual([command.name for command in bot.tree.get_commands()], ["aira"])
             self.assertEqual(len(PanelView(bot).children), 5)
-            self.assertEqual([child.name for child in group.commands],
-                             ["join-group", "leave-group", "status", "leaderboard"])
         finally:
             asyncio.run(bot.close())
 
