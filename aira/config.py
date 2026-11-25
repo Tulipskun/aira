@@ -10,6 +10,9 @@ def _load_panel_settings() -> dict:
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError): return {}
 def _setting(key: str, default): return _load_panel_settings().get(key, default)
+def _model_setting(key: str, default: str, legacy_defaults: tuple[str, ...]) -> str:
+    value = str(_setting(key, default)).strip()
+    return default if value in legacy_defaults else value
 def _split_keys(value) -> list[str]:
     if isinstance(value, list): return [str(x).strip() for x in value if str(x).strip()]
     return [x.strip() for x in str(value or "").split(",") if x.strip()]
@@ -33,8 +36,8 @@ class Config:
     gemini1_keys: list[str] = field(default_factory=lambda: _split_keys(_setting("gemini1ApiKeys", _setting("geminiApiKeys", []))))
     gemini2_keys: list[str] = field(default_factory=lambda: _split_keys(_setting("gemini2ApiKeys", _setting("geminiApiKeys", []))))
     embedding_keys: list[str] = field(default_factory=lambda: _split_keys(_setting("embeddingApiKeys", _setting("geminiApiKeys", []))))
-    gemini1_model: str = field(default_factory=lambda: str(_setting("gemini1Model", "gemini-3.1-flash-lite")))
-    gemini2_model: str = field(default_factory=lambda: str(_setting("gemini2Model", "gemini-3.5-flash-lite")))
+    gemini1_model: str = field(default_factory=lambda: _model_setting("gemini1Model", "gemini-3.8-flash", ("gemini-3.1-flash-lite",)))
+    gemini2_model: str = field(default_factory=lambda: _model_setting("gemini2Model", "gemini-3.8-flash", ("gemini-3.5-flash-lite",)))
     embedding_model: str = field(default_factory=lambda: str(_setting("embeddingModel", "gemini-embedding-2")))
     embedding_dimension: int = field(default_factory=lambda: int(_setting("embeddingDimension", 768)))
     sqlite_path: Path = field(default_factory=lambda: _resolve_path(".aira/aira.db"))

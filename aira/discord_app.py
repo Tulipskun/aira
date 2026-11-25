@@ -161,8 +161,8 @@ class ModelModal(discord.ui.Modal, title="Gemini Model Settings"):
     def __init__(self):
         super().__init__()
         settings = load_settings()
-        self.gemini1.default = settings.get("gemini1Model", config.gemini1_model)
-        self.gemini2.default = settings.get("gemini2Model", config.gemini2_model)
+        self.gemini1.default = config.gemini1_model
+        self.gemini2.default = config.gemini2_model
         self.embedding.default = settings.get("embeddingModel", config.embedding_model)
 
     async def on_submit(self, interaction: discord.Interaction):

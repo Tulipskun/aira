@@ -45,6 +45,52 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertEqual(request["response_format"]["schema"], schema)
         self.assertFalse(request["store"])
 
+    def test_default_text_models_use_gemini_38_flash_for_both_stages(self):
+        import tempfile
+        from pathlib import Path
+        import aira.config as config_module
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.json"
+            with patch.object(config_module, "SETTINGS_PATH", settings_path):
+                cfg = config_module.Config()
+                self.assertEqual(cfg.gemini1_model, "gemini-3.8-flash")
+                self.assertEqual(cfg.gemini2_model, "gemini-3.8-flash")
+
+    def test_legacy_default_models_are_upgraded_but_custom_models_are_preserved(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        import aira.config as config_module
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.json"
+            settings_path.write_text(json.dumps({
+                "gemini1Model": "gemini-3.1-flash-lite",
+                "gemini2Model": "gemini-3.5-flash-lite",
+            }), encoding="utf-8")
+            with patch.object(config_module, "SETTINGS_PATH", settings_path):
+                cfg = config_module.Config()
+                self.assertEqual(cfg.gemini1_model, "gemini-3.8-flash")
+                self.assertEqual(cfg.gemini2_model, "gemini-3.8-flash")
+            settings_path.write_text(json.dumps({
+                "gemini1Model": "custom-model-a", "gemini2Model": "custom-model-b",
+            }), encoding="utf-8")
+            with patch.object(config_module, "SETTINGS_PATH", settings_path):
+                cfg = config_module.Config()
+                self.assertEqual(cfg.gemini1_model, "custom-model-a")
+                self.assertEqual(cfg.gemini2_model, "custom-model-b")
+
+    def test_interactions_use_configured_model_for_each_stage(self):
+        response = SimpleNamespace(output_text="ok", steps=[])
+        interactions = FakeInteractions(response)
+        fake_client = SimpleNamespace(aio=SimpleNamespace(interactions=interactions))
+        with patch.object(gemini, "_client", return_value=fake_client):
+            with patch.object(gemini.config, "gemini1_model", "gemini-3.8-flash"):
+                asyncio.run(gemini.generate_text("gemini1", "hello", "system"))
+            with patch.object(gemini.config, "gemini2_model", "gemini-3.8-flash"):
+                asyncio.run(gemini.generate_text("gemini2", "hello", "system"))
+        self.assertEqual([call["model"] for call in interactions.calls],
+                         ["gemini-3.8-flash", "gemini-3.8-flash"])
+
     def test_response_thought_signature_is_saved(self):
         response = SimpleNamespace(output_text="ok", steps=[
             SimpleNamespace(type="thought", signature="new-signature")
