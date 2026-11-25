@@ -22,6 +22,8 @@ Settings are written under `.aira/` with restrictive file permissions. Do not up
 - `/isla status` shows the current channel's shared conversation session.
 - `/isla leaderboard` shows the highest XP profiles.
 
+After a command schema update, the next startup synchronizes the `/isla` command group once, preserving unrelated application commands. The schema version is stored under `.aira/` to avoid syncing on every restart.
+
 Each channel selected as Aira's response channel has its own conversation history and semantic/episodic memory. Everyone speaking in that channel shares its context automatically; users do not need to join or leave a group. When the owner changes the response channel, that channel uses its own isolated history.
 
 ## Message processing
