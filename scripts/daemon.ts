@@ -15,7 +15,9 @@ const logFile = resolve(logDir, "aira.log");
 mkdirSync(logDir, { recursive: true });
 
 function log(line: string) {
-  appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`);
+  const entry = `${new Date().toISOString()} ${line}`;
+  appendFileSync(logFile, `${entry}\n`);
+  console.log(entry);
 }
 
 function isRunning(pid: number) {
@@ -101,8 +103,7 @@ if (chromaProcess.exitCode !== null || Date.now() >= deadline) await stop(1);
 
 // --------------------------------------------------------------------------- bot + watchdog
 //
-// The watchdog lives here, not in supervisor.ts: `supervisor.ts start` spawns this daemon detached
-// and exits immediately, so it can observe nothing. This process owns the bot child and can respawn
+// The watchdog lives in this foreground daemon. It owns the bot child and can respawn
 // it.
 //
 // What it watches for is the quiet failure: the Discord websocket stops delivering MESSAGE_CREATE

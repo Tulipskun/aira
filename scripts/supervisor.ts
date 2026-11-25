@@ -57,52 +57,36 @@ if (command === "start") {
   if (existsSync(pidFile)) {
     const pid = Number(await Bun.file(pidFile).text());
     if (Number.isInteger(pid) && pid > 0 && running(pid)) {
-      console.log(`[SUPERVISOR] Already running (pid ${pid})`);
-      process.exit(0);
+      console.error(`[SUPERVISOR] Already running (pid ${pid})`);
+      process.exit(1);
     }
   }
 
+  // Run the daemon in the foreground so installers and service managers keep
+  // the server logs attached to their terminal instead of silently daemonizing.
   const child = spawn(process.execPath, ["run", daemon], {
     cwd: root,
-    stdio: "ignore",
-    detached: true,
+    stdio: "inherit",
+    detached: false,
     env: process.env,
   });
-  child.unref();
 
-  const pid = child.pid;
-  if (!pid) {
-    console.error("[SUPERVISOR] Failed to start daemon: no pid returned");
-    process.exit(1);
-  }
+  const forwardSignal = (signal: NodeJS.Signals) => {
+    try { child.kill(signal); } catch {}
+  };
+  process.once("SIGINT", () => forwardSignal("SIGINT"));
+  process.once("SIGTERM", () => forwardSignal("SIGTERM"));
 
-  console.log(`[SUPERVISOR] Starting (pid ${pid})...`);
-  const result = await waitForBotReady(
-    async () => {
-      try {
-        const response = await fetch(`http://127.0.0.1:${config.health.port}/health`, {
-          signal: AbortSignal.timeout(5_000),
-        });
-        if (!response.ok) return false;
-        const body = (await response.json()) as { gatewayReady?: boolean };
-        return body.gatewayReady === true;
-      } catch {
-        return false;
-      }
-    },
-    () => running(pid),
-  );
-
-  if (result.ready) {
-    console.log(`[SUPERVISOR] Ready (pid ${pid})`);
-    process.exit(0);
-  }
-
-  if (running(pid)) {
-    try { process.kill(pid, "SIGTERM"); } catch {}
-  }
-  console.error(`[SUPERVISOR] Start failed: ${result.reason}`);
-  process.exit(1);
+  const code = await new Promise<number>((resolveExit) => {
+    child.once("error", (error) => {
+      console.error(`[SUPERVISOR] Failed to start daemon: ${error.message}`);
+      resolveExit(1);
+    });
+    child.once("exit", (exitCode, signal) => {
+      resolveExit(exitCode ?? (signal === "SIGINT" ? 130 : 1));
+    });
+  });
+  process.exit(code);
 }
 
 if (command === "stop") {

@@ -13,6 +13,7 @@ assert.match(installer, /AIRA_REPO_URL/);
 assert.match(installer, /bun install --frozen-lockfile/);
 assert.match(installer, /bun run scripts\/register-commands\.ts/);
 assert.match(installer, /scripts\/supervisor\.ts start/);
+assert.match(readFileSync(resolve(import.meta.dir, "supervisor.ts"), "utf8"), /stdio: "inherit"/);
 assert.match(installer, /AIRA_TOKEN_TO_SAVE/);
 assert.match(installer, /chmodSync\(file, 0o600\)/);
 assert.doesNotMatch(installer, /aira setup/);
