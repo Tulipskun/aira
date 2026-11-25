@@ -151,11 +151,10 @@ class Store:
                     bond=CASE WHEN user_profiles.bond='stranger' THEN excluded.bond ELSE user_profiles.bond END,
                     xp=CASE WHEN user_profiles.xp=0 THEN excluded.xp ELSE user_profiles.xp END""",
                     (row["user_id"], row["user_name"] or row["user_id"], bond, int(row["xp"] or 0)))
-            if not self._truthy("AIRA_KEEP_LEGACY_SCHEMA"):
-                missing = self.db.execute("""SELECT COUNT(*) FROM relationships
-                    WHERE user_id NOT IN (SELECT user_id FROM user_profiles)""").fetchone()[0]
-                if not missing:
-                    self.db.execute("DROP TABLE relationships")
+            missing = self.db.execute("""SELECT COUNT(*) FROM relationships
+                WHERE user_id NOT IN (SELECT user_id FROM user_profiles)""").fetchone()[0]
+            if not missing:
+                self.db.execute("DROP TABLE relationships")
         self.db.execute("""CREATE TABLE IF NOT EXISTS character_relationships(
             character_id TEXT NOT NULL, user_id TEXT NOT NULL, relationship TEXT NOT NULL,
             updated_at TEXT NOT NULL, PRIMARY KEY(character_id,user_id))""")
@@ -167,10 +166,6 @@ class Store:
             serial = json.dumps(normalized, ensure_ascii=False)
             if serial != (row["facts_json"] or "[]"):
                 self.db.execute("UPDATE user_profiles SET facts_json=? WHERE user_id=?", (serial, row["user_id"]))
-
-    @staticmethod
-    def _truthy(name: str) -> bool:
-        return str(__import__("os").getenv(name, "")).lower() in {"1", "true", "yes", "on"}
 
     def _migrate_message_sessions(self) -> dict[str, int]:
         rows = self.db.execute(
