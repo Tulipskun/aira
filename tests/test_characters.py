@@ -14,15 +14,20 @@ class CharacterTests(unittest.TestCase):
     def test_approved_anime_characters_are_registered_with_distinct_personalities(self):
         from aira.characters import load_characters, load_character_prompt
         characters = {item.id: item for item in load_characters()}
-        self.assertTrue({"isla", "rem", "bocchi"}.issubset(characters))
+        self.assertTrue({"isla", "rem", "bocchi", "origami"}.issubset(characters))
         self.assertEqual(characters["rem"].name, "Rem")
         self.assertEqual(characters["bocchi"].name, "Hitori Gotoh")
+        self.assertEqual(characters["origami"].name, "Origami Tobiichi")
+        self.assertIn("หน้าตาย", load_character_prompt(characters["origami"]))
+        self.assertTrue(characters["origami"].avatar_url.startswith("https://"))
         rem_prompt = load_character_prompt(characters["rem"])
         bocchi_prompt = load_character_prompt(characters["bocchi"])
         self.assertIn("เด็ดเดี่ยว", rem_prompt)
         self.assertIn("ขี้อาย", bocchi_prompt)
         self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ", rem_prompt)
         self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ", bocchi_prompt)
+        self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ",
+                      load_character_prompt(characters["origami"]))
 
     def test_character_avatar_url_must_be_https(self):
         character = _validate({"id": "rem", "name": "Rem", "promptFile": "prompts/rem.md",

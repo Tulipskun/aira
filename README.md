@@ -7,7 +7,7 @@ Discord AI character bot powered by Gemini and SQLite. Runtime: Python 3.13.
 - One Discord bot with Isla and multiple configurable characters.
 - Gemini 1 generates character dialogue; Gemini 2 selects speakers and analyzes relationship state, facts and memory.
 - Multi-user group chats with a social speaker scheduler: characters may stay silent or join when relevant.
-- Up to two characters can speak in the same turn, including Rem and Bocchi together without Isla; direct mentions take priority.
+- Up to two characters can speak in the same turn, including Rem, Bocchi and Origami together without Isla; direct mentions take priority.
 - Each character has isolated semantic/episodic memories and its own perspective on other characters.
 - Shared per-channel conversation history, per-user relationship state and SQLite long-term memory.
 - Owner-only Discord Control Panel for Gemini keys/models, response channel and character prompts.
