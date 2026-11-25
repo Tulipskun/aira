@@ -494,7 +494,7 @@ async def run_bot():
     if not config.discord_token:
         raise RuntimeError("Discord token is missing; start main.py and enter it in the console")
     if not config.gemini_keys:
-        log.warning("GEMINI_API_KEY is not set yet; configure it through the Discord Control Panel")
+        log.warning("Gemini API key is not configured; add it through /aira")
     config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     from .warmup import warm_network
     await warm_network()
