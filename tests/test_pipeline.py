@@ -187,7 +187,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                 "session_key": "group:greet",
             })
         self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
-        self.assertIn("ชื่อที่ตรวจพบในข้อความนี้", captured["prompt"])
+        self.assertIn("ชื่อที่ตัวจับชื่อเห็นในข้อความนี้ (เบาะแสเท่านั้น", captured["prompt"])
         self.assertIn("เลือกได้ 0-4 คน", captured["prompt"])
 
     async def test_broadcast_word_keeps_the_selector_in_charge(self):
