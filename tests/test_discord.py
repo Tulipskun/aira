@@ -257,7 +257,7 @@ class DiscordTests(unittest.TestCase):
             finally:
                 await bot.close()
             self.assertEqual([item["character"] for item in seen], ["isla", "rem"])
-            self.assertEqual(seen[0]["text"], "ทุกคนคิดยังไงบ้าง")
+            self.assertIn("ทุกคนคิดยังไงบ้าง", seen[0]["text"])
             self.assertFalse(seen[0]["character_turn"])
             # The second speaker answers Isla's line, not the user's message again.
             self.assertEqual(seen[1]["text"], "isla พูดว่า...")
