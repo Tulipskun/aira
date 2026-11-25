@@ -315,47 +315,6 @@ def _image_catalog_prompt(character_id: str | None = None) -> str:
     return "\n".join(entries) if entries else "(ไม่มีรูปภาพให้ใช้ — ส่ง none เสมอ)"
 
 
-def build_context(history: list[dict], current: str, user_name: str, timestamp: str,
-                  memory_items: list[dict], profile: dict | None,
-                  group_profiles: list[dict], group: bool, media_summary: str = "") -> str:
-    lines = ["บทสนทนาก่อนหน้า:"]
-    for item in history:
-        if item.get("role") == "model":
-            role = item.get("user_name") or "Isla"
-        else:
-            role = item.get("user_name") or "User"
-            if item.get("user_id"):
-                role += f" [Discord User ID: {item['user_id']}]"
-        date = thai_timestamp(item.get("timestamp"))
-        text = str(item.get("text") or "")
-        if item.get("file_name"):
-            text += f" [file: {item['file_name']}]"
-        lines.append(f"[{date}] {role}: {text}")
-    lines.extend(["", f"ข้อความล่าสุดจาก {user_name} ({timestamp}):", current or "(ไม่มีข้อความแนบมา)"])
-    if media_summary:
-        lines.extend(["", f"ผู้ใช้แนบไฟล์: {media_summary}"])
-    if memory_items:
-        lines.extend(["", "<retrieved_memories>"])
-        for memory in memory_items:
-            lines.append(f"- {memory.get('timestamp','')}: {memory.get('text','')} (relevance={memory.get('score',1):.2f})")
-        lines.append("</retrieved_memories>")
-    if group:
-        lines.extend(["", "<group_session>"])
-        for item in group_profiles:
-            lines.append(f"<user id={item['user_id']} name={item['user_name']}>")
-            lines.append(f"nicknames={', '.join(item.get('nickname', []))}")
-            lines.extend(f"fact={f['text']}" for f in item["facts"] if f.get("status") != "historical")
-            lines.append("</user>")
-        lines.append("</group_session>")
-    if profile:
-        lines.extend(["", "<user_profile>", f"userId={profile['user_id']}", f"name={profile['user_name']}",
-                      f"nicknames={', '.join(profile.get('nickname', []))}"])
-        for fact in profile["facts"]:
-            lines.append(f"fact[{fact.get('status','confirmed')}]: {fact['text']}")
-        lines.append("</user_profile>")
-    return "\n".join(lines)
-
-
 def _live_parts(input_parts: list[dict]):
     import base64
     parts = []

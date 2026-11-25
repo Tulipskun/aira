@@ -123,6 +123,46 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                 "text": "55555", "session_key": session, "user_id": "1", "user": "Yuuta",
             }), [])
 
+    async def test_room_wide_greeting_asks_the_selector_for_everyone_named(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            Character("bocchi", "Bocchi", ("Bocchi", "โบจจิ", "บจจิ"), Path("bocchi.md")),
+            Character("origami", "Origami Tobiichi", ("Origami", "โอริกามิ"), Path("origami.md")),
+        ]
+        captured = {}
+
+        async def fake_generate(stage, prompt, system, **kwargs):
+            captured["prompt"] = prompt
+            return {"selected_character_ids": ["bocchi", "isla", "origami", "rem"],
+                    "reason": "ผู้ใช้เรียกทุกคนให้ทักทาย"}
+
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(side_effect=fake_generate)):
+            selected = await pipeline.select_characters({
+                "text": "บจจิ, เรม, โอริกามิ, ไอลาๆๆ ทักทายเพื่อนใหม่กันหน่อย",
+                "session_key": "group:greet",
+            })
+        self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
+        self.assertIn("ชื่อที่ตรวจพบในข้อความนี้", captured["prompt"])
+        self.assertIn("เลือกได้ 0-4 คน", captured["prompt"])
+
+    async def test_broadcast_word_keeps_the_selector_in_charge(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            Character("origami", "Origami Tobiichi", ("Origami", "โอริกามิ"), Path("origami.md")),
+        ]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(
+                 return_value={"selected_character_ids": ["isla", "rem", "origami"],
+                               "reason": "ทุกคนในห้องควรทักทาย"})) as selector:
+            selected = await pipeline.select_characters({
+                "text": "ทุกคนทักทายโอริกามิกันหน่อย", "session_key": "group:greet2",
+            })
+        self.assertEqual([item.id for item in selected], ["isla", "rem", "origami"])
+        selector.assert_awaited_once()
+
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({
             "user_id": "alice", "user": "Alice", "text": "Hi Isla",
