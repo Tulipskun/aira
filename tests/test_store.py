@@ -14,14 +14,13 @@ class StoreTests(unittest.TestCase):
         self.db.close()
         self.temp.cleanup()
 
-    def test_session_keys_and_group_membership(self):
+    def test_sessions_are_scoped_to_channel_for_every_user(self):
         self.assertEqual(user_session_key("1"), "user:1")
         self.assertEqual(group_session_key("9"), "group:9")
-        self.db.join_group("1", "9")
         self.assertEqual(self.db.session_key_for("1", "9"), "group:9")
-        self.assertEqual(self.db.session_key_for("2", "9"), "user:2")
-        self.db.leave_group("1")
-        self.assertEqual(self.db.session_key_for("1", "9"), "user:1")
+        self.assertEqual(self.db.session_key_for("2", "9"), "group:9")
+        self.assertEqual(self.db.session_key_for("1", "10"), "group:10")
+        self.assertEqual(self.db.session_key_for("1", None), "user:1")
 
     def test_history_is_session_scoped(self):
         now = utc_now()
