@@ -26,6 +26,8 @@ def _load_discord_token() -> str:
 class Config:
     discord_token: str = field(default_factory=_load_discord_token)
     owner_id: str = field(default_factory=_load_owner_id)
+    chroma_collection: str = "aira_memories"
+    episode_collection: str = "aira_episodes"
     response_channel_id: str = ""
     gemini_keys: list[str] = field(default_factory=lambda: _split_keys(_setting("geminiApiKeys", [])))
     gemini1_keys: list[str] = field(default_factory=lambda: _split_keys(_setting("gemini1ApiKeys", _setting("geminiApiKeys", []))))
