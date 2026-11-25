@@ -15,9 +15,11 @@ import {
   type TextChannel,
 } from "discord.js";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { setResponseChannelId, getResponseChannelId } from "./discord-config.js";
 import { config } from "../config.js";
+import { loadCharacters } from "../characters/registry.js";
 
 const SETTINGS_FILE = resolve(".aira/settings.json");
 let ownerId: string | null = null;
@@ -52,7 +54,9 @@ function panelEmbed(): EmbedBuilder {
       `**Gemini 1:** ${config.models.gemini1}`,
       `**Gemini 2:** ${config.models.gemini2}`,
       "",
-      "เลือกช่องตอบกลับ แล้วเพิ่ม Gemini API Key เพื่อเริ่มใช้งาน AI",
+      "**ตัวละคร:** " + loadCharacters().map(character => character.name).join(", "),
+      "",
+      "เลือกช่องตอบกลับ เพิ่ม Gemini API Key หรือจัดการตัวละครจากปุ่มด้านล่าง",
     ].join("\n"))
     .setFooter({ text: "การตั้งค่าสำคัญอนุญาตเฉพาะเจ้าของแอป Discord" });
 }
@@ -67,9 +71,10 @@ function panelRows() {
   const api = new ButtonBuilder().setCustomId("aira:api").setLabel("ตั้งค่า Gemini API").setStyle(ButtonStyle.Primary);
   const models = new ButtonBuilder().setCustomId("aira:models").setLabel("ตั้งค่า Model").setStyle(ButtonStyle.Secondary);
   const refresh = new ButtonBuilder().setCustomId("aira:refresh").setLabel("รีเฟรช").setStyle(ButtonStyle.Success);
+  const character = new ButtonBuilder().setCustomId("aira:character").setLabel("เพิ่ม / แก้ตัวละคร").setStyle(ButtonStyle.Secondary);
   return [
     new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(channel),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(api, models, refresh),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(api, models, character, refresh),
   ];
 }
 
@@ -154,8 +159,8 @@ export async function handleControlPanelInteraction(interaction: Interaction): P
       return true;
     }
     const modal = new ModalBuilder()
-      .setCustomId(customId === "aira:api" ? "aira:api-submit" : "aira:models-submit")
-      .setTitle(customId === "aira:api" ? "Gemini API Key" : "Gemini Model Settings");
+      .setCustomId(customId === "aira:api" ? "aira:api-submit" : customId === "aira:models" ? "aira:models-submit" : "aira:character-submit")
+      .setTitle(customId === "aira:api" ? "Gemini API Key" : customId === "aira:models" ? "Gemini Model Settings" : "Character Editor");
     if (customId === "aira:api") {
       const key = new TextInputBuilder()
         .setCustomId("keys")
@@ -165,7 +170,7 @@ export async function handleControlPanelInteraction(interaction: Interaction): P
         .setMaxLength(4000)
         .setPlaceholder("AIza...");
       modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(key));
-    } else {
+    } else if (customId === "aira:models") {
       const settings = await readSettings();
       const gemini1 = new TextInputBuilder().setCustomId("gemini1").setLabel("Gemini 1 model").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100).setValue(settings.gemini1Model ?? config.models.gemini1);
       const gemini2 = new TextInputBuilder().setCustomId("gemini2").setLabel("Gemini 2 model").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100).setValue(settings.gemini2Model ?? config.models.gemini2);
@@ -174,6 +179,19 @@ export async function handleControlPanelInteraction(interaction: Interaction): P
         new ActionRowBuilder<TextInputBuilder>().addComponents(gemini1),
         new ActionRowBuilder<TextInputBuilder>().addComponents(gemini2),
         new ActionRowBuilder<TextInputBuilder>().addComponents(embedding),
+      );
+    } else {
+      const id = new TextInputBuilder().setCustomId("id").setLabel("Character ID (a-z, 0-9, _ or -)").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(32);
+      const name = new TextInputBuilder().setCustomId("name").setLabel("ชื่อที่แสดง").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80);
+      const aliases = new TextInputBuilder().setCustomId("aliases").setLabel("ชื่อเรียกอื่น คั่นด้วย comma").setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(500);
+      const prompt = new TextInputBuilder().setCustomId("prompt").setLabel("บุคลิก / System Prompt (เว้นว่างเพื่อคงค่าเดิม)").setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(4000);
+      const enabled = new TextInputBuilder().setCustomId("enabled").setLabel("เปิดใช้งาน? true หรือ false").setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(5).setValue("true");
+      modal.addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(id),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(name),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(aliases),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(prompt),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(enabled),
       );
     }
     await interaction.showModal(modal);
@@ -194,6 +212,59 @@ export async function handleControlPanelInteraction(interaction: Interaction): P
     process.env.GEMINI2_API_KEYS = keys;
     process.env.GEMINI_EMBEDDING2_API_KEYS = keys;
     await interaction.reply({ content: "บันทึก Gemini API Key แล้ว สามารถเริ่มคุยกับ Aira ได้เลย", flags: MessageFlags.Ephemeral });
+    if (interaction.message) await interaction.message.edit({ embeds: [panelEmbed()], components: panelRows() });
+    return true;
+  }
+
+  if (interaction.isModalSubmit() && customId === "aira:character-submit") {
+    const id = interaction.fields.getTextInputValue("id").trim().toLowerCase();
+    const name = interaction.fields.getTextInputValue("name").trim();
+    const aliases = interaction.fields.getTextInputValue("aliases").split(",").map(value => value.trim()).filter(Boolean);
+    const prompt = interaction.fields.getTextInputValue("prompt").trim();
+    const enabledInput = interaction.fields.getTextInputValue("enabled").trim().toLowerCase();
+    if (!/^[a-z0-9_-]{1,32}$/.test(id) || !name) {
+      await interaction.reply({ content: "Character ID ต้องเป็น a-z, 0-9, _ หรือ - และต้องมีชื่อ", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+    if (enabledInput && !["true", "false"].includes(enabledInput)) {
+      await interaction.reply({ content: "ค่าเปิดใช้งานต้องเป็น true หรือ false", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+    if (id === "isla" && enabledInput === "false") {
+      await interaction.reply({ content: "ไม่สามารถปิด Isla ได้ เพราะเป็นตัวละครหลักของระบบ", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+    const activeCharacters = loadCharacters().filter(character => character.id !== id);
+    const incomingAliases = [name, ...aliases].map(value => value.toLocaleLowerCase());
+    const existingAliases = new Set(activeCharacters.flatMap(character => character.aliases.map(value => value.toLocaleLowerCase())));
+    if (incomingAliases.some(alias => existingAliases.has(alias))) {
+      await interaction.reply({ content: "ชื่อหรือ alias นี้ถูกใช้โดยตัวละครอื่นแล้ว", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+    const definitionFile = resolve("characters", id + ".json");
+    const promptFile = resolve("characters", "prompts", id + ".md");
+    let existing: Record<string, unknown> = {};
+    if (existsSync(definitionFile)) {
+      try { existing = JSON.parse(readFileSync(definitionFile, "utf8")) as Record<string, unknown>; } catch {}
+    }
+    let promptText = prompt;
+    if (!promptText && typeof existing.promptFile === "string") {
+      try { promptText = readFileSync(resolve("characters", existing.promptFile), "utf8"); } catch {}
+    }
+    if (!promptText) {
+      await interaction.reply({ content: "ตัวละครใหม่ต้องใส่ System Prompt ด้วย", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+    await mkdir(dirname(promptFile), { recursive: true });
+    await writeFile(promptFile, promptText.trim() + "\n", "utf8");
+    await writeFile(definitionFile, JSON.stringify({
+      id,
+      name,
+      aliases,
+      promptFile: "prompts/" + id + ".md",
+      enabled: enabledInput ? enabledInput === "true" : existing.enabled !== false,
+    }, null, 2) + "\n", "utf8");
+    await interaction.reply({ content: "บันทึกตัวละคร " + name + " แล้ว การเพิ่ม/แก้ไขมีผลกับข้อความถัดไป", flags: MessageFlags.Ephemeral });
     if (interaction.message) await interaction.message.edit({ embeds: [panelEmbed()], components: panelRows() });
     return true;
   }
