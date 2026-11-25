@@ -50,7 +50,7 @@
 - .aira/ is private persistent runtime state. Never delete it, include it in Git, or replace it during a code update.
 - SQLite schema changes must be additive and preserve conversation history, profiles, relationships and session data.
 - Chroma is durable application data. Preserve collection names, IDs, embeddings, metadata and remote CHROMA_URL support.
-- Preserve the owner-only Discord Control Panel, per-user/group sessions, character limits, relationship thresholds and Gemini thought-signature flow.
+- Preserve the owner-only Discord Control Panel, per-channel conversation sessions, per-user profiles, character limits, relationship thresholds and Gemini thought-signature flow.
 - Isla is always primary; at most one additional character may speak per turn. Direct character mentions take priority.
 - Do not run global Discord command sync on every startup; preserve unrelated application commands.
 - Keep secrets out of source, logs, tests, CI output and commits. Keep payload dumps private and redacted.
