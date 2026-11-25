@@ -50,17 +50,27 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.id for item in selected], ["bocchi", "rem"])
         selector.assert_awaited_once()
 
-    async def test_explicit_character_address_bypasses_selector(self):
+    async def test_named_character_is_hinted_to_the_selector_instead_of_short_circuited(self):
         chars = [
             Character("isla", "Isla", ("Isla",), Path("isla.md")),
             Character("rem", "Rem", ("Rem",), Path("rem.md")),
             Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
         ]
+        captured = {}
+
+        async def fake_generate(stage, prompt, system, **kwargs):
+            captured["prompt"] = prompt
+            captured["kwargs"] = kwargs
+            return {"selected_character_ids": ["rem"], "reason": "ผู้ใช้เรียกเรม"}
+
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock()) as selector:
-            selected = await pipeline.select_characters({"text": "Rem ช่วยตอบหน่อย"})
+             patch.object(pipeline, "generate_json", new=AsyncMock(side_effect=fake_generate)) as selector:
+            selected = await pipeline.select_characters({"text": "Rem ช่วยตอบหน่อย",
+                                                         "session_key": "group:named"})
         self.assertEqual([item.id for item in selected], ["rem"])
-        selector.assert_not_awaited()
+        selector.assert_awaited_once()
+        self.assertIn("ชื่อที่ตรวจพบในข้อความนี้ต้องไม่ถูกข้าม: rem", captured["prompt"])
+        self.assertTrue(captured["kwargs"]["fast"])  # short decision answer, small output cap
 
     async def test_selector_can_choose_silence_and_invalid_output_does_not_fall_back_to_isla(self):
         chars = [Character("isla", "Isla", ("Isla",), Path("isla.md"))]

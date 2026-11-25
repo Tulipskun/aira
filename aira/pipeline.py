@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -142,14 +143,11 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
     """Choose room participants before generation; never assign Isla as an implicit default."""
     characters = load_characters()
     current = str(message.get("text") or "(ไม่มีข้อความ)")
+    # Every message goes through the decision model: a fixed shortcut kept answering with
+    # whoever the alias matcher caught, and names it missed (nicknames, typos, several people
+    # in one message) never got to answer.
     mentioned = find_mentioned_characters(current, characters)
-    # One named character answers without asking the model. A room-wide greeting or a message
-    # that names several characters is a decision the model has to make, otherwise the names
-    # it failed to spot (nicknames, typos) never get to answer.
     broadcast = bool(BROADCAST_TEXT.search(current)) or len(mentioned) > 1
-    if mentioned and not broadcast:
-        log.info("Character selector: explicit address selected=%s", [item.id for item in mentioned])
-        return mentioned
 
     history = store.get_history_by_budget(
         str(message["session_key"]), history_budget_tokens("reply"), estimate_tokens,
@@ -167,6 +165,8 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         if broadcast else
         f"ถ้าผู้ใช้เอ่ยชื่อใคร ให้เลือกคนนั้นก่อน แล้วเสริมด้วยคนที่ต่อยอดบทสนทนาได้ (สูงสุด {max_speakers} คน)"
     )
+    if mentioned:
+        attended += " ชื่อที่ตรวจพบในข้อความนี้ต้องไม่ถูกข้าม: " + ", ".join(item.id for item in mentioned)
     prompt = "\n".join([
         "เลือกตัวละครที่ควรเข้าร่วมตอบข้อความล่าสุดในห้องแชทนี้ โดยดูบริบทและบุคลิกจากรายชื่อตัวละคร",
         f"ห้องนี้เป็นแชทกลุ่มเล็ก ๆ ที่มีตัวละคร {len(characters)} ตัวคุยกับคนจริง เป้าหมายคือบทสนทนาที่ต่อเนื่องเป็นธรรมชาติ ไม่ใช่การตอบเฉพาะเมื่อถูกถามตรง ๆ",
@@ -188,6 +188,7 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         "selected_character_ids": {"type": "array", "items": {"type": "string"}},
         "reason": {"type": "string"},
     }, "required": ["selected_character_ids", "reason"]}
+    decision_started = time.monotonic()
     parsed = await generate_json(
         "gemini1", prompt,
         "คุณเป็นตัวจัดสรรผู้พูดในกลุ่มตัวละคร Discord เท่านั้น ไม่ใช่ตัวละครใด ๆ "
@@ -196,8 +197,9 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         debug_context={"user_id": str(message.get("user_id") or ""),
                        "user_name": str(message.get("user") or ""),
                        "character_id": "orchestrator", "turn_id": str(uuid.uuid4())},
-        retry_guard=superseded,
+        retry_guard=superseded, fast=True,
     )
+    decision_ms = int((time.monotonic() - decision_started) * 1000)
     if not parsed or not isinstance(parsed.get("selected_character_ids"), list):
         log.error("Character selector returned invalid structured output; no character will be defaulted")
         return []
@@ -209,8 +211,9 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         if selected:
             log.info("Character selector kept the room silent; continuing with %s",
                      [item.id for item in selected])
-    log.info("Character selector decision: selected=%s reason=%s", [item.id for item in selected],
-             str(parsed.get("reason") or "")[:240])
+    log.info("Character selector decision: selected=%s mentioned=%s ms=%s reason=%s",
+             [item.id for item in selected], [item.id for item in mentioned], decision_ms,
+             str(parsed.get("reason") or "")[:200])
     return selected
 
 

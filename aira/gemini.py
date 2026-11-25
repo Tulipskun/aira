@@ -331,9 +331,13 @@ def _live_parts(input_parts: list[dict]):
     return parts
 
 
+DECISION_MAX_OUTPUT_TOKENS = 384
+
+
 async def _create_live_response(stage: str, input_parts: list[dict], system_instruction: str,
                                 response_schema: dict | None = None,
-                                debug_context: dict | None = None) -> str:
+                                debug_context: dict | None = None,
+                                max_output_tokens: int | None = None) -> str:
     key_attempts = 0
     retry = 0
     attempt = 0
@@ -457,11 +461,13 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
 
 async def generate_text(stage: str, prompt: str, system_instruction: str,
                         media_parts: list[dict] | None = None, schema: dict | None = None,
-                        debug_context: dict | None = None) -> str:
+                        debug_context: dict | None = None, fast: bool = False) -> str:
+    """Run one live turn. ``fast`` caps the answer for short structured decisions."""
     parts = [{"type": "text", "text": prompt}, *(media_parts or [])]
     return await _create_live_response(
         stage, parts, system_instruction, response_schema=schema,
         debug_context=debug_context,
+        max_output_tokens=DECISION_MAX_OUTPUT_TOKENS if fast else None,
     )
 
 
@@ -525,7 +531,7 @@ def _salvage_character_reply(raw: str) -> dict | None:
 async def generate_json(stage: str, prompt: str, system_instruction: str,
                         media_parts: list[dict] | None = None, schema: dict | None = None,
                         debug_context: dict | None = None, attempts: int = 2,
-                        salvage=None, retry_guard=None) -> dict | None:
+                        salvage=None, retry_guard=None, fast: bool = False) -> dict | None:
     """Return a parsed JSON answer, retrying the lossy audio transcription channel.
 
     The live model answers with audio and the JSON only arrives as its transcription, so an
@@ -538,7 +544,7 @@ async def generate_json(stage: str, prompt: str, system_instruction: str,
     raw = ""
     for attempt in range(1, attempts + 1):
         raw = await generate_text(stage, prompt, system_instruction, media_parts=media_parts,
-                                  schema=schema, debug_context=debug_context)
+                                  schema=schema, debug_context=debug_context, fast=fast)
         parsed = _extract_object(raw)
         if parsed is not None:
             return parsed
