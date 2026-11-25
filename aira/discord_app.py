@@ -260,46 +260,21 @@ class IslaCommands(app_commands.Group):
     def __init__(self):
         super().__init__(name="isla", description="คำสั่ง isla")
 
-    @app_commands.command(name="join-group", description="เข้าร่วม session รวมของแชแนลนี้ (แชร์ context กับสมาชิกคนอื่นที่เข้าร่วม)")
-    async def join_group(self, interaction: discord.Interaction):
-        if not interaction.channel_id:
+    @app_commands.command(name="status", description="ดูสถานะบทสนทนาของห้องนี้")
+    async def status(self, interaction: discord.Interaction):
+        channel_id = str(interaction.channel_id) if interaction.channel_id else None
+        if not channel_id:
             await interaction.response.send_message("ไม่พบ channel", ephemeral=True)
             return
-        result = store.join_group(str(interaction.user.id), str(interaction.channel_id))
-        if result["status"] == "already":
-            message = "อยู่ในเซสชันรวมของห้องนี้อยู่แล้วค่ะ"
-        elif result["status"] == "moved":
-            message = f"ย้ายจาก <#{result['previous_channel']}> มาที่ <#{interaction.channel_id}> แล้ว"
-        else:
-            message = "เข้าร่วมเซสชันรวมแล้ว ประวัติและความทรงจำในห้องนี้จะใช้ร่วมกัน"
+        key = store.session_key_for(str(interaction.user.id), channel_id)
+        lines = [
+            f"**Session ของห้องนี้:** {key}",
+            "ทุกคนที่คุยกับ Aira ในห้องนี้ใช้ประวัติและความทรงจำร่วมกัน",
+        ]
         response_channel = get_response_channel_id()
-        if response_channel and str(interaction.channel_id) != response_channel:
-            message += "\nหมายเหตุ: ห้องนี้ยังไม่ใช่ห้องที่ Aira รับข้อความ กรุณาตั้งค่า Response Channel ใน Control Panel ด้วย"
-        await interaction.response.send_message(message, ephemeral=True)
-
-    @app_commands.command(name="leave-group", description="ออกจาก session รวม กลับไปใช้ session ส่วนตัว")
-    async def leave_group(self, interaction: discord.Interaction):
-        previous = store.leave_group(str(interaction.user.id))
-        message = f"ออกจากเซสชันรวมของ <#{previous['channel_id']}> แล้ว กลับสู่เซสชันส่วนตัว" if previous else "ไม่ได้อยู่ในเซสชันรวมอยู่แล้ว"
-        await interaction.response.send_message(message, ephemeral=True)
-
-    @app_commands.command(name="status", description="ดูสถานะ session ปัจจุบัน และรายชื่อคนที่เข้าร่วมในแชแนลนี้")
-    async def status(self, interaction: discord.Interaction):
-        user_id = str(interaction.user.id)
-        key = store.session_key_for(user_id, str(interaction.channel_id) if interaction.channel_id else None)
-        membership = store.group_membership(user_id)
-        lines = [f"**เซสชันข้อความถัดไป:** {key}"]
-        lines.append(f"เข้าร่วม <#{membership['channel_id']}> ตั้งแต่ {membership['joined_at']}" if membership else "กำลังใช้เซสชันส่วนตัว")
-        channel_id = key.removeprefix("group:") if key.startswith("group:") else None
-        if channel_id:
-            others = [x for x in store.group_members(channel_id) if x["user_id"] != user_id]
-            lines.append(f"**สมาชิกอื่น ({len(others)}):** " + (" ".join(f"<@{x['user_id']}>" for x in others) or "ไม่มี"))
-        if membership and str(interaction.channel_id) != membership["channel_id"]:
-            lines.append(f"หมายเหตุ: ต้องใช้คำสั่งใน <#{membership['channel_id']}> เพื่อส่งเข้า session รวม")
-        response_channel = get_response_channel_id()
-        if response_channel and str(interaction.channel_id) != response_channel:
+        if response_channel and channel_id != response_channel:
             lines.append(f"หมายเหตุ: Aira รับข้อความเฉพาะ <#{response_channel}>")
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+        await interaction.response.send_message("\\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="leaderboard", description="ดู 10 อันดับผู้ใช้ที่มี XP สูงสุด")
     async def leaderboard(self, interaction: discord.Interaction):
