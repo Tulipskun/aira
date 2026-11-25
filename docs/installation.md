@@ -18,7 +18,7 @@ Pterodactyl manages the foreground process. Do not wrap `main.py` in a daemon or
 
 ## Slash-command registration
 
-Aira does not run a global Discord application-command sync on every startup, because a full sync could overwrite unrelated commands registered by other app features. Existing `/isla` commands continue to work. To update this command group, first run `python -m aira.register_commands --dry-run`, review the preserved-command count and payload, and then run `python -m aira.register_commands` once. This replaces only the `/isla` group and preserves every other global command.
+On the next startup after a schema change, Aira replaces the global Discord slash-command list with exactly one command: `/aira`. Existing global slash commands for this application are removed. The schema version is stored under `.aira/` so synchronization is not repeated on every restart.
 
 ## Environment variables
 
