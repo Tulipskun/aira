@@ -13,7 +13,8 @@ from .characters import (
 )
 from .config import config
 from .gemini import (
-    generate_character_reply, generate_json, thai_timestamp, current_time_block, _image_catalog_prompt,
+    generate_character_reply, decide_speakers, SPEAKER_THRESHOLD, thai_timestamp,
+    current_time_block, _image_catalog_prompt,
 )
 from .memory import (
     embed, ingest_memory_background, persist_episode_background,
@@ -164,108 +165,65 @@ def _silence_breaker(characters: list[Character], text: str, rows: list[dict], t
 
 
 async def select_characters(message: dict, prepared_media=None, superseded=None) -> list[Character]:
-    """Choose room participants before generation; never assign Isla as an implicit default."""
+    """Let the decision model answer one yes/no question per character."""
     characters = load_characters()
     current = str(message.get("text") or "(ไม่มีข้อความ)")
-    # Every message goes through the decision model: a fixed shortcut kept answering with
-    # whoever the alias matcher caught, and names it missed (nicknames, typos, several people
-    # in one message) never got to answer.
     mentioned = find_mentioned_characters(current, characters)
     broadcast = bool(BROADCAST_TEXT.search(current)) or len(mentioned) > 1
+    names = {item.id: item.name for item in characters}
 
     history = store.get_history_by_budget(
         str(message["session_key"]), history_budget_tokens("reply"), estimate_tokens,
         max_messages=24,
     )
-    history_lines = []
-    names = {item.id: item.name for item in characters}
     history_lines, unanswered, last_speaker = _transcript_with_replies(history[-16:], names)
-    catalog = [{"id": item.id, "name": item.name, "aliases": list(item.aliases)} for item in characters]
-    media_summary = getattr(prepared_media, "summary", "") or message.get("media_summary", "")
-    # No speaker cap: the decision stage is free to let as many characters answer as the moment
-    # needs, and the token budget paces them instead of a hard rule.
-    attended = (
-        "ผู้ใช้กำลังพูดกับทั้งห้องหรือเรียกหลายคนในข้อความเดียว ให้เลือกทุกคนที่ถูกเรียกหรือเกี่ยวข้องกันจริง"
-        if broadcast else
-        "ถ้าข้อความกำลังพูดกับตัวละครคนใดคนหนึ่ง ให้ถือคนนั้นเป็นหลัก แล้วเสริมด้วยคนที่ต่อยอดบทสนทนาได้"
-    )
     focus = _conversation_focus(history[-16:], names)
-    prompt = "\n".join([
-        "เลือกตัวละครที่ควรเข้าร่วมตอบข้อความล่าสุดในห้องแชทนี้ โดยดูบริบทและบุคลิกจากรายชื่อตัวละคร",
-        f"ห้องนี้เป็นแชทกลุ่มเล็ก ๆ ที่มีตัวละคร {len(characters)} ตัวคุยกับคนจริง เป้าหมายคือบทสนทนาที่ต่อเนื่องเป็นธรรมชาติ ไม่ใช่การตอบเฉพาะเมื่อถูกถามตรง ๆ",
-        "โดยปกติควรมีคนตอบ: ถ้าข้อความล่าสุดเป็นการแซว ทัก ชวนเล่น แสดงอารมณ์ แชร์อะไร หรือเล่าเรื่อง ให้เลือกตัวละครที่เกี่ยวข้องหรือมีบุคลิกเข้ากับจังหวะนั้น",
-        "ให้เงียบ (เลือก 0 คน) เฉพาะเมื่อไม่มีอะไรให้ตอบจริง ๆ เช่น อีโมจิหรือเสียงหัวเราะล้วน ๆ สติกเกอร์ คนอื่นคุยกันเองในเรื่องส่วนตัวที่ไม่เกี่ยวกับตัวละคร หรือตัวละครที่เกี่ยวข้องเพิ่งตอบไปแล้วในรอบเดียวกัน",
-        "ถ้าในประวัติมีบรรทัด '(ข้อความนี้ยังไม่มีตัวละครตอบ)' หรือบทสนทนากำลังเงียบ ให้ถือว่ามีเหตุผลพอที่จะตอบ อย่าปล่อยให้ห้องเงียบต่อเนื่องหลายข้อความ",
-        "ปิดบทสนทนาเฉพาะเมื่ออีกฝ่ายจบจริง ๆ ถ้าคนยังเล่นหรือยังแซวอยู่ ให้ตอบต่อ",
-        "อ่านว่าข้อความล่าสุดกำลัง 'พูดกับ' ใคร หรือแค่ 'พูดถึง' ใคร: ถ้าเรียก ถาม แซว หรือสั่งคนนั้นตรง ๆ ให้เลือกคนนั้น "
-        "แต่ถ้าเพียงเอ่ยถึงเขาเป็นบุคคลที่สาม (เล่าเรื่อง พูดกับคนอื่นอยู่ หรือพูดลอย ๆ) อย่าเลือกเขาเพียงเพราะมีชื่ออยู่",
-        "ดูประวัติว่าใครกำลังคุยกับใครอยู่ รวมถึงสิ่งที่ตัวละครพูดล่าสุดและคนที่มันตอบ แล้วเลือกคนที่ต่อบทสนทนานั้นได้จริง",
-        "ห้ามเลือก Isla เป็นค่าเริ่มต้น และอย่าเลือกคนเดิมซ้ำเพียงเพราะเป็นผู้ตอบก่อนหน้า",
-        "เลือกจำนวนคนได้อย่างอิสระตามจังหวะของบทสนทนา ไม่มีเพดานตายตัว — จะเป็นคนเดียว สองสามคน หรือทั้งห้องก็ได้ "
-        "ถ้านั่นคือสิ่งที่บทสนทนาต้องการจริง ๆ",
-        attended,
-        "จัดลำดับคนที่ควรพูดก่อนไว้ข้างหน้า เพราะคนแรกจะได้ตอบก่อน",
-        "รายชื่อตัวละคร: " + __import__('json').dumps(catalog, ensure_ascii=False),
-        "ประวัติห้อง (ล่าสุดอยู่ท้าย):\n" + ("\n".join(history_lines) or "(ยังไม่มีประวัติ)"),
+    media_summary = getattr(prepared_media, "summary", "") or message.get("media_summary", "")
+    roster = ", ".join(f"{item.id} ({item.name})" for item in characters)
+    shared_input = "\n".join([
+        f"ห้องแชท Discord มีคนจริงคุยกับตัวละคร {len(characters)} ตัว: {roster}",
+        "หลักการตัดสิน:",
+        "- คนที่ถูกเรียกชื่อ ถาม แซว หรือสั่งตรง ๆ ต้องได้ตอบ",
+        "- คนที่ถูกพูดถึงเฉย ๆ เป็นบุคคลที่สาม ไม่จำเป็นต้องตอบ",
+        "- ถ้าผู้ใช้พูดกับทั้งห้องหรือขอความเห็นของทุกคน ทุกคนที่เกี่ยวข้องควรได้ตอบ",
+        "- อีโมจิ เสียงหัวเราะล้วน ๆ หรือสติกเกอร์ ไม่ต้องมีใครตอบ",
+        "- ถ้าห้องกำลังเงียบหรือมีข้อความที่ยังไม่มีใครตอบ ให้มีคนตอบ",
+        "- ตัวละครที่เพิ่งตอบไปแล้วไม่ต้องตอบซ้ำถ้าไม่มีอะไรใหม่",
+        "ประวัติห้อง (ล่าสุดอยู่ท้าย):",
+        "\n".join(history_lines) or "(ยังไม่มีประวัติ)",
         focus,
-        "ข้อความล่าสุดจากผู้ใช้: " + current,
-        ("ชื่อที่ตัวจับชื่อเห็นในข้อความนี้ (เบาะแสเท่านั้น ต้องตัดสินจากบริบทว่าพูดกับเขาจริงหรือพูดถึงเฉย ๆ): "
+        f"ไฟล์แนบ: {media_summary}" if media_summary else "",
+        ("ชื่อที่ตัวจับชื่อเห็นในข้อความนี้ (เบาะแสเท่านั้น ต้องตัดสินจากบริบท): "
          + ", ".join(item.id for item in mentioned)) if mentioned else "",
         f"จำนวนข้อความท้ายห้องที่ยังไม่มีตัวละครตอบ: {unanswered}",
-        "ไฟล์แนบ: " + str(media_summary),
-    ])
-    schema = {"type": "object", "properties": {
-        "addressed_to": {"type": "string",
-                         "description": "character_id ที่ข้อความนี้พูดด้วยจริง ๆ, 'room' ถ้าพูดกับทั้งห้อง, "
-                                        "'user' ถ้าพูดลอย ๆ ไม่ได้เจาะจงตัวละคร, '' ถ้าไม่ชัด"},
-        "mentioned_only": {"type": "array", "items": {"type": "string"},
-                           "description": "character_id ที่ถูกพูดถึงเฉย ๆ แต่ไม่ได้พูดด้วย"},
-        "selected_character_ids": {"type": "array", "items": {"type": "string"}},
-        "reason": {"type": "string"},
-    }, "required": ["addressed_to", "selected_character_ids", "reason"]}
-    decision_started = time.monotonic()
-    parsed = await generate_json(
-        "gemini1", prompt,
-        "คุณเป็นตัวจัดสรรผู้พูดในกลุ่มตัวละคร Discord เท่านั้น ไม่ใช่ตัวละครใด ๆ "
-        "ส่ง JSON ตาม schema เท่านั้น ห้ามเลือก ID ที่ไม่มีในรายชื่อ และเลือกจำนวนคนได้ตามที่บทสนทนาต้องการ",
-        schema=schema,
-        debug_context={"user_id": str(message.get("user_id") or ""),
-                       "user_name": str(message.get("user") or ""),
-                       "character_id": "orchestrator", "turn_id": str(uuid.uuid4())},
-        retry_guard=superseded, fast=True,
-    )
-    decision_ms = int((time.monotonic() - decision_started) * 1000)
-    if not parsed or not isinstance(parsed.get("selected_character_ids"), list):
-        log.error("Character selector returned invalid structured output; no character will be defaulted")
-        return []
-    selected_ids = [str(value).strip() for value in parsed["selected_character_ids"] if isinstance(value, str)]
-    addressed = str(parsed.get("addressed_to") or "").strip()
-    mentioned_only = [str(value) for value in (parsed.get("mentioned_only") or []) if isinstance(value, str)]
-    by_id = {item.id: item for item in characters}
-    if addressed == "room" and broadcast:
-        # A call to the whole room is a request for every character, minus anyone who is only
-        # being talked about (the new member being greeted, for example).
-        room = [item.id for item in characters if item.id not in mentioned_only]
-        if room:
-            selected_ids = room
-            log.info("Room-wide request: waking every character except mention-only %s", mentioned_only)
-    elif addressed in by_id and addressed not in selected_ids:
-        # The message speaks to this character even though the answer forgot to list them.
-        selected_ids.insert(0, addressed)
-    selected = resolve_character_speakers(characters, [], selected_ids)
+        "",
+        f"ข้อความล่าสุดจากผู้ใช้: {current}",
+    ]).strip()
+    questions = {
+        item.id: (f"ตัวละคร {item.name} ({item.id}) ควรเป็นคนตอบข้อความล่าสุดนี้หรือไม่ "
+                  "ตอบใช่เมื่อมีเหตุผลชัดเจนว่าเขาควรพูดในจังหวะนี้")
+        for item in characters
+    }
+
+    try:
+        scores = await decide_speakers(shared_input, questions)
+    except Exception:
+        log.exception("Decision model failed; only the silence rule can still answer")
+        scores = {}
+    ranked = [(item, scores.get(item.id, 0.0)) for item in characters]
+    chosen = [item for item, score in sorted(ranked, key=lambda pair: -pair[1])
+              if score >= SPEAKER_THRESHOLD]
+    selected = resolve_character_speakers(characters, [], [item.id for item in chosen])
     if not selected:
-        selected = _silence_breaker(characters, str(message.get("text") or ""), history[-16:],
-                                    unanswered, last_speaker)
+        selected = _silence_breaker(characters, current, history[-16:], unanswered, last_speaker)
         if selected:
-            log.info("Character selector kept the room silent; continuing with %s",
+            log.info("Decision model kept the room silent; continuing with %s",
                      [item.id for item in selected])
-    log.info("Character selector decision: selected=%s addressed=%s mentioned_only=%s "
-             "name_hits=%s ms=%s reason=%s",
-             [item.id for item in selected], addressed or "-", mentioned_only,
-             [item.id for item in mentioned], decision_ms, str(parsed.get("reason") or "")[:200])
+    log.info("Character selector decision: selected=%s scores=%s mode=%s",
+             [item.id for item in selected],
+             {item.id: round(score, 2) for item, score in ranked},
+             "room" if broadcast else "normal")
     return selected
-
-
 
 
 async def process_character_reply(message: dict, character: Character, prepared_media=None,

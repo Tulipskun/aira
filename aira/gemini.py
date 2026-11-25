@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -332,6 +333,28 @@ def _live_parts(input_parts: list[dict]):
 
 
 DECISION_MAX_OUTPUT_TOKENS = 384
+SPEAKER_THRESHOLD = 0.5
+
+
+async def decide_speakers(shared_input: str, questions: dict[str, str]) -> dict[str, float]:
+    """Ask the decision model, one yes/no question per character.
+
+    Returns ``{character_id: probability that they should answer}``; the decision model
+    reports that probability as ``noul``.
+    """
+    client = _live_client("gemini1")  # the decision model is served on v1beta only
+    payload = {key: {"type": "noul", "instructions": instruction}
+               for key, instruction in questions.items()}
+    started = time.monotonic()
+    response = await client.aio.decisions.create(
+        model=f"models/{config.decision_model}", input=shared_input, questions=payload,
+    )
+    usage = getattr(response, "usage", None)
+    log.info("Gemini decision: model=%s characters=%s ms=%s tokens=%s",
+             config.decision_model, len(payload), int((time.monotonic() - started) * 1000),
+             getattr(usage, "total_tokens", "unreported"))
+    return {key: float(getattr(answer, "noul", 0.0) or 0.0)
+            for key, answer in (getattr(response, "answers", None) or {}).items()}
 
 
 async def _create_live_response(stage: str, input_parts: list[dict], system_instruction: str,

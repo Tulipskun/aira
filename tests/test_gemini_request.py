@@ -180,6 +180,30 @@ class GeminiRequestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 asyncio.run(gemini.generate_character_reply("system", "context"))
 
+    def test_decide_speakers_asks_the_decision_model_once_per_character(self):
+        captured = {}
+
+        class FakeDecisions:
+            async def create(self, model, input, questions):
+                captured.update(model=model, shared=input, questions=questions)
+                return SimpleNamespace(
+                    answers={"rem": SimpleNamespace(noul=0.91),
+                             "isla": SimpleNamespace(noul=0.07)},
+                    usage=SimpleNamespace(total_tokens=120),
+                )
+
+        fake_client = SimpleNamespace(aio=SimpleNamespace(decisions=FakeDecisions()))
+        with (
+            patch.object(gemini, "_live_client", return_value=fake_client),
+            patch.object(gemini.config, "decision_model", "gemini-decision-1"),
+        ):
+            scores = asyncio.run(gemini.decide_speakers("shared context",
+                                                        {"rem": "ควรตอบไหม", "isla": "ควรตอบไหม"}))
+        self.assertEqual(scores, {"rem": 0.91, "isla": 0.07})
+        self.assertEqual(captured["model"], "models/gemini-decision-1")
+        self.assertEqual(captured["questions"]["rem"], {"type": "noul", "instructions": "ควรตอบไหม"})
+        self.assertEqual(captured["shared"], "shared context")
+
     def test_embedding_2_uses_query_and_document_instruction_prefixes(self):
         captured = []
         class Models:

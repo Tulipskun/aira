@@ -139,6 +139,7 @@ class ApiKeyModal(discord.ui.Modal, title="Gemini API Key"):
 class ModelModal(discord.ui.Modal, title="Gemini Model Settings"):
     gemini1 = discord.ui.TextInput(label="Gemini 1 Live model", max_length=100)
     gemini2 = discord.ui.TextInput(label="Gemini 2 Live model", max_length=100)
+    decision = discord.ui.TextInput(label="Speaker decision model", max_length=100)
     embedding = discord.ui.TextInput(label="Embedding model", max_length=100)
 
     def __init__(self):
@@ -146,16 +147,19 @@ class ModelModal(discord.ui.Modal, title="Gemini Model Settings"):
         settings = load_settings()
         self.gemini1.default = config.gemini1_model
         self.gemini2.default = config.gemini2_model
+        self.decision.default = config.decision_model
         self.embedding.default = settings.get("embeddingModel", config.embedding_model)
 
     async def on_submit(self, interaction: discord.Interaction):
         settings = load_settings()
         settings.update({"gemini1Model": str(self.gemini1.value).strip(),
                          "gemini2Model": str(self.gemini2.value).strip(),
+                         "decisionModel": str(self.decision.value).strip(),
                          "embeddingModel": str(self.embedding.value).strip()})
         save_settings(settings)
         config.gemini1_model = settings["gemini1Model"]
         config.gemini2_model = settings["gemini2Model"]
+        config.decision_model = settings["decisionModel"]
         config.embedding_model = settings["embeddingModel"]
         await interaction.response.send_message("บันทึก Model แล้ว มีผลกับคำขอถัดไป", ephemeral=True)
 
@@ -293,6 +297,7 @@ class AiraBot(commands.Bot):
             f"**Gemini API:** {'ตั้งค่าแล้ว' if config.gemini_keys else 'ยังไม่ได้ตั้งค่า'}",
             f"**Gemini 1:** {config.gemini1_model}",
             f"**Gemini 2:** {config.gemini2_model}",
+            f"**Decision:** {config.decision_model}",
             "",
             "**ตัวละคร:** " + ", ".join(x.name for x in load_characters()),
             "",

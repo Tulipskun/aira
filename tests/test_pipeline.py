@@ -43,7 +43,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(return_value={"selected_character_ids": ["bocchi", "rem"], "reason": "หัวข้อเหมาะกับทั้งคู่"})) as selector:
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={"bocchi": 0.91, "rem": 0.84, "isla": 0.08})) as selector:
             selected = await pipeline.select_characters({
                 "text": "วันนี้เป็นยังไง", "session_key": "group:99", "user_id": "alice", "user": "Alice",
             })
@@ -58,20 +59,19 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
         captured = {}
 
-        async def fake_generate(stage, prompt, system, **kwargs):
-            captured["prompt"] = prompt
-            captured["kwargs"] = kwargs
-            return {"selected_character_ids": ["rem"], "reason": "ผู้ใช้เรียกเรม"}
+        async def fake_decide(shared_input, questions):
+            captured["input"] = shared_input
+            captured["questions"] = questions
+            return {"rem": 0.94, "isla": 0.05, "bocchi": 0.02}
 
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(side_effect=fake_generate)) as selector:
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=fake_decide)) as selector:
             selected = await pipeline.select_characters({"text": "Rem ช่วยตอบหน่อย",
                                                          "session_key": "group:named"})
         self.assertEqual([item.id for item in selected], ["rem"])
         selector.assert_awaited_once()
-        self.assertIn("เบาะแสเท่านั้น", captured["prompt"])
-        self.assertIn("ต้องตัดสินจากบริบท", captured["prompt"])
-        self.assertTrue(captured["kwargs"]["fast"])  # short decision answer, small output cap
+        self.assertIn("เบาะแสเท่านั้น", captured["input"])
+        self.assertEqual(set(captured["questions"]), {"isla", "rem", "bocchi"})
 
     async def test_a_name_only_mentioned_is_not_forced_into_the_selection(self):
         chars = [
@@ -79,11 +79,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             Character("rem", "Rem", ("Rem",), Path("rem.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(
-                 return_value={"addressed_to": "isla", "mentioned_only": ["rem"],
-                               "selected_character_ids": ["isla"],
-                               "reason": "ผู้ใช้เล่าเรื่องเรมให้ไอล่าฟัง"})
-             ):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={"isla": 0.88, "rem": 0.31})):
             selected = await pipeline.select_characters({
                 "text": "ไอล่า เมื่อกี้เรมบอกว่าชอบชาไง", "session_key": "group:mention",
             })
@@ -95,11 +92,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             Character("origami", "Origami Tobiichi", ("Origami",), Path("origami.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(
-                 return_value={"addressed_to": "origami", "mentioned_only": [],
-                               "selected_character_ids": ["isla"],
-                               "reason": "โมเดลเลือกพลาด"})
-             ):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={"origami": 0.93, "isla": 0.12})):
             selected = await pipeline.select_characters({
                 "text": "โอริกามิ ไปไหนมา", "session_key": "group:addressed",
             })
@@ -108,10 +102,10 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_selector_can_choose_silence_and_invalid_output_does_not_fall_back_to_isla(self):
         chars = [Character("isla", "Isla", ("Isla",), Path("isla.md"))]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(return_value={"selected_character_ids": [], "reason": "ไม่มีใครอยากพูด"})):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(return_value={"isla": 0.12})):
             self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(return_value=None)):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=RuntimeError("decision down"))):
             self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
 
     async def test_selector_sees_unanswered_messages_and_breaks_a_silent_room(self):
@@ -126,12 +120,12 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.save_message("user", "น้องเงียบเลย 5555", utc_now(), session, "2", "Yuuta", None, None)
         captured = {}
 
-        async def fake_generate(stage, prompt, system, **kwargs):
-            captured["prompt"] = prompt
-            return {"selected_character_ids": [], "reason": "ไม่มีใครจำเป็นต้องตอบ"}
+        async def fake_generate(shared_input, questions):
+            captured["prompt"] = shared_input
+            return {"rem": 0.2, "isla": 0.1, "bocchi": 0.05}
 
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(side_effect=fake_generate)):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=fake_generate)):
             selected = await pipeline.select_characters({
                 "text": "น้องเงียบเลย 5555", "session_key": session, "user_id": "2", "user": "Yuuta",
             })
@@ -149,8 +143,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.save_message("model", "ค่ะ", utc_now(), session, None, "Rem", None, None, "rem")
         self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(
-                 return_value={"selected_character_ids": [], "reason": "เสียงหัวเราะล้วน ๆ"})):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={"isla": 0.1, "rem": 0.08})):
             # A single unanswered laugh stays silent.
             self.assertEqual(await pipeline.select_characters({
                 "text": "55555", "session_key": session, "user_id": "1", "user": "Yuuta",
@@ -160,8 +154,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
         self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(
-                 return_value={"selected_character_ids": [], "reason": "เสียงหัวเราะล้วน ๆ"})):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={"isla": 0.12, "rem": 0.07})):
             self.assertEqual(await pipeline.select_characters({
                 "text": "55555", "session_key": session, "user_id": "1", "user": "Yuuta",
             }), [])
@@ -175,20 +169,18 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
         captured = {}
 
-        async def fake_generate(stage, prompt, system, **kwargs):
-            captured["prompt"] = prompt
-            return {"selected_character_ids": ["bocchi", "isla", "origami", "rem"],
-                    "reason": "ผู้ใช้เรียกทุกคนให้ทักทาย"}
+        async def fake_generate(shared_input, questions):
+            captured["prompt"] = shared_input
+            return {"bocchi": 0.8, "isla": 0.75, "origami": 0.79, "rem": 0.81}
 
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(side_effect=fake_generate)):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=fake_generate)):
             selected = await pipeline.select_characters({
                 "text": "บจจิ, เรม, โอริกามิ, ไอลาๆๆ ทักทายเพื่อนใหม่กันหน่อย",
                 "session_key": "group:greet",
             })
-        self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
+        self.assertEqual({item.id for item in selected}, {"bocchi", "isla", "origami", "rem"})
         self.assertIn("ชื่อที่ตัวจับชื่อเห็นในข้อความนี้ (เบาะแสเท่านั้น", captured["prompt"])
-        self.assertIn("ไม่มีเพดานตายตัว", captured["prompt"])
 
     async def test_broadcast_word_keeps_the_selector_in_charge(self):
         chars = [
@@ -197,9 +189,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             Character("origami", "Origami Tobiichi", ("Origami", "โอริกามิ"), Path("origami.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(
-                 return_value={"selected_character_ids": ["isla", "rem", "origami"],
-                               "reason": "ทุกคนในห้องควรทักทาย"})) as selector:
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={"isla": 0.7, "rem": 0.66, "origami": 0.72})) as selector:
             selected = await pipeline.select_characters({
                 "text": "ทุกคนทักทายโอริกามิกันหน่อย", "session_key": "group:greet2",
             })
@@ -215,14 +206,12 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
         captured = {}
 
-        async def fake_generate(stage, prompt, system, **kwargs):
-            captured["prompt"] = prompt
-            return {"addressed_to": "room",
-                    "selected_character_ids": ["bocchi", "isla", "origami", "rem"],
-                    "reason": "ผู้ใช้ขอให้ทั้งห้องทักทาย"}
+        async def fake_generate(shared_input, questions):
+            captured["prompt"] = shared_input
+            return {item.id: 0.8 for item in chars}
 
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(side_effect=fake_generate)):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=fake_generate)):
             selected = await pipeline.select_characters({
                 "text": "ทุกคนทักทายโอริกามิกันหน่อย", "session_key": "group:all",
             })
@@ -238,29 +227,23 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             Character("origami", "Origami Tobiichi", ("Origami",), Path("origami.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(
-                 return_value={"addressed_to": "room", "mentioned_only": [],
-                               "selected_character_ids": ["bocchi", "isla", "origami"],
-                               "reason": "ทุกคนแชร์ความเห็น"})
-             ):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={item.id: 0.85 for item in chars})):
             selected = await pipeline.select_characters({
                 "text": "ทุกคนคิดว่ายังไงบ้าง", "session_key": "group:room4",
             })
-        self.assertEqual([item.id for item in selected], [item.id for item in chars])
+        self.assertEqual({item.id for item in selected}, {item.id for item in chars})
 
     async def test_no_speaker_cap_lets_every_character_answer(self):
         chars = [Character(f"c{index}", f"C{index}", (f"C{index}",), Path(f"c{index}.md"))
                  for index in range(6)]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_json", new=AsyncMock(
-                 return_value={"addressed_to": "room",
-                               "selected_character_ids": [item.id for item in chars],
-                               "reason": "ทั้งห้องแชร์ความเห็น"})
-             ):
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={item.id: 0.9 for item in chars})):
             selected = await pipeline.select_characters({
                 "text": "ทุกคนช่วยแชร์ความเห็นหน่อย", "session_key": "group:nocap",
             })
-        self.assertEqual([item.id for item in selected], [item.id for item in chars])
+        self.assertEqual({item.id for item in selected}, {item.id for item in chars})
 
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({

@@ -4,7 +4,7 @@
 2. The per-session scheduler batches nearby messages (5-second debounce, 12-second maximum wait).
 3. Attachments are fetched from Discord CDN hosts and prepared for the model.
 4. The combined user turn is saved to shared room history in SQLite before any model request.
-5. Gemini 2 acts as a social speaker scheduler with no speaker cap: it may choose silence, one character, several, or the whole cast, and it reads whether a message is addressed to a character or only mentions them. A character the message speaks to is always kept, and a room-wide request wakes everyone except whoever is only being talked about.
+5. The speaker decision model (`decisionModel`, default `gemini-decision-1`) receives the room rules and the transcript as one shared input and answers one yes/no decision question per character. The `noul` probability it returns is how likely that character should answer; anything at or above the threshold speaks, in that order, with no cap on how many answer. The model reads whether a message is addressed to a character or only mentions them.
 6. Each selected character gets the shared room history plus only its own semantic/episodic memories, user relationship and directed relationships with other characters.
 7. If Isla is selected, Gemini 1 generates her dialogue and summary; Gemini 2 analyzes user relationship state, facts and memory. State changes are applied idempotently.
 8. If another character is selected, Gemini 1 generates that character's dialogue, summary and private memory updates. The character may also update its own view of another character.

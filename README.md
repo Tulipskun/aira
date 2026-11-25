@@ -7,7 +7,7 @@ Discord AI character bot powered by Gemini and SQLite. Runtime: Python 3.13.
 - One Discord bot with Isla and multiple configurable characters.
 - Gemini 1 generates character dialogue; Gemini 2 selects speakers and analyzes relationship state, facts and memory.
 - Multi-user group chats with a social speaker scheduler: characters may stay silent or join when relevant.
-- The decision stage decides freely how many characters answer a turn (one, a few, or the whole room) and reads whether a message is addressed to a character or only mentions them.
+- The speaker decision model (`gemini-decision-1`) answers one yes/no question per character and reads whether a message is addressed to a character or only mentions them; the number of voices per turn is not capped.
 - Each character has isolated semantic/episodic memories and its own perspective on other characters.
 - Shared per-channel conversation history, per-user relationship state and SQLite long-term memory.
 - Owner-only Discord Control Panel for Gemini keys/models, response channel and character prompts.
