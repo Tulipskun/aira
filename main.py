@@ -51,7 +51,7 @@ def main() -> int:
         command_marker = ROOT / ".aira" / "discord-commands-version"
         try:
             current_version = command_marker.read_text("utf-8").strip()
-        except FileNotFoundError:
+        except OSError:
             current_version = ""
         if current_version != command_version:
             try:
