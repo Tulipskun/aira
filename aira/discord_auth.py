@@ -20,6 +20,8 @@ class InvalidDiscordToken(Exception):
 
 def validate_discord_token(token: str, opener: Callable | None = None) -> None:
     """Verify a bot token with Discord without ever including it in an error."""
+    if not token or any(character.isspace() for character in token):
+        raise InvalidDiscordToken
     request = Request(
         DISCORD_ME_URL,
         headers={"Authorization": f"Bot {token}", "User-Agent": "Aira/1.0"},
@@ -35,7 +37,7 @@ def validate_discord_token(token: str, opener: Callable | None = None) -> None:
             if close:
                 close()
     except HTTPError as exc:
-        if exc.code in (401, 403):
+        if exc.code == 401:
             raise InvalidDiscordToken from None
         raise RuntimeError(f"Discord token verification failed (HTTP {exc.code})") from None
     except (URLError, TimeoutError, OSError) as exc:
