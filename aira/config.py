@@ -67,7 +67,7 @@ class Config:
 
     def validate(self) -> None:
         if not self.discord_token:
-            raise RuntimeError("DISCORD environment variable is required")
+            raise RuntimeError("Discord token is missing; start main.py and enter it in the console")
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self.chroma_path.mkdir(parents=True, exist_ok=True)
         self.key_state_file.parent.mkdir(parents=True, exist_ok=True)
