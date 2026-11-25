@@ -112,12 +112,15 @@ def _transcript_with_replies(rows: list[dict], names: dict[str, str]) -> tuple[l
     """Mark which user messages stayed unanswered and report the trailing silence run."""
     lines: list[str] = []
     last_speaker = ""
+    answering = ""
     for index, row in enumerate(rows):
         if row.get("role") == "model":
             speaker = names.get(str(row.get("character_id") or "")) or str(row.get("user_name") or "ตัวละคร")
             last_speaker = str(row.get("character_id") or last_speaker)
-            lines.append(f"{speaker}: {row.get('text') or ''}")
+            target = f" (ตอบ {answering})" if answering else ""
+            lines.append(f"{speaker}{target}: {row.get('text') or ''}")
             continue
+        answering = str(row.get("user_name") or "ผู้ใช้")
         lines.append(f"{row.get('user_name') or 'ผู้ใช้'}: {row.get('text') or ''}")
         following = rows[index + 1] if index + 1 < len(rows) else None
         if following is None or following.get("role") == "user":
@@ -128,6 +131,28 @@ def _transcript_with_replies(rows: list[dict], names: dict[str, str]) -> tuple[l
             break
         trailing += 1
     return lines, trailing, last_speaker
+
+
+def _conversation_focus(rows: list[dict], names: dict[str, str]) -> str:
+    """Describe the last few exchanges so the decision can see who talks with whom."""
+    exchanges: list[str] = []
+    current_user = ""
+    answered: list[str] = []
+    for row in rows:
+        if row.get("role") == "model":
+            speaker = names.get(str(row.get("character_id") or "")) or "ตัวละคร"
+            if speaker not in answered:
+                answered.append(speaker)
+            continue
+        if current_user and answered:
+            exchanges.append(f"{current_user} ↔ {', '.join(answered)}")
+        current_user = str(row.get("user_name") or "ผู้ใช้")
+        answered = []
+    if current_user and answered:
+        exchanges.append(f"{current_user} ↔ {', '.join(answered)}")
+    elif current_user:
+        exchanges.append(f"{current_user} (ยังไม่มีใครตอบ)")
+    return "ลำดับการคุยล่าสุด: " + " | ".join(exchanges[-4:]) if exchanges else ""
 
 
 def _silence_breaker(characters: list[Character], text: str, rows: list[dict], trailing: int,
@@ -163,10 +188,10 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         "ผู้ใช้กำลังพูดกับทั้งห้องหรือเรียกหลายคนในข้อความเดียว ให้เลือกทุกคนที่ถูกเรียกหรือเกี่ยวข้องกันจริง "
         f"ได้สูงสุด {max_speakers} คน เพื่อให้แต่ละคนได้ตอบในเทิร์นนี้"
         if broadcast else
-        f"ถ้าผู้ใช้เอ่ยชื่อใคร ให้เลือกคนนั้นก่อน แล้วเสริมด้วยคนที่ต่อยอดบทสนทนาได้ (สูงสุด {max_speakers} คน)"
+        f"ถ้าข้อความกำลังพูดกับตัวละครคนใดคนหนึ่ง ให้ถือคนนั้นเป็นหลัก แล้วเสริมด้วยคนที่ต่อยอดบทสนทนาได้ "
+        f"(สูงสุด {max_speakers} คน)"
     )
-    if mentioned:
-        attended += " ชื่อที่ตรวจพบในข้อความนี้ต้องไม่ถูกข้าม: " + ", ".join(item.id for item in mentioned)
+    focus = _conversation_focus(history[-16:], names)
     prompt = "\n".join([
         "เลือกตัวละครที่ควรเข้าร่วมตอบข้อความล่าสุดในห้องแชทนี้ โดยดูบริบทและบุคลิกจากรายชื่อตัวละคร",
         f"ห้องนี้เป็นแชทกลุ่มเล็ก ๆ ที่มีตัวละคร {len(characters)} ตัวคุยกับคนจริง เป้าหมายคือบทสนทนาที่ต่อเนื่องเป็นธรรมชาติ ไม่ใช่การตอบเฉพาะเมื่อถูกถามตรง ๆ",
@@ -174,20 +199,30 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         "ให้เงียบ (เลือก 0 คน) เฉพาะเมื่อไม่มีอะไรให้ตอบจริง ๆ เช่น อีโมจิหรือเสียงหัวเราะล้วน ๆ สติกเกอร์ คนอื่นคุยกันเองในเรื่องส่วนตัวที่ไม่เกี่ยวกับตัวละคร หรือตัวละครที่เกี่ยวข้องเพิ่งตอบไปแล้วในรอบเดียวกัน",
         "ถ้าในประวัติมีบรรทัด '(ข้อความนี้ยังไม่มีตัวละครตอบ)' หรือบทสนทนากำลังเงียบ ให้ถือว่ามีเหตุผลพอที่จะตอบ อย่าปล่อยให้ห้องเงียบต่อเนื่องหลายข้อความ",
         "ปิดบทสนทนาเฉพาะเมื่ออีกฝ่ายจบจริง ๆ ถ้าคนยังเล่นหรือยังแซวอยู่ ให้ตอบต่อ",
+        "อ่านว่าข้อความล่าสุดกำลัง 'พูดกับ' ใคร หรือแค่ 'พูดถึง' ใคร: ถ้าเรียก ถาม แซว หรือสั่งคนนั้นตรง ๆ ให้เลือกคนนั้น "
+        "แต่ถ้าเพียงเอ่ยถึงเขาเป็นบุคคลที่สาม (เล่าเรื่อง พูดกับคนอื่นอยู่ หรือพูดลอย ๆ) อย่าเลือกเขาเพียงเพราะมีชื่ออยู่",
+        "ดูประวัติว่าใครกำลังคุยกับใครอยู่ รวมถึงสิ่งที่ตัวละครพูดล่าสุดและคนที่มันตอบ แล้วเลือกคนที่ต่อบทสนทนานั้นได้จริง",
         "ห้ามเลือก Isla เป็นค่าเริ่มต้น ห้ามเลือกทุกคนเพื่อให้ดูคึกคัก และอย่าเลือกคนเดิมซ้ำเพียงเพราะเป็นผู้ตอบก่อนหน้า",
         attended,
         f"เลือกได้ 0-{max_speakers} คน โดยเลือกคนที่ต่อยอดบทสนทนาเดิมได้ดีที่สุดก่อน",
         "รายชื่อตัวละคร: " + __import__('json').dumps(catalog, ensure_ascii=False),
         "ประวัติห้อง (ล่าสุดอยู่ท้าย):\n" + ("\n".join(history_lines) or "(ยังไม่มีประวัติ)"),
+        focus,
         "ข้อความล่าสุดจากผู้ใช้: " + current,
-        ("ชื่อที่ตรวจพบในข้อความนี้: " + ", ".join(item.id for item in mentioned)) if mentioned else "",
+        ("ชื่อที่ตัวจับชื่อเห็นในข้อความนี้ (เบาะแสเท่านั้น ต้องตัดสินจากบริบทว่าพูดกับเขาจริงหรือพูดถึงเฉย ๆ): "
+         + ", ".join(item.id for item in mentioned)) if mentioned else "",
         f"จำนวนข้อความท้ายห้องที่ยังไม่มีตัวละครตอบ: {unanswered}",
         "ไฟล์แนบ: " + str(media_summary),
     ])
     schema = {"type": "object", "properties": {
+        "addressed_to": {"type": "string",
+                         "description": "character_id ที่ข้อความนี้พูดด้วยจริง ๆ, 'room' ถ้าพูดกับทั้งห้อง, "
+                                        "'user' ถ้าพูดลอย ๆ ไม่ได้เจาะจงตัวละคร, '' ถ้าไม่ชัด"},
+        "mentioned_only": {"type": "array", "items": {"type": "string"},
+                           "description": "character_id ที่ถูกพูดถึงเฉย ๆ แต่ไม่ได้พูดด้วย"},
         "selected_character_ids": {"type": "array", "items": {"type": "string"}},
         "reason": {"type": "string"},
-    }, "required": ["selected_character_ids", "reason"]}
+    }, "required": ["addressed_to", "selected_character_ids", "reason"]}
     decision_started = time.monotonic()
     parsed = await generate_json(
         "gemini1", prompt,
@@ -204,6 +239,11 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         log.error("Character selector returned invalid structured output; no character will be defaulted")
         return []
     selected_ids = [str(value).strip() for value in parsed["selected_character_ids"] if isinstance(value, str)]
+    addressed = str(parsed.get("addressed_to") or "").strip()
+    by_id = {item.id: item for item in characters}
+    if addressed in by_id and addressed not in selected_ids:
+        # The message speaks to this character even though the answer forgot to list them.
+        selected_ids.insert(0, addressed)
     selected = resolve_character_speakers(characters, [], selected_ids[:max_speakers])
     if not selected:
         selected = _silence_breaker(characters, str(message.get("text") or ""), history[-16:],
@@ -211,9 +251,11 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         if selected:
             log.info("Character selector kept the room silent; continuing with %s",
                      [item.id for item in selected])
-    log.info("Character selector decision: selected=%s mentioned=%s ms=%s reason=%s",
-             [item.id for item in selected], [item.id for item in mentioned], decision_ms,
-             str(parsed.get("reason") or "")[:200])
+    log.info("Character selector decision: selected=%s addressed=%s mentioned_only=%s "
+             "name_hits=%s ms=%s reason=%s",
+             [item.id for item in selected], addressed or "-",
+             [str(value) for value in (parsed.get("mentioned_only") or []) if isinstance(value, str)],
+             [item.id for item in mentioned], decision_ms, str(parsed.get("reason") or "")[:200])
     return selected
 
 

@@ -69,8 +69,41 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                                                          "session_key": "group:named"})
         self.assertEqual([item.id for item in selected], ["rem"])
         selector.assert_awaited_once()
-        self.assertIn("ชื่อที่ตรวจพบในข้อความนี้ต้องไม่ถูกข้าม: rem", captured["prompt"])
+        self.assertIn("เบาะแสเท่านั้น", captured["prompt"])
+        self.assertIn("ต้องตัดสินจากบริบท", captured["prompt"])
         self.assertTrue(captured["kwargs"]["fast"])  # short decision answer, small output cap
+
+    async def test_a_name_only_mentioned_is_not_forced_into_the_selection(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+        ]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(
+                 return_value={"addressed_to": "isla", "mentioned_only": ["rem"],
+                               "selected_character_ids": ["isla"],
+                               "reason": "ผู้ใช้เล่าเรื่องเรมให้ไอล่าฟัง"})
+             ):
+            selected = await pipeline.select_characters({
+                "text": "ไอล่า เมื่อกี้เรมบอกว่าชอบชาไง", "session_key": "group:mention",
+            })
+        self.assertEqual([item.id for item in selected], ["isla"])
+
+    async def test_the_character_the_message_speaks_to_is_not_dropped(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("origami", "Origami Tobiichi", ("Origami",), Path("origami.md")),
+        ]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(
+                 return_value={"addressed_to": "origami", "mentioned_only": [],
+                               "selected_character_ids": ["isla"],
+                               "reason": "โมเดลเลือกพลาด"})
+             ):
+            selected = await pipeline.select_characters({
+                "text": "โอริกามิ ไปไหนมา", "session_key": "group:addressed",
+            })
+        self.assertEqual([item.id for item in selected][0], "origami")
 
     async def test_selector_can_choose_silence_and_invalid_output_does_not_fall_back_to_isla(self):
         chars = [Character("isla", "Isla", ("Isla",), Path("isla.md"))]
