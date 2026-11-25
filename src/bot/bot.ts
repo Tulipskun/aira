@@ -13,11 +13,10 @@ import { migrateMemorySessions } from "../memory/chroma.js";
 import { LEGACY_SESSION_KEY } from "../session-keys.js";
 import { config } from "../config.js";
 import { handleRpsButton, type RpsInteractionSink } from "./rps.js";
+import { getControlPanelOwnerId, handleControlPanelInteraction, publishControlPanel } from "./control-panel.js";
 
-const token = process.env.ISLA_TOKEN;
-const ownerId = process.env.DISCORD_OWNER_ID;
-if (!token) throw new Error("ISLA_TOKEN is required");
-if (!ownerId) throw new Error("DISCORD_OWNER_ID is required");
+const token = process.env.DISCORD ?? process.env.ISLA_TOKEN;
+if (!token) throw new Error("DISCORD is required (export DISCORD=your_bot_token)");
 
 const client = new Client({
   intents: [
@@ -70,7 +69,7 @@ client.on("messageCreate", async (message: Message) => {
   if (text.startsWith("!")) {
     liveness.note("command");
     console.log(`[DISCORD] Prefix command received: ${commandForLog(text)}`);
-    if (isKnownCommand(text)) await handleCommand(message, ownerId);
+    if (isKnownCommand(text)) await handleCommand(message, getControlPanelOwnerId() ?? "");
     else console.log(`[DISCORD] Unknown prefix command ignored: ${commandForLog(text)}`);
     return;
   }
@@ -107,6 +106,7 @@ const injectRpsMessage: RpsInteractionSink = (input) => {
 const onRpsButton = handleRpsButton(client, injectRpsMessage);
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (await handleControlPanelInteraction(interaction)) return;
   if (interaction.isButton()) {
     await onRpsButton(interaction);
     return;
@@ -138,6 +138,7 @@ client.once("ready", () => {
   const channelId = getResponseChannelId();
   console.log(`[DISCORD] Response channel: ${channelId ?? "not set"}`);
   liveness.start();
+  void publishControlPanel(client);
 });
 
 const warm = await warmNetwork();

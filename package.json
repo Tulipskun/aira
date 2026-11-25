@@ -1,6 +1,5 @@
 {
   "name": "aira",
-  "private": true,
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -13,7 +12,8 @@
     "stop": "bun run scripts/supervisor.ts stop",
     "logs": "bun run scripts/supervisor.ts logs",
     "install-cli": "bun run scripts/install-cli.ts",
-    "forget": "bun run scripts/forget.ts"
+    "forget": "bun run scripts/forget.ts",
+    "prepublishOnly": "bun run typecheck && bun run test:characters && bun run test:cli"
   },
   "dependencies": {
     "@chroma-core/default-embed": "^0.1.9",
@@ -31,5 +31,33 @@
   },
   "overrides": {
     "sharp": "^0.35.5"
+  },
+  "version": "0.1.0",
+  "description": "Aira Discord AI bot — one-command runtime",
+  "bin": {
+    "aira": "bin/aira.cjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "scripts/",
+    "characters/",
+    "images/",
+    "docs/",
+    "install.sh",
+    "bun.lock",
+    "tsconfig.json",
+    ".env.example",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tulipskun/aira.git"
   }
 }

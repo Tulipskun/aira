@@ -1,3 +1,20 @@
+// Load settings saved from the Discord control panel before deriving runtime configuration.
+import { existsSync, readFileSync } from "node:fs";
+try {
+  const settingsPath = ".aira/settings.json";
+  if (existsSync(settingsPath)) {
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      geminiApiKeys?: string; gemini1Model?: string; gemini2Model?: string; embeddingModel?: string;
+    };
+    if (settings.geminiApiKeys) process.env.GEMINI_API_KEY = settings.geminiApiKeys;
+    if (settings.gemini1Model) process.env.GEMINI1_MODEL = settings.gemini1Model;
+    if (settings.gemini2Model) process.env.GEMINI2_MODEL = settings.gemini2Model;
+    if (settings.embeddingModel) process.env.GEMINI_EMBEDDING2_MODEL = settings.embeddingModel;
+  }
+} catch (error) {
+  console.warn("[CONFIG] Could not load Discord panel settings:", String(error));
+}
+
 // All Google Gemini stages use the same API-key pool. Keeping the aliases internal lets the
 // runtime retain independent rotation state per stage while setup only needs GEMINI_API_KEY.
 const sharedGeminiKeys = (process.env.GEMINI_API_KEY ?? "").trim();

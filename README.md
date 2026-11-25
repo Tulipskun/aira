@@ -147,6 +147,19 @@ git push
 aira update
 ```
 
+## One-command start
+
+Once the public npm package is published, install and start Aira with only:
+
+    export DISCORD=YOUR_DISCORD_BOT_TOKEN
+    npx aira
+
+The launcher installs Bun when needed, prepares the persistent runtime under ~/.local/share/aira, installs dependencies, saves the token with owner-only file permissions, and starts the supervisor. No GitHub login or separate setup command is required.
+
+When the bot connects, it posts an Aira Control Panel in the first server text channel where it can send messages. The Discord application owner can use the panel to choose the response channel and configure Gemini API keys and models. API keys are accepted through an ephemeral modal and stored in .aira/settings.json with restricted file permissions. The bot token is stored in .env with mode 0600.
+
+The bot must be invited to a server with View Channels, Send Messages, Read Message History, and Message Content intent enabled. A Gemini API key can be added after startup through the panel.
+
 ## Installation
 
 Aira is currently a **private GitHub repository**. Do not use the public `raw.githubusercontent.com` installer URL for this repository; an unauthenticated raw request cannot read a private repository.
