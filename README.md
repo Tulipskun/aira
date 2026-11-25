@@ -76,7 +76,7 @@ The bot runs in the foreground. On first launch, enter the Discord bot token in 
 - `/isla status` — inspect the current channel's shared conversation session.
 - `/isla leaderboard` — show the top users by XP.
 
-The runtime does not automatically replace Discord's global command list on every restart. Existing application commands are preserved. To install/update only Aira's `/isla` command group while retaining unrelated app commands, run `python -m aira.register_commands --dry-run` first, then `python -m aira.register_commands` once after reviewing the payload.
+After a slash-command schema change, the next startup synchronizes Aira's `/isla` command group once. The registrar preserves unrelated global application commands and records the synced schema version under `.aira/`, so it does not sync on every restart. Manual registration remains available with `python -m aira.register_commands --dry-run` followed by `python -m aira.register_commands`.
 
 Unknown prefix commands are ignored. Normal messages outside the configured response channel are ignored. Bot-authored messages are never fed back into the pipeline.
 
