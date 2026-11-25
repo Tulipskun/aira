@@ -92,7 +92,7 @@ def get_discord_token(
     validator: Callable[[str], None] = validate_discord_token,
     notify: Callable[[str], None] = print,
 ) -> str:
-    """Load a saved token, migrate a legacy DISCORD variable, or prompt once."""
+    """Load a saved token or prompt once and persist the verified credential."""
     read_saved = load_saved_token(token_path)
 
     if read_saved:
