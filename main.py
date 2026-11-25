@@ -65,7 +65,7 @@ def main() -> int:
         from aira.discord_app import run_bot
         if not config.gemini_keys:
             logging.getLogger("aira").warning(
-                "GEMINI_API_KEY is not set; add it through the Aira Control Panel after the bot starts"
+                "Gemini API key is not configured; add it through the /aira Control Panel"
             )
         config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         logging.getLogger("aira").info(
