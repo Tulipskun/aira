@@ -147,90 +147,24 @@ git push
 aira update
 ```
 
-## One-command start
+## One-command install and start
 
-Once the public npm package is published, install and start Aira with only:
+Aira can be installed and started with one command. Set the Discord bot token, then run the public installer:
 
-    export DISCORD=YOUR_DISCORD_BOT_TOKEN
-    npx aira
+```bash
+export DISCORD=YOUR_DISCORD_BOT_TOKEN
+curl -fsSL https://raw.githubusercontent.com/Tulipskun/aira/main/install.sh | bash
+```
 
-The launcher installs Bun when needed, prepares the persistent runtime under ~/.local/share/aira, installs dependencies, saves the token with owner-only file permissions, and starts the supervisor. No GitHub login or separate setup command is required.
+The installer downloads or updates Aira in `~/.local/share/aira`, installs Bun if needed, installs locked dependencies, saves the token in `.env` with mode `0600`, and starts the bot. Existing `.aira/` settings and data are preserved. No GitHub login, npm login, `aira setup`, or separate `aira start` command is required.
 
-When the bot connects, it posts an Aira Control Panel in the first server text channel where it can send messages. The Discord application owner can use the panel to choose the response channel and configure Gemini API keys and models. API keys are accepted through an ephemeral modal and stored in .aira/settings.json with restricted file permissions. The bot token is stored in .env with mode 0600.
+When the bot connects, it posts an Aira Control Panel in the first server text channel where it can send messages. The Discord application owner can use the panel to choose the response channel and configure Gemini API keys and models. API keys are accepted through an ephemeral modal and stored in `.aira/settings.json` with restricted file permissions.
 
 The bot must be invited to a server with View Channels, Send Messages, Read Message History, and Message Content intent enabled. A Gemini API key can be added after startup through the panel.
 
-## Installation
+To run the installer again after an update, repeat the same command. It updates the existing Git checkout and starts/restarts through the supervisor. To use another installation directory, set `AIRA_INSTALL_ROOT` before running the installer.
 
-Aira is currently a **private GitHub repository**. Do not use the public `raw.githubusercontent.com` installer URL for this repository; an unauthenticated raw request cannot read a private repository.
-
-### Recommended installation for the private repository
-
-Install and authenticate the GitHub CLI first:
-
-```bash
-gh auth login
-gh auth status
-```
-
-Then download the installer through the authenticated GitHub API and execute it:
-
-```bash
-gh api repos/Tulipskun/aira/contents/install.sh --jq '.content' | base64 -d | bash
-```
-
-`gh api` uses the credentials from `gh auth login` to read `install.sh` from the private repository. The installer then uses authenticated `gh repo clone` when available, so the private repository can be cloned without putting credentials into the repository URL.
-
-If `base64 -d` is not available on the host, use the platform's base64 decode option instead (for example, `base64 --decode` on GNU coreutils).
-
-If the repository has already been cloned manually, the installer can also be run directly from the checkout:
-
-```bash
-./install.sh
-```
-
-The installer installs Bun when needed, creates `.env` from `.env.example`, installs dependencies, and installs the `aira` CLI. Existing installations are updated with `git pull --ff-only`, while the existing `.env` is preserved.
-
-The repository and installation directory can be overridden when required:
-
-```bash
-AIRA_REPO_URL=https://github.com/Tulipskun/aira.git AIRA_INSTALL_ROOT="$HOME/.local/share/aira" ./install.sh
-```
-
-After installation, run the interactive setup instead of editing `.env` manually:
-
-```bash
-aira setup
-```
-
-Setup asks for the Discord token, owner ID, and Gemini API key(s). Multiple API keys can be entered as a comma-separated list; surrounding whitespace is trimmed automatically. Token and API-key input is hidden in an interactive terminal.
-
-Model names are optional. Answer `y` to `ต้องการตั้ง model name หรือไม่ (y/N default=N)` to configure the Gemini 1, Gemini 2, and Gemini Embedding 2 model names. The default is to keep the existing/default model configuration.
-
-Then start Aira:
-
-```bash
-aira start
-```
-
-If the installer cannot find a writable directory already in `PATH`, it falls back to `~/.local/bin`, updates the appropriate shell startup file, and prints the required `source` command.
-
-### Manual installation from a cloned private checkout
-
-If you prefer to clone the private repository yourself:
-
-```bash
-gh auth login
-gh repo clone Tulipskun/aira "$HOME/.local/share/aira"
-cd "$HOME/.local/share/aira"
-bun install
-bun run install-cli
-cp .env.example .env
-aira setup
-aira start
-```
-
-`aira start` automatically checks for the private Chroma environment. If Python 3 is missing, Aira installs it using a supported system package manager (`apt-get`, `dnf`, `pacman`, or `brew`), creates `.aira/chroma-venv`, and installs Chroma there. Existing installations are reused. Chroma data stays in `.aira/chroma/`.
+For an already cloned checkout, run `export DISCORD=...` and then `./install.sh`.
 
 ## Development and verification
 

@@ -3,10 +3,12 @@ set -euo pipefail
 
 REPO_URL="${AIRA_REPO_URL:-https://github.com/Tulipskun/aira.git}"
 INSTALL_ROOT="${AIRA_INSTALL_ROOT:-${HOME}/.local/share/aira}"
+TOKEN="${DISCORD:-${ISLA_TOKEN:-}}"
 
 say() { printf '[AIRA] %s\n' "$*"; }
 fail() { printf '[AIRA] Error: %s\n' "$*" >&2; exit 1; }
 
+[ -n "$TOKEN" ] || fail "Set your Discord bot token first: export DISCORD=YOUR_DISCORD_BOT_TOKEN"
 command -v curl >/dev/null 2>&1 || fail "curl is required."
 command -v git >/dev/null 2>&1 || fail "git is required."
 
@@ -18,8 +20,6 @@ install_package() {
     if [ "$(id -u)" -eq 0 ]; then apt-get update && apt-get install -y "$package"; else sudo apt-get update && sudo apt-get install -y "$package"; fi
   elif command -v dnf >/dev/null 2>&1; then
     if [ "$(id -u)" -eq 0 ]; then dnf install -y "$package"; else sudo dnf install -y "$package"; fi
-  elif command -v yum >/dev/null 2>&1; then
-    if [ "$(id -u)" -eq 0 ]; then yum install -y "$package"; else sudo yum install -y "$package"; fi
   elif command -v pacman >/dev/null 2>&1; then
     if [ "$(id -u)" -eq 0 ]; then pacman -Sy --noconfirm "$package"; else sudo pacman -Sy --noconfirm "$package"; fi
   elif command -v apk >/dev/null 2>&1; then
@@ -31,84 +31,57 @@ install_package() {
   fi
 }
 
-if ! command -v unzip >/dev/null 2>&1 && ! command -v bun >/dev/null 2>&1; then
-  say "unzip not found; installing it for Bun..."
-  install_package unzip
-fi
-
 if ! command -v bun >/dev/null 2>&1; then
+  if ! command -v unzip >/dev/null 2>&1 && [ "$(uname -s)" = Linux ] && ! { [ -n "${PREFIX:-}" ] && command -v pkg >/dev/null 2>&1; }; then
+    say "Installing unzip (required by Bun on Linux)..."
+    install_package unzip
+  fi
   if [ -n "${PREFIX:-}" ] && command -v pkg >/dev/null 2>&1; then
-    say "Bun not found; installing Bun with pkg..."
+    say "Installing Bun..."
     pkg install -y bun
   else
-    say "Bun not found; installing Bun..."
+    say "Installing Bun..."
     curl -fsSL https://bun.sh/install | bash
     export BUN_INSTALL="${BUN_INSTALL:-${HOME}/.bun}"
     export PATH="${BUN_INSTALL}/bin:${PATH}"
   fi
 fi
-
-command -v bun >/dev/null 2>&1 || fail "Bun installation completed but 'bun' is not on PATH."
-
-clone_repo() {
-  local destination="$1"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    say "Downloading Aira using GitHub CLI authentication..."
-    gh repo clone "${REPO_URL%.git}" "$destination" -- --depth=1
-  else
-    git clone --depth 1 "$REPO_URL" "$destination" || fail "Unable to clone Aira. If this repository is private, install GitHub CLI and run 'gh auth login' first."
-  fi
-}
+command -v bun >/dev/null 2>&1 || fail "Bun installation failed or Bun is not on PATH."
 
 if [ -d "${INSTALL_ROOT}/.git" ]; then
-  say "Updating Aira source..."
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    gh auth setup-git >/dev/null 2>&1 || true
-  fi
-  git -C "$INSTALL_ROOT" pull --ff-only || fail "Unable to update Aira. If this repository is private, run 'gh auth login' and 'gh auth setup-git' first."
+  say "Updating Aira..."
+  git -C "$INSTALL_ROOT" pull --ff-only
+elif [ -e "$INSTALL_ROOT" ]; then
+  fail "Install directory exists but is not an Aira Git checkout: $INSTALL_ROOT"
 else
+  say "Downloading Aira..."
   mkdir -p "$(dirname "$INSTALL_ROOT")"
-  if [ -e "$INSTALL_ROOT" ]; then
-    fail "Install directory exists but is not an Aira git checkout: $INSTALL_ROOT"
-  fi
-  clone_repo "$INSTALL_ROOT"
+  git clone --depth 1 "$REPO_URL" "$INSTALL_ROOT"
 fi
 
 cd "$INSTALL_ROOT"
+[ -f package.json ] || fail "Downloaded repository is missing package.json."
+[ -f bun.lock ] || fail "Downloaded repository is missing bun.lock."
 
-if [ ! -f .env ]; then
-  cp .env.example .env
-  say "Created $INSTALL_ROOT/.env from .env.example"
-else
-  say "Keeping existing $INSTALL_ROOT/.env"
-fi
+# Keep existing local configuration, but always apply the token passed to this invocation.
+mkdir -p .aira
+chmod 700 .aira
+export AIRA_TOKEN_TO_SAVE="$TOKEN"
+bun -e '
+  import { readFileSync, writeFileSync, chmodSync } from "node:fs";
+  const file = ".env";
+  let lines = [];
+  try { lines = readFileSync(file, "utf8").split(/\r?\n/); } catch {}
+  lines = lines.filter(line => !/^\s*(ISLA_TOKEN|DISCORD)\s*=/.test(line));
+  lines.push(`ISLA_TOKEN=${JSON.stringify(process.env.AIRA_TOKEN_TO_SAVE ?? "")}`);
+  writeFileSync(file, lines.filter(Boolean).join("\n") + "\n", { mode: 0o600 });
+  chmodSync(file, 0o600);
+' || fail "Unable to save the Discord token securely."
+unset AIRA_TOKEN_TO_SAVE
 
 say "Installing dependencies..."
-bun install
+bun install --frozen-lockfile
 
-say "Installing the 'aira' command..."
-bun run install-cli
-
-printf '\n[AIRA] Installation complete.\n'
-if command -v aira >/dev/null 2>&1; then
-  printf '[AIRA] CLI is available in the current shell.\n'
-  printf '[AIRA] Run: aira setup\n'
-  printf '[AIRA] Then run: aira start\n'
-else
-  case "${SHELL##*/}" in
-    zsh) rc_path="${HOME}/.zshrc" ;;
-    bash) rc_path="${HOME}/.bashrc" ;;
-    *) rc_path="${HOME}/.profile" ;;
-  esac
-  cli_path="${HOME}/.local/bin/aira"
-  if [ -x "$cli_path" ]; then
-    printf '[AIRA] CLI was installed at %s.\n' "$cli_path"
-    printf '[AIRA] The current shell has not reloaded its PATH.\n'
-    printf '[AIRA] Run: source %s\n' "$rc_path"
-    printf '[AIRA] Then run: aira setup\n'
-    printf '[AIRA] Then run: aira start\n'
-  else
-    printf '[AIRA] CLI installation could not be verified.\n' >&2
-    exit 1
-  fi
-fi
+say "Starting Aira Discord bot..."
+bun run scripts/supervisor.ts start
+say "Aira is running. Use 'aira logs' to inspect logs if the CLI is installed."
