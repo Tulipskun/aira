@@ -304,13 +304,18 @@ class AiraBot(commands.Bot):
         return embed
 
     async def setup_hook(self):
-        from .memory import migrate_legacy_chroma, migrate_memory_sessions
+        from .memory import (
+            migrate_character_memory_sessions, migrate_legacy_chroma, migrate_memory_sessions,
+        )
         legacy = migrate_legacy_chroma()
         if legacy.get("migrated"):
             log.info("Imported legacy Chroma memories into SQLite: %s", legacy)
         migration = await migrate_memory_sessions()
         if migration["backfilled"]:
             log.info("SQLite memory sessions backfilled: %s", migration)
+        character_memory = migrate_character_memory_sessions()
+        if any(character_memory.values()):
+            log.info("Legacy room memories assigned to Isla: %s", character_memory)
         self.add_view(PanelView(self))
         log.info("Registered owner-only /aira admin panel command")
 
@@ -423,45 +428,79 @@ class AiraBot(commands.Bot):
                 "user_id": last["user_id"], "user": last["user"], "text": text,
                 "timestamp": messages[0]["timestamp"], "file_name": messages[0].get("file_name"),
                 "session_key": messages[0]["session_key"], "speakers": speakers,
+                "media_summary": prepared.summary,
             }
+            store.save_message(
+                "user", text or "(ไม่มีข้อความแนบมา)", incoming["timestamp"],
+                incoming["session_key"], incoming["user_id"], incoming["user"],
+                incoming["file_name"], None,
+            )
             selected = await select_characters(incoming)
-            result = await process_message(incoming, prepared)
-            additional = []
-            for character in [char for char in selected if char.id != "isla"]:
+            if not selected:
+                log.debug("No character chose to speak in channel %s", last["channel_id"])
+                return
+
+            outputs = []
+            failed = []
+            for character in selected:
                 try:
-                    response = await process_character_reply(incoming, character, prepared)
-                    if response["text"]:
-                        additional.append(response)
+                    if character.id == "isla":
+                        response = await process_message(incoming, prepared, input_saved=True)
+                        if response["text"]:
+                            outputs.append({"character": character, **response})
+                    else:
+                        response = await process_character_reply(
+                            incoming, character, prepared, input_saved=True,
+                        )
+                        if response["text"]:
+                            outputs.append(response)
                 except Exception:
+                    failed.append(character.name)
                     log.exception("Character %s failed for %s", character.id, last["user_id"])
-            embed = discord.Embed(description=result["text"] or "…")
-            embed.color = discord.Color(result["color"]) if result.get("color") is not None else discord.Color.default()
-            embed.timestamp = discord.utils.utcnow()
-            embed.set_footer(text=build_footer(result.get("status"), result.get("mood"),
-                                                messages[0]["session_key"].startswith("user:")))
-            files = []
-            if result.get("image"):
-                path = config.images_dir / result["image"]
-                if path.is_file():
-                    file = discord.File(path, filename=path.name)
-                    files.append(file)
-                    embed.set_image(url=f"attachment://{path.name}")
-            view = None
-            if result.get("rps") in RPS_CHOICES:
-                game_id = str(uuid.uuid4())
-                RPS_GAMES[game_id] = {
-                    "user_id": int(last["user_id"]), "user_name": last["user"],
-                    "isla_choice": result["rps"], "session_key": messages[0]["session_key"],
-                    "channel_id": last["channel_id"], "message_id": last["message_id"],
-                }
-                view = RpsView(self, game_id)
-            sent = await channel.send(embed=embed, files=files, view=view,
-                                      reference=discord.MessageReference(message_id=int(messages[-1]["message_id"]),
-                                                                         channel_id=int(last["channel_id"]), fail_if_not_exists=False))
-            for extra in additional:
-                char_embed = discord.Embed(description=extra["text"])
-                char_embed.set_author(name=extra["character"].name)
-                await channel.send(embed=char_embed, reference=sent.to_reference(fail_if_not_exists=False))
+
+            reference = discord.MessageReference(
+                message_id=int(messages[-1]["message_id"]),
+                channel_id=int(last["channel_id"]),
+                fail_if_not_exists=False,
+            )
+            sent = None
+            for output in outputs:
+                character = output["character"]
+                if character.id == "isla":
+                    result = output
+                    embed = discord.Embed(description=result["text"])
+                    embed.color = (discord.Color(result["color"])
+                                   if result.get("color") is not None else discord.Color.default())
+                    embed.timestamp = discord.utils.utcnow()
+                    embed.set_footer(text=build_footer(
+                        result.get("status"), result.get("mood"),
+                        messages[0]["session_key"].startswith("user:"),
+                    ))
+                    files = []
+                    if result.get("image"):
+                        path = config.images_dir / result["image"]
+                        if path.is_file():
+                            files.append(discord.File(path, filename=path.name))
+                            embed.set_image(url=f"attachment://{path.name}")
+                    view = None
+                    if result.get("rps") in RPS_CHOICES:
+                        game_id = str(uuid.uuid4())
+                        RPS_GAMES[game_id] = {
+                            "user_id": int(last["user_id"]), "user_name": last["user"],
+                            "isla_choice": result["rps"], "session_key": incoming["session_key"],
+                            "channel_id": last["channel_id"], "message_id": last["message_id"],
+                        }
+                        view = RpsView(self, game_id)
+                    sent = await channel.send(embed=embed, files=files, view=view, reference=reference)
+                else:
+                    embed = discord.Embed(description=output["text"])
+                    embed.set_author(name=character.name)
+                    embed.timestamp = discord.utils.utcnow()
+                    sent = await channel.send(embed=embed, reference=reference)
+                reference = sent.to_reference(fail_if_not_exists=False)
+
+            if failed and not outputs and len(failed) == len(selected):
+                raise RuntimeError("All selected characters failed: " + ", ".join(failed))
         except Exception:
             log.exception("Message pipeline failed")
             try:

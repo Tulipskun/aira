@@ -29,6 +29,26 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([x["text"] for x in self.db.get_history(10, "user:1")], ["private"])
         self.assertEqual([x["text"] for x in self.db.get_history(10, "group:9")], ["group"])
 
+    def test_character_messages_and_directed_character_relationships_are_persisted(self):
+        timestamp = utc_now()
+        self.db.save_message(
+            "model", "Nova speaks", timestamp, "group:9", None, "Nova", None,
+            "Nova joined the conversation", "nova",
+        )
+        row = self.db.get_history(10, "group:9")[0]
+        self.assertEqual(row["character_id"], "nova")
+        self.assertEqual(row["user_name"], "Nova")
+        self.db.save_character_pair_relationship("nova", "isla", "Nova thinks Isla is kind")
+        self.db.save_character_pair_relationship("isla", "nova", "Isla finds Nova energetic")
+        self.assertEqual(self.db.get_character_pair_relationship("nova", "isla"),
+                         "Nova thinks Isla is kind")
+        self.assertEqual(self.db.get_character_pair_relationship("isla", "nova"),
+                         "Isla finds Nova energetic")
+        self.assertEqual(self.db.get_character_pair_relationships("nova"),
+                         {"isla": "Nova thinks Isla is kind"})
+        self.db.save_character_pair_relationship("nova", "nova", "invalid")
+        self.assertEqual(self.db.get_character_pair_relationship("nova", "nova"), "")
+
     def test_state_update_is_idempotent_and_owner_scoped(self):
         timestamp = utc_now()
         change = {"user_id": "1", "user_name": "Alice", "affinity": 30,

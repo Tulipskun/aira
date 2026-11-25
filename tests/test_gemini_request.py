@@ -49,23 +49,25 @@ class GeminiRequestTests(unittest.TestCase):
         thought_signatures._pool[:] = self.old_pool
         thought_signatures._cursor = self.old_cursor
 
-    def test_live_request_is_text_only_and_preserves_memory_context_and_json_schema(self):
+    def test_live_request_uses_audio_transcription_and_preserves_memory_context_and_json_schema(self):
         server_content = SimpleNamespace(
-            model_turn=SimpleNamespace(parts=[SimpleNamespace(text='{"Isla":"Hello"}')]),
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
+            output_transcription=SimpleNamespace(text='{"Isla":"Hello"}'),
             turn_complete=True,
         )
         live = FakeLive([SimpleNamespace(server_content=server_content)])
         fake_client = SimpleNamespace(aio=SimpleNamespace(live=live))
         temporary = thought_signatures.fake_tool_call_result("search_memory", {"user": "Alice"}, {"memories": []})
         schema = {"type": "object", "properties": {"Isla": {"type": "string"}}}
-        with patch.object(gemini, "_client", return_value=fake_client):
+        with patch.object(gemini, "_live_client", return_value=fake_client):
             output = asyncio.run(gemini.generate_text(
                 "gemini1", "hello", "system", schema=schema, temporary_steps=temporary,
             ))
         self.assertEqual(output, '{"Isla":"Hello"}')
         request = live.calls[0]
         self.assertEqual(request["model"], "gemini-3.8-live")
-        self.assertEqual(request["config"].response_modalities, ["TEXT"])
+        self.assertEqual(request["config"].response_modalities, ["AUDIO"])
+        self.assertIsInstance(request["config"].output_audio_transcription, gemini.types.AudioTranscriptionConfig)
         self.assertTrue(request["config"].system_instruction.startswith("system"))
         self.assertIsNone(request["config"].generation_config)
         self.assertIn('"type":"object"', request["config"].system_instruction)
@@ -124,14 +126,15 @@ class GeminiRequestTests(unittest.TestCase):
 
     def test_character_reply_forwards_media_and_memory_tool_context(self):
         server_content = SimpleNamespace(
-            model_turn=SimpleNamespace(parts=[SimpleNamespace(text='{"reply":"Hello","memory":"","relationship":"same"}')]),
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
+            output_transcription=SimpleNamespace(text='{"reply":"Hello","memory":"","relationship":"same"}'),
             turn_complete=True,
         )
         live = FakeLive([SimpleNamespace(server_content=server_content)])
         fake_client = SimpleNamespace(aio=SimpleNamespace(live=live))
         media = [{"type": "image", "data": "aGVsbG8=", "mime_type": "image/png"}]
         tool_steps = thought_signatures.fake_tool_call_result("search_character_memory", {}, {"memories": []})
-        with patch.object(gemini, "_client", return_value=fake_client):
+        with patch.object(gemini, "_live_client", return_value=fake_client):
             result = asyncio.run(gemini.generate_character_reply(
                 "character prompt", "context", media, tool_steps,
                 {"user_id": "42", "user_name": "Alice", "turn_id": "t1"},
@@ -140,6 +143,34 @@ class GeminiRequestTests(unittest.TestCase):
         sent = live.sessions[0].sent[0]["turns"]
         self.assertEqual(sent.parts[1].inline_data.mime_type, "image/png")
         self.assertIn("ผลจาก search_character_memory", sent.parts[2].text)
+
+    def test_speaker_scheduler_can_choose_silence_or_one_secondary_actor(self):
+        captured = {}
+        async def fake_generate(stage, prompt, system, **kwargs):
+            captured.update({"stage": stage, "prompt": prompt, "system": system, **kwargs})
+            return '{"speakers":["nova"]}'
+        history = [{"role": "model", "user_name": "Isla", "text": "เรื่องนั้นน่าสนใจ"}]
+        with patch.object(gemini, "generate_text", side_effect=fake_generate):
+            result = asyncio.run(gemini.choose_character_speakers(
+                "วันนี้อากาศดี", "Alice",
+                [{"id": "isla", "name": "Isla", "aliases": ["Isla"]},
+                 {"id": "nova", "name": "Nova", "aliases": ["Nova"]}],
+                recent_history=history,
+            ))
+        self.assertEqual(result, ["nova"])
+        self.assertEqual(captured["stage"], "gemini2")
+        self.assertIn("เงียบ", captured["prompt"])
+        self.assertIn("Isla: เรื่องนั้นน่าสนใจ", captured["prompt"])
+        self.assertEqual(captured["schema"]["required"], ["speakers"])
+
+    def test_reply_parser_reads_directional_character_relationships(self):
+        parsed = gemini.parse_reply(
+            '{"Isla":"สวัสดี","summery":"คุยกับ Nova",'
+            '"relationships":[{"target_character_id":"nova","relationship":"ไว้ใจ Nova"}]}'
+        )
+        self.assertEqual(parsed["relationships"], [
+            {"target_character_id": "nova", "relationship": "ไว้ใจ Nova"},
+        ])
 
     def test_analyze_turn_uses_user_id_and_partner_in_prompt(self):
         captured = {}

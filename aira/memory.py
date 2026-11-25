@@ -149,14 +149,18 @@ async def ingest_memory_background(text: str, user_id: str, timestamp: str, sess
         log.exception("Memory ingestion failed for user %s", user_id)
 
 
-async def persist_episode_background(session_key: str) -> None:
-    """Build and persist the latest episode for a session in the background."""
+async def persist_episode_background(session_key: str, history_session_key: str | None = None,
+                                      character_id: str | None = None) -> None:
+    """Build and persist one character's episode from the shared room history."""
     try:
-        episode = await build_recent_episode(session_key)
+        args = (session_key,) if history_session_key is None and character_id is None else (
+            session_key, history_session_key, character_id
+        )
+        episode = await build_recent_episode(*args)
         if episode:
             await save_episode(episode)
     except Exception:
-        log.exception("Episode persistence failed for session %s", session_key)
+        log.exception("Episode persistence failed for character memory %s", session_key)
 
 
 def _local_parts(timestamp: str) -> tuple[str, int]:
@@ -248,10 +252,15 @@ async def save_episode(episode: dict) -> None:
     save_episode_vector(episode, await embed(episode["text"], "document"))
 
 
-async def build_recent_episode(session_key: str) -> dict | None:
-    history = store.get_history(50, session_key)
-    summaries = [{"timestamp": row["timestamp"], "summary": row["summary"], "user_id": row["user_id"]}
-                 for row in history if row["role"] == "model" and row.get("summary")]
+async def build_recent_episode(session_key: str, history_session_key: str | None = None,
+                               character_id: str | None = None) -> dict | None:
+    history = store.get_history(50, history_session_key or session_key)
+    summaries = [
+        {"timestamp": row["timestamp"], "summary": row["summary"], "user_id": row["user_id"]}
+        for row in history
+        if row["role"] == "model" and row.get("summary")
+        and (character_id is None or row.get("character_id") == character_id)
+    ]
     return build_episode(summaries, session_key)
 
 
@@ -282,6 +291,23 @@ async def migrate_memory_sessions() -> dict[str, int]:
         store.db.execute("UPDATE semantic_memories SET session_key=? WHERE id=?", (key, row["id"]))
     count = int(store.db.execute("SELECT COUNT(*) FROM semantic_memories WHERE session_key IS NOT NULL AND session_key<>''").fetchone()[0])
     return {"backfilled": len(rows), "unattributed": sum(1 for row in rows if not row["user_id"]), "already_keyed": count - len(rows)}
+
+
+def migrate_character_memory_sessions() -> dict[str, int]:
+    """Assign legacy room memories to Isla before enforcing per-character namespaces."""
+    migrated = {}
+    for table in ("semantic_memories", "episodic_memories"):
+        rows = store.db.execute(
+            f"SELECT id,session_key FROM {table} WHERE session_key<>? AND session_key NOT LIKE '%:character:%'",
+            (LEGACY_SESSION_KEY,),
+        ).fetchall()
+        for row in rows:
+            store.db.execute(
+                f"UPDATE {table} SET session_key=? WHERE id=?",
+                (f"{row['session_key']}:character:isla", row["id"]),
+            )
+        migrated[table] = len(rows)
+    return migrated
 
 
 def _episode_rows() -> list[dict]:

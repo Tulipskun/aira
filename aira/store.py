@@ -91,16 +91,17 @@ class Store:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             role TEXT NOT NULL CHECK(role IN ('user','model')),
             user_id TEXT, user_name TEXT, text TEXT NOT NULL, timestamp TEXT NOT NULL,
-            file_name TEXT, summary TEXT, session_key TEXT
+            file_name TEXT, summary TEXT, session_key TEXT, character_id TEXT
         )""")
         message_cols = self._columns("messages")
-        for name, ddl in (("summary", "TEXT"), ("session_key", "TEXT")):
+        for name, ddl in (("summary", "TEXT"), ("session_key", "TEXT"), ("character_id", "TEXT")):
             if name not in message_cols:
                 self.db.execute(f"ALTER TABLE messages ADD COLUMN {name} {ddl}")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_key ON messages(session_key)")
         self._migrate_message_sessions()
+        self.db.execute("UPDATE messages SET character_id='isla' WHERE role='model' AND (user_name IS NULL OR user_name='') AND character_id IS NULL")
 
         desired = {
             "user_id": "TEXT",
@@ -158,6 +159,10 @@ class Store:
         self.db.execute("""CREATE TABLE IF NOT EXISTS character_relationships(
             character_id TEXT NOT NULL, user_id TEXT NOT NULL, relationship TEXT NOT NULL,
             updated_at TEXT NOT NULL, PRIMARY KEY(character_id,user_id))""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS character_pair_relationships(
+            character_id TEXT NOT NULL, target_character_id TEXT NOT NULL, relationship TEXT NOT NULL,
+            updated_at TEXT NOT NULL, PRIMARY KEY(character_id,target_character_id),
+            CHECK(character_id<>target_character_id))""")
         self.db.execute("""CREATE TABLE IF NOT EXISTS turn_state_applied(
             session_key TEXT NOT NULL, user_id TEXT NOT NULL, event_timestamp TEXT NOT NULL,
             applied_at TEXT NOT NULL, PRIMARY KEY(session_key,user_id,event_timestamp))""")
@@ -241,15 +246,16 @@ class Store:
 
     def save_message(self, role: str, text: str, timestamp: str, session_key: str,
                      user_id: str | None = None, user_name: str | None = None,
-                     file_name: str | None = None, summary: str | None = None) -> int:
+                     file_name: str | None = None, summary: str | None = None,
+                     character_id: str | None = None) -> int:
         cursor = self.db.execute("""INSERT INTO messages
-            (role,user_id,user_name,text,timestamp,file_name,summary,session_key)
-            VALUES(?,?,?,?,?,?,?,?)""",
-            (role, user_id, user_name, text, timestamp, file_name, summary, session_key))
+            (role,user_id,user_name,text,timestamp,file_name,summary,session_key,character_id)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (role, user_id, user_name, text, timestamp, file_name, summary, session_key, character_id))
         return int(cursor.lastrowid)
 
     def get_history(self, limit: int, session_key: str) -> list[dict]:
-        rows = self.db.execute("""SELECT id,role,user_id,user_name,text,summary,timestamp,file_name,session_key
+        rows = self.db.execute("""SELECT id,role,user_id,user_name,text,summary,timestamp,file_name,session_key,character_id
             FROM messages WHERE session_key=? ORDER BY id DESC LIMIT ?""", (session_key, limit)).fetchall()
         return [dict(row) for row in reversed(rows)]
 
@@ -337,6 +343,31 @@ class Store:
             VALUES(?,?,?,?) ON CONFLICT(character_id,user_id) DO UPDATE SET
             relationship=excluded.relationship,updated_at=excluded.updated_at""",
             (character_id, user_id, relationship, utc_now()))
+
+    def get_character_pair_relationship(self, character_id: str, target_character_id: str) -> str:
+        row = self.db.execute(
+            "SELECT relationship FROM character_pair_relationships WHERE character_id=? AND target_character_id=?",
+            (character_id, target_character_id),
+        ).fetchone()
+        return row["relationship"] if row else ""
+
+    def get_character_pair_relationships(self, character_id: str) -> dict[str, str]:
+        rows = self.db.execute(
+            "SELECT target_character_id,relationship FROM character_pair_relationships WHERE character_id=?",
+            (character_id,),
+        ).fetchall()
+        return {row["target_character_id"]: row["relationship"] for row in rows}
+
+    def save_character_pair_relationship(self, character_id: str, target_character_id: str,
+                                         relationship: str) -> None:
+        relationship = relationship.strip()
+        if character_id == target_character_id or not relationship or len(relationship) > 1200:
+            return
+        self.db.execute("""INSERT INTO character_pair_relationships(
+            character_id,target_character_id,relationship,updated_at) VALUES(?,?,?,?)
+            ON CONFLICT(character_id,target_character_id) DO UPDATE SET
+            relationship=excluded.relationship,updated_at=excluded.updated_at""",
+            (character_id, target_character_id, relationship, utc_now()))
 
     def apply_turn_state(self, change: dict, facts: list[dict], nicknames: list[str],
                          timestamp: str, session_key: str) -> dict:

@@ -66,7 +66,7 @@ def load_character_prompt(character: Character) -> str:
 
 
 def character_session_key(session_key: str, character_id: str) -> str:
-    return session_key if character_id == "isla" else f"{session_key}:character:{character_id}"
+    return f"{session_key}:character:{character_id}"
 
 
 def find_mentioned_characters(text: str, characters: list[Character]) -> list[Character]:
@@ -74,20 +74,19 @@ def find_mentioned_characters(text: str, characters: list[Character]) -> list[Ch
     return [char for char in characters if any(alias.casefold() in value for alias in char.aliases)]
 
 
-def resolve_character_selection(characters: list[Character], mentioned: list[Character], selected_ids: list[str]) -> list[Character]:
+def resolve_character_speakers(characters: list[Character], mentioned: list[Character],
+                                selected_ids: list[str]) -> list[Character]:
     by_id = {char.id: char for char in characters}
+    candidates = [*mentioned, *(by_id[key] for key in selected_ids if key in by_id)]
     selected = []
     seen = set()
-    for char in [*mentioned, *(by_id[key] for key in selected_ids if key in by_id)]:
+    for char in candidates:
         if char.id not in seen:
             seen.add(char.id)
             selected.append(char)
-        if len(selected) >= 2:
-            break
-    isla = by_id.get("isla")
-    if not isla:
-        raise ValueError("The Isla character definition is required")
-    return [isla, *[char for char in selected if char.id != "isla"]][:2]
+    primary = next((char for char in selected if char.id == "isla"), None)
+    secondary = next((char for char in selected if char.id != "isla"), None)
+    return [char for char in (primary, secondary) if char is not None]
 
 
 def save_character(character_id: str, name: str, aliases: list[str], prompt: str, enabled: bool = True) -> None:

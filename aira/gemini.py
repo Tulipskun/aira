@@ -24,6 +24,7 @@ from .debug_dump import debug_dump
 
 log = logging.getLogger("aira.gemini")
 _clients: dict[str, genai.Client] = {}
+_live_clients: dict[str, genai.Client] = {}
 _key_state = {"gemini1": 0, "gemini2": 0, "embedding2": 0}
 try:
     _key_state.update(json.loads(config.key_state_file.read_text("utf-8")))
@@ -38,6 +39,10 @@ REPLY_SCHEMA = {
         "mood": {"type": "string", "description": "อารมณ์ภาษาไทยสั้น ๆ 1-3 คำ"},
         "color": {"type": "string", "description": "สีแทนอารมณ์ hex 6 หลัก เช่น #F1C40F"},
         "rps": {"type": "string", "enum": ["rock", "paper", "scissors"]},
+        "character_relationships": {"type": "array", "items": {"type": "object", "properties": {
+            "target_character_id": {"type": "string"},
+            "relationship": {"type": "string"},
+        }, "required": ["target_character_id", "relationship"]}},
     },
     "required": ["Isla", "summery", "mood", "color"],
 }
@@ -109,6 +114,17 @@ def _client(stage: str) -> genai.Client:
     if key not in _clients:
         _clients[key] = genai.Client(api_key=key)
     return _clients[key]
+
+
+def _live_client(stage: str) -> genai.Client:
+    """Gemini Live 3.8 is served on the v1beta Gemini API endpoint."""
+    key = _key(stage)
+    if key not in _live_clients:
+        _live_clients[key] = genai.Client(
+            api_key=key,
+            http_options=types.HttpOptions(api_version="v1beta"),
+        )
+    return _live_clients[key]
 
 
 def thai_timestamp(timestamp: str | None) -> str:
@@ -250,12 +266,23 @@ def parse_reply(raw: str) -> dict:
     mood = _pick(parsed, "mood", "emotion", "feeling", "อารมณ์")
     color = _pick(parsed, "color")
     rps = _pick(parsed, "rps", "RPS")
+    raw_relationships = _pick(parsed, "character_relationships", "relationships") or []
+    relationships = []
+    if isinstance(raw_relationships, list):
+        for item in raw_relationships[:4]:
+            if not isinstance(item, dict):
+                continue
+            target = str(item.get("target_character_id") or item.get("targetCharacterId") or "").strip()
+            relationship = str(item.get("relationship") or "").strip()
+            if target and relationship:
+                relationships.append({"target_character_id": target, "relationship": relationship})
     return {
         "text": str(text or "").strip(),
         "summary": str(summary or "").strip(),
         "mood": str(mood or "").strip()[:60],
         "color": normalize_color(color),
         "rps": rps if rps in {"rock", "paper", "scissors"} else None,
+        "relationships": relationships,
         "parsed": True,
     }
 
@@ -544,14 +571,16 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
             json.dumps(response_schema, ensure_ascii=False, separators=(",", ":")),
         ])
     live_config = types.LiveConnectConfig(
-        response_modalities=[types.Modality.TEXT],
+        response_modalities=[types.Modality.AUDIO],
+        output_audio_transcription=types.AudioTranscriptionConfig(),
         system_instruction=system_instruction,
     )
     while key_attempts < max_keys:
-        client = _client(stage)
+        client = _live_client(stage)
         attempt += 1
         debug_meta = {
-            "stage": stage, "model": chosen_model, "api": "live", "response_modalities": ["TEXT"],
+            "stage": stage, "model": chosen_model, "api": "live", "api_version": "v1beta",
+            "response_modalities": ["AUDIO"], "output_audio_transcription": True,
             "attempt": attempt, "userId": (debug_context or {}).get("user_id"),
             "userName": (debug_context or {}).get("user_name"),
             "turnId": (debug_context or {}).get("turn_id"),
@@ -570,10 +599,16 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
                 async with asyncio.timeout(120):
                     async for message in session.receive():
                         server_content = getattr(message, "server_content", None)
-                        model_turn = getattr(server_content, "model_turn", None) if server_content else None
-                        for part in (getattr(model_turn, "parts", None) or []) if model_turn else []:
-                            if getattr(part, "text", None):
-                                output.append(part.text)
+                        if server_content:
+                            transcription = getattr(server_content, "output_transcription", None)
+                            transcript_text = getattr(transcription, "text", None) if transcription else None
+                            if transcript_text:
+                                output.append(transcript_text)
+                            else:
+                                model_turn = getattr(server_content, "model_turn", None)
+                                for part in (getattr(model_turn, "parts", None) or []) if model_turn else []:
+                                    if getattr(part, "text", None):
+                                        output.append(part.text)
                         if server_content and getattr(server_content, "turn_complete", False):
                             break
             result = "".join(output).strip()
@@ -634,25 +669,35 @@ async def embed(text: str, task: str = "query") -> list[float]:
     raise RuntimeError("All Gemini Embedding API keys were rate-limited") from last_error
 
 
-async def choose_characters_router(message: str, user_name: str, characters: list[dict],
-                                   mentioned_ids: list[str] | None = None) -> list[str]:
-    mentioned_ids = [value for value in (mentioned_ids or []) if value != "isla"]
+async def choose_character_speakers(message: str, user_name: str, characters: list[dict],
+                                    mentioned_ids: list[str] | None = None,
+                                    recent_history: list[dict] | None = None) -> list[str]:
+    mentioned_ids = list(dict.fromkeys(mentioned_ids or []))
+    history_lines = []
+    for row in (recent_history or [])[-12:]:
+        speaker = row.get("user_name") or ("ผู้ใช้" if row.get("role") == "user" else "ตัวละคร")
+        history_lines.append(f"{speaker}: {row.get('text', '')}")
     prompt = "\n".join([
-        "เลือกตัวละครเสริมที่ควรเข้าร่วมตอบข้อความล่าสุดในบทสนทนา Discord",
-        "Isla ตอบอยู่แล้วเสมอ เลือกตัวละครอื่นได้ 0-1 ตัวเท่านั้น (รวมทั้งหมดไม่เกิน 2 ตัวละคร)",
-        "ถ้าข้อความเรียกตัวละครโดยตรง ต้องเลือกตัวละครนั้นเสมอ ห้ามละเลยการเรียกชื่อโดยตรง",
-        "ถ้าไม่มีตัวละครอื่นที่ควรพูด ให้ส่ง characters เป็น array ว่าง ห้ามเลือกตัวละครเพื่อให้ครบจำนวน",
-        "ส่งกลับเฉพาะ JSON {\"characters\":[id]}",
-        *[f"- id={c['id']}; name={c['name']}; aliases={', '.join(c['aliases'])}" for c in characters if c['id'] != 'isla'],
+        "คุณเป็นผู้กำกับจังหวะบทสนทนาของกลุ่มตัวละครในห้อง Discord",
+        "เลือก Isla ได้ 0-1 ตัว และตัวละครเสริมได้ 0-1 ตัว รวมไม่เกิน 2 ตัวละคร",
+        "ตัวละครไม่จำเป็นต้องตอบทุกข้อความ และการเงียบเป็นตัวเลือกปกติ ห้ามเลือกเพียงเพื่อให้มีคนตอบ",
+        "พิจารณาว่าใครสนใจหัวข้อ มีเรื่องจะเสริม มีอารมณ์อยากตอบ หรืออยากโต้ตอบกับตัวละครที่เพิ่งพูด",
+        "ตัวละครที่ถูกเรียกชื่อโดยตรงต้องอยู่ในผลลัพธ์ก่อนตัวละครอื่น และต้องตอบข้อความที่เรียกถึงตน",
+        "ตัวละครที่เลือกจะเห็นประวัติห้องเดียวกัน แต่มีความทรงจำและมุมมองส่วนตัวแยกกัน",
+        "หลีกเลี่ยงการเลือกตัวละครเดิมซ้ำ ๆ หากตัวละครอื่นมีเหตุผลเหมาะสมกว่า",
+        "ส่งกลับเฉพาะ JSON รูปแบบ {\"speakers\":[\"character_id\"]}; หากไม่มีใครควรพูดให้ใช้ array ว่าง",
+        "รายชื่อตัวละคร:",
+        *[f"- id={c['id']}; name={c['name']}; aliases={', '.join(c['aliases'])}" for c in characters],
         "ตัวละครที่ถูกเรียกโดยตรง (ต้องเลือก): " + (", ".join(mentioned_ids) or "ไม่มี"),
-        f"ข้อความล่าสุดจาก {user_name}: {message}",
+        "บทสนทนาก่อนหน้า:\n" + ("\n".join(history_lines) if history_lines else "(ยังไม่มี)"),
+        f"ข้อความล่าสุดจาก {user_name}: {message or '(ข้อความมีเฉพาะไฟล์แนบ)'}",
     ])
     result = await generate_text("gemini2", prompt, "ตอบเป็น JSON เท่านั้น", schema={
-        "type": "object", "properties": {"characters": {"type": "array", "items": {"type": "string"}}},
-        "required": ["characters"],
+        "type": "object", "properties": {"speakers": {"type": "array", "items": {"type": "string"}}},
+        "required": ["speakers"],
     })
     obj = _extract_object(result) or {}
-    values = obj.get("characters", [])
+    values = obj.get("speakers", [])
     return [str(x) for x in values if isinstance(x, str)] if isinstance(values, list) else []
 
 
@@ -661,17 +706,30 @@ async def generate_character_reply(prompt: str, context: str,
                                    temporary_steps: list[dict] | None = None,
                                    debug_context: dict | None = None) -> dict:
     schema = {"type": "object", "properties": {
-        "reply": {"type": "string"}, "memory": {"type": "string"}, "relationship": {"type": "string"}
-    }, "required": ["reply", "memory", "relationship"]}
+        "reply": {"type": "string"}, "summary": {"type": "string"},
+        "memory": {"type": "string"}, "relationship": {"type": "string"},
+        "character_relationships": {"type": "array", "items": {"type": "object", "properties": {
+            "target_character_id": {"type": "string"}, "relationship": {"type": "string"}
+        }, "required": ["target_character_id", "relationship"]}},
+    }, "required": ["reply", "summary", "memory", "relationship", "character_relationships"]}
     raw = await generate_text("gemini1", context, prompt, media_parts=media_parts,
                               schema=schema, temporary_steps=temporary_steps,
                               debug_context=debug_context)
     parsed = _extract_object(raw)
     if not parsed:
-        return {"reply": raw.strip(), "memory": "", "relationship": ""}
+        return {"reply": raw.strip(), "summary": "", "memory": "", "relationship": "", "relationships": []}
+    relationships = []
+    for item in parsed.get("character_relationships", []) or []:
+        if isinstance(item, dict):
+            target = str(item.get("target_character_id") or "").strip()
+            value = str(item.get("relationship") or "").strip()
+            if target and value:
+                relationships.append({"target_character_id": target, "relationship": value})
     return {"reply": str(parsed.get("reply") or "").strip(),
+            "summary": str(parsed.get("summary") or "").strip(),
             "memory": str(parsed.get("memory") or "").strip(),
-            "relationship": str(parsed.get("relationship") or "").strip()}
+            "relationship": str(parsed.get("relationship") or "").strip(),
+            "relationships": relationships}
 
 
 def build_isla_prompt(partner: str) -> str:

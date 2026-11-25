@@ -33,6 +33,32 @@ class MemoryTests(unittest.TestCase):
         rows=memory.search_memories_by_vector([1,0,0],"user:1",5,0.5)
         self.assertEqual([row["text"] for row in rows],["Alice likes tea"])
 
+    def test_legacy_room_memory_moves_to_isla_without_moving_other_characters(self):
+        memory.save_memory_vector("Isla memory", [1, 0, 0], "1", "2026-11-25T00:00:00Z", "group:9")
+        memory.save_memory_vector("Nova memory", [0, 1, 0], "1", "2026-11-25T00:00:00Z",
+                                  "group:9:character:nova")
+        episode = {"id": "old-episode", "text": "Isla episode", "session_key": "group:9",
+                   "date": "2026-11-25", "period": "night", "start_time": "2026-11-25T00:00:00Z",
+                   "end_time": "2026-11-25T00:01:00Z", "participants": ["1"],
+                   "created_at": "2026-11-25T00:01:00Z"}
+        memory.save_episode_vector(episode, [1, 0, 0])
+        migrated = memory.migrate_character_memory_sessions()
+        self.assertEqual(migrated, {"semantic_memories": 1, "episodic_memories": 1})
+        self.assertEqual(memory.count_memories({"session_key": "group:9:character:isla"}), 2)
+        self.assertEqual(memory.count_memories({"session_key": "group:9:character:nova"}), 1)
+        self.assertEqual(memory.migrate_character_memory_sessions(),
+                         {"semantic_memories": 0, "episodic_memories": 0})
+
+    def test_episode_history_is_filtered_to_the_character_who_created_it(self):
+        memory.store.save_message("model", "Isla text", "2026-11-25T01:00:00Z", "group:9",
+                                  None, "Isla", None, "Isla memory", "isla")
+        memory.store.save_message("model", "Nova text", "2026-11-25T01:02:00Z", "group:9",
+                                  None, "Nova", None, "Nova memory", "nova")
+        episode = asyncio.run(memory.build_recent_episode(
+            "group:9:character:nova", "group:9", "nova",
+        ))
+        self.assertEqual(episode["text"], "Nova memory")
+
     def test_memory_crud(self):
         ident=memory.save_memory_vector("Tea",[1,0,0],"1","2026-11-25T00:00:00Z","user:1")
         self.assertEqual(len(memory.list_memories({"user_id":"1"})),1)
