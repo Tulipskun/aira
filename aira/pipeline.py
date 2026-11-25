@@ -11,7 +11,7 @@ from .characters import (
 )
 from .config import config
 from .gemini import (
-    generate_character_reply, generate_text, _extract_object, thai_timestamp, current_time_block, _image_catalog_prompt,
+    generate_character_reply, generate_json, thai_timestamp, current_time_block, _image_catalog_prompt,
 )
 from .memory import (
     embed, ingest_memory_background, persist_episode_background,
@@ -134,7 +134,7 @@ async def select_characters(message: dict, prepared_media=None) -> list[Characte
         "selected_character_ids": {"type": "array", "items": {"type": "string"}},
         "reason": {"type": "string"},
     }, "required": ["selected_character_ids", "reason"]}
-    raw = await generate_text(
+    parsed = await generate_json(
         "gemini1", prompt,
         "คุณเป็นตัวจัดสรรผู้พูดในกลุ่มตัวละคร Discord เท่านั้น ไม่ใช่ตัวละครใด ๆ "
         "ส่ง JSON ตาม schema เท่านั้น เลือก 0-3 ตัวละครตามความเหมาะสม ห้ามเลือก ID ที่ไม่มีในรายชื่อ",
@@ -143,7 +143,6 @@ async def select_characters(message: dict, prepared_media=None) -> list[Characte
                        "user_name": str(message.get("user") or ""),
                        "character_id": "orchestrator", "turn_id": str(uuid.uuid4())},
     )
-    parsed = _extract_object(raw)
     if not parsed or not isinstance(parsed.get("selected_character_ids"), list):
         log.error("Character selector returned invalid structured output; no character will be defaulted")
         return []

@@ -538,6 +538,26 @@ async def embed(text: str, task: str = "query") -> list[float]:
 
 
 
+async def generate_json(stage: str, prompt: str, system_instruction: str,
+                        media_parts: list[dict] | None = None, schema: dict | None = None,
+                        debug_context: dict | None = None, attempts: int = 2) -> dict | None:
+    """Return a parsed JSON answer, retrying the lossy audio transcription channel.
+
+    The live model answers with audio and the JSON only arrives as its transcription, so an
+    answer can be cut off mid-object. A second request usually completes the same decision,
+    and callers keep their own policy when every attempt fails.
+    """
+    for attempt in range(1, attempts + 1):
+        raw = await generate_text(stage, prompt, system_instruction, media_parts=media_parts,
+                                  schema=schema, debug_context=debug_context)
+        parsed = _extract_object(raw)
+        if parsed is not None:
+            return parsed
+        log.warning("Structured Gemini answer was not parseable JSON: stage=%s attempt=%s/%s chars=%s",
+                    stage, attempt, attempts, len(raw))
+    return None
+
+
 async def generate_character_reply(prompt: str, context: str,
                                    media_parts: list[dict] | None = None,
                                    debug_context: dict | None = None) -> dict:
@@ -554,9 +574,8 @@ async def generate_character_reply(prompt: str, context: str,
         "rps": {"type": "string", "enum": ["rock", "paper", "scissors"]},
     }, "required": ["reply", "summary", "memory", "relationship", "character_relationships",
                    "next_speaker_id", "mood", "color", "select_image"]}
-    raw = await generate_text("gemini1", context, prompt, media_parts=media_parts,
-                              schema=schema, debug_context=debug_context)
-    parsed = _extract_object(raw)
+    parsed = await generate_json("gemini1", context, prompt, media_parts=media_parts,
+                                 schema=schema, debug_context=debug_context)
     if not parsed:
         # Never expose malformed model output (including fenced/raw JSON) as a Discord reply.
         log.error("Gemini character response was not valid JSON; refusing to publish raw output")

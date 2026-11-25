@@ -75,6 +75,36 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertIn("Alice likes tea", sent.parts[0].text)
 
 
+    def test_generate_json_retries_a_truncated_transcription(self):
+        schema = {"type": "object", "properties": {"Isla": {"type": "string"}}}
+
+        class SequentialLive:
+            def __init__(self, sessions):
+                self.sessions = sessions
+                self.calls = []
+
+            def connect(self, **kwargs):
+                self.calls.append(kwargs)
+                return FakeLiveSession(self.sessions[len(self.calls) - 1])
+
+        def message(text):
+            return SimpleNamespace(server_content=SimpleNamespace(
+                model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
+                output_transcription=SimpleNamespace(text=text),
+                turn_complete=True,
+            ))
+
+        live = SequentialLive([[message('{"Isla": "Hel')], [message('{"Isla": "Hello"}')]])
+        fake_client = SimpleNamespace(aio=SimpleNamespace(live=live))
+        with (
+            patch.object(gemini, "_live_client", return_value=fake_client),
+            patch.object(gemini, "_model_input_limit", return_value=131072),
+            patch.object(gemini, "live_token_budget", SlidingWindowTokenBudget(limit=1_000_000)),
+        ):
+            parsed = asyncio.run(gemini.generate_json("gemini1", "hello", "system", schema=schema))
+        self.assertEqual(parsed, {"Isla": "Hello"})
+        self.assertEqual(len(live.calls), 2)
+
     def test_embedding_2_uses_query_and_document_instruction_prefixes(self):
         captured = []
         class Models:

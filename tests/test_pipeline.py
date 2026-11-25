@@ -43,7 +43,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_text", new=AsyncMock(return_value='{"selected_character_ids":["bocchi","rem"],"reason":"หัวข้อเหมาะกับทั้งคู่"}')) as selector:
+             patch.object(pipeline, "generate_json", new=AsyncMock(return_value={"selected_character_ids": ["bocchi", "rem"], "reason": "หัวข้อเหมาะกับทั้งคู่"})) as selector:
             selected = await pipeline.select_characters({
                 "text": "วันนี้เป็นยังไง", "session_key": "group:99", "user_id": "alice", "user": "Alice",
             })
@@ -57,7 +57,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_text", new=AsyncMock()) as selector:
+             patch.object(pipeline, "generate_json", new=AsyncMock()) as selector:
             selected = await pipeline.select_characters({"text": "Rem ช่วยตอบหน่อย"})
         self.assertEqual([item.id for item in selected], ["rem"])
         selector.assert_not_awaited()
@@ -65,10 +65,10 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_selector_can_choose_silence_and_invalid_output_does_not_fall_back_to_isla(self):
         chars = [Character("isla", "Isla", ("Isla",), Path("isla.md"))]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_text", new=AsyncMock(return_value='{"selected_character_ids":[],"reason":"ไม่มีใครอยากพูด"}')):
+             patch.object(pipeline, "generate_json", new=AsyncMock(return_value={"selected_character_ids": [], "reason": "ไม่มีใครอยากพูด"})):
             self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "generate_text", new=AsyncMock(return_value="not json")):
+             patch.object(pipeline, "generate_json", new=AsyncMock(return_value=None)):
             self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
 
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
