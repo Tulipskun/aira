@@ -4,7 +4,7 @@ Aira stores structured conversation history in SQLite and long-term semantic/epi
 
 ## Semantic memory
 
-Incoming user text (or a short attachment description for media-only turns) is embedded with the query task. Memories are retrieved only within the active session. A memory written by one private user session is not visible in another private session. Group memories are visible to members of the same group session. Additional characters use a character-specific session namespace.
+Incoming user text (or a short attachment description for media-only turns) is embedded with the query task. Memories are retrieved only within the active session. Memories are scoped to the Discord channel: everyone in the same channel shares them, while other channels remain isolated. Additional characters use a character-specific session namespace.
 
 Background ingestion embeds the proposed memory as a document, checks for a near-duplicate in the same session and then upserts it. Failures are logged and do not roll back a successful Discord response.
 
