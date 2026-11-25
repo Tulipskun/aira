@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -88,13 +88,11 @@ def save_token(token: str, token_path: Path = TOKEN_PATH) -> None:
 
 def get_discord_token(
     token_path: Path = TOKEN_PATH,
-    environ: Mapping[str, str] | None = None,
     prompt: Callable[[str], str] | None = None,
     validator: Callable[[str], None] = validate_discord_token,
     notify: Callable[[str], None] = print,
 ) -> str:
     """Load a saved token, migrate a legacy DISCORD variable, or prompt once."""
-    env = os.environ if environ is None else environ
     read_saved = load_saved_token(token_path)
 
     if read_saved:
@@ -103,17 +101,6 @@ def get_discord_token(
             return read_saved
         except InvalidDiscordToken:
             notify("The saved Discord token was rejected. Enter a replacement token.")
-
-    legacy = str(env.get("DISCORD", "")).strip()
-    if legacy and legacy != read_saved:
-        try:
-            validator(legacy)
-        except InvalidDiscordToken:
-            notify("The legacy DISCORD token was rejected. Enter a valid bot token.")
-        else:
-            save_token(legacy, token_path)
-            notify("Discord token verified and saved for future starts.")
-            return legacy
 
     read_secret = prompt or getpass.getpass
     while True:
@@ -137,18 +124,17 @@ def get_discord_token(
 OWNER_ID_PATH = ROOT / ".aira" / "owner.id"
 
 
-def get_discord_owner_id(owner_path: Path = OWNER_ID_PATH, environ: Mapping[str, str] | None = None,
+def get_discord_owner_id(owner_path: Path = OWNER_ID_PATH,
                          prompt: Callable[[str], str] | None = None,
                          notify: Callable[[str], None] = print) -> str:
     """Load the owner ID or ask for it once in the server console."""
-    env = os.environ if environ is None else environ
     try:
         saved = owner_path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         saved = ""
     except OSError:
         raise RuntimeError("Cannot read .aira/owner.id") from None
-    value = saved or str(env.get("DISCORD_OWNER_ID", "")).strip()
+    value = saved
     if not value:
         reader = prompt or input
         while True:
