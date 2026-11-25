@@ -494,56 +494,93 @@ def build_context(history: list[dict], current: str, user_name: str, timestamp: 
     return "\n".join(lines)
 
 
-def _step_value(step, key: str):
-    return step.get(key) if isinstance(step, dict) else getattr(step, key, None)
+def _temporary_context(steps: list[dict] | None) -> str:
+    """Convert locally executed memory-tool results into ordinary Live API context."""
+    if not steps:
+        return ""
+    results = []
+    for step in steps:
+        if step.get("type") != "function_result":
+            continue
+        for item in step.get("result", []) or []:
+            if item.get("type") == "text" and item.get("text"):
+                results.append(f"ผลจาก {step.get('name', 'เครื่องมือ')}:\n{item['text']}")
+    return "\n\nข้อมูลบริบทจากระบบความจำ (ผลจากเครื่องมือที่ระบบเรียกใช้แล้ว):\n" + "\n\n".join(results) if results else ""
 
 
-def _bad_thought_signature(error: BaseException) -> bool:
-    import re
-    return _status(error) == 400 and bool(re.search(
-        r"corrupted thought signature|\.signature['\"]|signature[^\n]*corrupt",
-        str(error), re.I,
-    ))
+def _live_parts(input_parts: list[dict], temporary_steps: list[dict] | None):
+    import base64
+    parts = []
+    for item in input_parts:
+        kind = item.get("type")
+        if kind == "text":
+            parts.append(types.Part.from_text(text=str(item.get("text", ""))))
+        elif kind == "image":
+            data = item.get("data")
+            if isinstance(data, str):
+                data = base64.b64decode(data)
+            if data:
+                parts.append(types.Part.from_bytes(data=data, mime_type=item.get("mime_type") or "image/jpeg"))
+    extra = _temporary_context(temporary_steps)
+    if extra:
+        parts.append(types.Part.from_text(text=extra))
+    return parts
 
 
-async def _create_interaction(stage: str, input_parts: list[dict], system_instruction: str,
-                              response_schema: dict | None = None, model: str | None = None,
-                              temporary_steps: list[dict] | None = None,
-                              debug_context: dict | None = None):
-    retry = 0
+async def _create_live_response(stage: str, input_parts: list[dict], system_instruction: str,
+                                response_schema: dict | None = None,
+                                temporary_steps: list[dict] | None = None,
+                                debug_context: dict | None = None) -> str:
     key_attempts = 0
-    signature_attempts = 0
-    temporary = list(temporary_steps or [])
-    max_keys = max(1, len(_keys(stage)))
+    retry = 0
     attempt = 0
+    max_keys = max(1, len(_keys(stage)))
+    chosen_model = config.gemini2_model if stage == "gemini2" else config.gemini1_model
+    content_parts = _live_parts(input_parts, temporary_steps)
+    generation_config = types.GenerationConfig(
+        response_mime_type="application/json" if response_schema else "text/plain",
+        response_schema=response_schema,
+    )
+    live_config = types.LiveConnectConfig(
+        response_modalities=[types.Modality.TEXT],
+        system_instruction=system_instruction,
+        generation_config=generation_config,
+    )
     while key_attempts < max_keys:
         client = _client(stage)
-        chosen_model = model or (config.gemini2_model if stage == "gemini2" else config.gemini1_model)
-        steps = [{"type": "user_input", "content": input_parts}, *temporary]
-        kwargs = {"model": chosen_model, "input": steps, "system_instruction": system_instruction, "store": False}
-        if response_schema:
-            kwargs["response_format"] = {
-                "type": "text", "mime_type": "application/json", "schema": response_schema,
-            }
         attempt += 1
         debug_meta = {
-            "stage": stage, "model": chosen_model, "attempt": attempt,
-            "userId": (debug_context or {}).get("user_id"),
+            "stage": stage, "model": chosen_model, "api": "live", "response_modalities": ["TEXT"],
+            "attempt": attempt, "userId": (debug_context or {}).get("user_id"),
             "userName": (debug_context or {}).get("user_name"),
             "turnId": (debug_context or {}).get("turn_id"),
         }
-        debug_dump({**debug_meta, "event": "request", "payload": kwargs})
+        debug_dump({**debug_meta, "event": "request", "payload": {
+            "system_instruction": system_instruction,
+            "parts": [{"text": p.text} if p.text is not None else {"mime_type": p.inline_data.mime_type} for p in content_parts],
+            "generation_config": generation_config.model_dump(exclude_none=True),
+        }})
         try:
-            response = await client.aio.interactions.create(**kwargs)
-            response_steps = getattr(response, "steps", None)
-            if response_steps is None and isinstance(response, dict):
-                response_steps = response.get("steps", [])
-            for step in response_steps or []:
-                if _step_value(step, "type") == "thought":
-                    add_thought_signature(_step_value(step, "signature"))
-            response_dump = response.model_dump(by_alias=True, exclude_none=True) if hasattr(response, "model_dump") else response
-            debug_dump({**debug_meta, "event": "response", "response": response_dump})
-            return response
+            output = []
+            async with client.aio.live.connect(model=chosen_model, config=live_config) as session:
+                await session.send_client_content(
+                    turns=types.Content(role="user", parts=content_parts),
+                    turn_complete=True,
+                )
+                async with asyncio.timeout(120):
+                    async for message in session.receive():
+                        server_content = getattr(message, "server_content", None)
+                        model_turn = getattr(server_content, "model_turn", None) if server_content else None
+                        for part in (getattr(model_turn, "parts", None) or []) if model_turn else []:
+                            if getattr(part, "text", None):
+                                output.append(part.text)
+                        if server_content and getattr(server_content, "turn_complete", False):
+                            break
+            result = "".join(output).strip()
+            debug_dump({**debug_meta, "event": "response", "text": result})
+            if not result:
+                raise RuntimeError("Gemini Live completed without a text response")
+            return result
         except Exception as exc:
             status = _status(exc)
             debug_dump({**debug_meta, "event": "error", "error": {
@@ -557,12 +594,6 @@ async def _create_interaction(stage: str, input_parts: list[dict], system_instru
                 await asyncio.sleep(0.25 * (2 ** retry) + random.random() * 0.1)
                 retry += 1
                 continue
-            if _bad_thought_signature(exc) and signature_attempts < 8:
-                rotated = rotate_thought_signatures(temporary)
-                if rotated is not None:
-                    temporary = rotated
-                    signature_attempts += 1
-                    continue
             raise
     raise RuntimeError(f"All API keys rate limited for {stage}")
 
@@ -572,13 +603,10 @@ async def generate_text(stage: str, prompt: str, system_instruction: str,
                         temporary_steps: list[dict] | None = None,
                         debug_context: dict | None = None) -> str:
     parts = [{"type": "text", "text": prompt}, *(media_parts or [])]
-    response = await _create_interaction(stage, parts, system_instruction, schema,
-                                         temporary_steps=temporary_steps,
-                                         debug_context=debug_context)
-    result = getattr(response, "output_text", None)
-    if result is None and isinstance(response, dict):
-        result = response.get("output_text")
-    return str(result or "")
+    return await _create_live_response(
+        stage, parts, system_instruction, response_schema=schema,
+        temporary_steps=temporary_steps, debug_context=debug_context,
+    )
 
 
 async def embed(text: str, task: str = "query") -> list[float]:

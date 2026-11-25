@@ -154,8 +154,8 @@ class ApiKeyModal(discord.ui.Modal, title="Gemini API Key"):
 
 
 class ModelModal(discord.ui.Modal, title="Gemini Model Settings"):
-    gemini1 = discord.ui.TextInput(label="Gemini 1 model", max_length=100)
-    gemini2 = discord.ui.TextInput(label="Gemini 2 model", max_length=100)
+    gemini1 = discord.ui.TextInput(label="Gemini 1 Live model", max_length=100)
+    gemini2 = discord.ui.TextInput(label="Gemini 2 Live model", max_length=100)
     embedding = discord.ui.TextInput(label="Embedding model", max_length=100)
 
     def __init__(self):
