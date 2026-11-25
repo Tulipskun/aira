@@ -5,7 +5,7 @@
 3. Attachments are fetched from Discord CDN hosts and prepared for the model.
 4. The combined user turn is saved to SQLite before external model/vector calls.
 5. Gemini Embedding creates a query vector. Chroma returns semantic and episodic memories scoped to the current session.
-6. SQLite profiles for the speakers are loaded. Group context keeps identity, facts and relationship state separate per user.
+6. SQLite profiles for the speakers are loaded. Channel context is shared by everyone in the same Discord channel; identity, facts and relationship state remain separate per user.
 7. Gemini 1 produces Isla's response and a one-turn summary. The response and summary are stored in SQLite.
 8. Gemini 2 analyzes the user turn, Isla response and current profiles. The parser validates state signals and enforces allowed types/ranges.
 9. SQLite applies XP, relationship progression, approvals, facts and nicknames in one idempotent transaction keyed by `(session_key, user_id, event_timestamp)`.
