@@ -70,6 +70,18 @@ health() {
   curl -sS -m 5 "$HEALTH_URL" 2>/dev/null || true
 }
 
+wait_health() {
+  local timeout="${1:-30}" deadline=$((SECONDS + ${1:-30}))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    case "$(health)" in
+      *'"ok": true'*) echo "health ok (${SECONDS}s)"; return 0 ;;
+    esac
+    sleep 1
+  done
+  echo "WARNING: health endpoint not ok within ${timeout}s" >&2
+  return 1
+}
+
 status() {
   echo "dir        $APP_DIR"
   printf 'commit     %s (origin/%s %s)\n' "$(head_commit)" "$BRANCH" "$(git rev-parse --short "origin/$BRANCH" 2>/dev/null || echo '?')"
@@ -123,25 +135,19 @@ deploy() {
   start
 
   echo "== verify =="
-  sleep 10
   if ! running; then
     echo "FAILED: process is not running after deploy" >&2
     tail -20 "$LOG" >&2
     return 1
   fi
-  local payload
-  payload="$(health)"
-  case "$payload" in
-    *'"ok": true'*) echo "health ok" ;;
-    *) echo "WARNING: health endpoint did not report ok yet" >&2 ;;
-  esac
+  wait_health 30 || true
   status
 }
 
 case "${1:-status}" in
   start) start ;;
   stop) stop ;;
-  restart) stop; start ;;
+  restart) stop; start; wait_health 30 || true; status ;;
   deploy) deploy "${2:-}" ;;
   status) status ;;
   *)
