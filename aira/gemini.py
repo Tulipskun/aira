@@ -521,7 +521,15 @@ def _salvage_character_reply(raw: str) -> dict | None:
     """Keep the reply text when the audio transcription stopped inside the JSON object."""
     reply = _salvage_reply(raw)
     if not reply:
-        return None
+        # The cut landed before any field value: the turn was plain speech, which is still
+        # exactly what the character wanted to say. Anything that looks like JSON stays out.
+        spoken = (raw or "").strip()
+        if not spoken or "{" in spoken or "}" in spoken or len(spoken) > 400:
+            return None
+        log.warning("Salvaged a prose character answer: chars=%s", len(spoken))
+        return {"reply": spoken, "summary": "", "memory": "", "relationship": "",
+                "character_relationships": [], "next_speaker_id": "", "mood": "",
+                "color": None, "select_image": "none"}
     log.warning("Salvaged a truncated character answer: chars=%s raw_chars=%s", len(reply), len(raw or ""))
     return {"reply": reply, "summary": "", "memory": "", "relationship": "",
             "character_relationships": [], "next_speaker_id": "", "mood": "",
