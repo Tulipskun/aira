@@ -43,3 +43,15 @@
 - **Default post-task pipeline:** Upon completing and verifying any code change, you MUST automatically execute the repository's full standard delivery flow in sequence: **Commit -> Push -> Deploy -> Release** (using the exact commit message conventions, branches, and deployment/release commands established in this project). Do not stop early or wait for permission unless a step fails.
 - **Single-turn override scope (CRITICAL):** Any user instruction to skip, pause, or alter steps in this delivery flow (e.g., "do not commit yet", "commit only", "skip deploy/release") applies **STRICTLY ONCE to the current turn/task only**.
 - **Automatic reset on the next turn:** Never carry over a delivery-flow skip from earlier messages in the conversation history. On the very next user prompt or task, automatically revert to executing the full **Commit -> Push -> Deploy -> Release** pipeline by default, unless the user explicitly repeats the override in their latest message.
+
+## Python 3.13 migration
+- The production runtime is Python 3.13. Do not reintroduce Node.js, Bun, TypeScript, shell installers, or a second runtime.
+- Install dependencies with python -m pip install -r requirements.txt; start with python main.py in the foreground.
+- .aira/ is private persistent runtime state. Never delete it, include it in Git, or replace it during a code update.
+- SQLite schema changes must be additive and preserve conversation history, profiles, relationships and session data.
+- Chroma is durable application data. Preserve collection names, IDs, embeddings, metadata and remote CHROMA_URL support.
+- Preserve the owner-only Discord Control Panel, per-user/group sessions, character limits, relationship thresholds and Gemini thought-signature flow.
+- Isla is always primary; at most one additional character may speak per turn. Direct character mentions take priority.
+- Do not run global Discord command sync on every startup; preserve unrelated application commands.
+- Keep secrets out of source, logs, tests, CI output and commits. Keep payload dumps private and redacted.
+- Pterodactyl owns process supervision. Handle SIGTERM/SIGINT and log to stdout/stderr.

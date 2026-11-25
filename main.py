@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent
+os.chdir(ROOT)
+os.umask(0o077)
+
+
+def configure_logging() -> None:
+    runtime_dir = ROOT / ".aira"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    log_path = runtime_dir / "aira.log"
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    try:
+        file_handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+        os.chmod(log_path, 0o600)
+        handlers.append(file_handler)
+    except OSError as exc:
+        print(f"[LOG] file logging unavailable: {exc}", file=sys.stderr)
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+
+
+def main() -> int:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / ".env", override=False)
+        configure_logging()
+        from aira.config import config
+        from aira.discord_app import run_bot
+        if not config.discord_token:
+            raise RuntimeError("DISCORD environment variable is required")
+        if not config.gemini_keys:
+            logging.getLogger("aira").warning(
+                "GEMINI_API_KEY is not set; add it through the Aira Control Panel after the bot starts"
+            )
+        config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        config.chroma_path.mkdir(parents=True, exist_ok=True)
+        logging.getLogger("aira").info(
+            "Starting Aira Python %s | Python %s | SQLite %s | Chroma %s",
+            __import__("aira").__version__, sys.version.split()[0], config.sqlite_path,
+            config.chroma_url or config.chroma_path,
+        )
+        asyncio.run(run_bot())
+        return 0
+    except KeyboardInterrupt:
+        logging.getLogger("aira").info("Shutdown requested")
+        return 0
+    except Exception:
+        logging.exception("Aira startup/runtime failure")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

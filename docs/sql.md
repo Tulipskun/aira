@@ -1,82 +1,17 @@
-# SQL
+# SQLite storage
 
-SQLite (`bun:sqlite`) is the persistent source of truth for structured application state.
+SQLite is the source of truth for conversation history and structured user state.
 
-## Relationship / stats
+## Tables
 
-Store internal relationship state such as:
+- `messages`: user/model messages, timestamps, file names, summaries and session keys.
+- `user_profiles`: display names, nicknames, relationship bond, XP, flirt count, pending approvals and confirmed facts.
+- `group_sessions`: per-user membership in a shared channel session.
+- `character_relationships`: independent relationship description per non-Isla character and user.
+- `turn_state_applied`: idempotency keys for state updates.
 
-- `user_id` — Discord ID; stable identity
-- `user_name` — current display name
-- `state`
-- `xp`
-- `affinity`
-- other relationship/stat fields required by the state system
+The runtime opens the configured `SQLITE_PATH` (default `.aira/aira.db`), applies additive schema migrations and backfills missing session keys. Existing profile/history data is retained. Legacy relationship rows are migrated into `user_profiles` only when needed.
 
-`user_id` remains the identity when a Discord username changes.
+Relationship state, approvals, fact changes and nicknames are written atomically using `BEGIN IMMEDIATE`. The event key `(session_key, user_id, event_timestamp)` prevents a retried turn from awarding XP or applying the same facts twice. Chroma ingestion is intentionally outside this SQLite transaction.
 
-These internal values are not included in the Gemini `<user_profile>` block. In particular, Discord user ID, XP and affinity must not be sent to Gemini as private-session profile data.
-
-## User profile
-
-`user_profiles` stores information intended to become context for Gemini 1:
-
-- `name`
-- `nicknames`
-- `facts`
-
-The application combines the profile with the relationship's human-readable state when constructing `<user_profile>`.
-
-Example:
-
-```xml
-<user_profile>
-ชื่อ: Yuuta
-ความสัมพันธ์กับ Isla: คนรัก
-ฉายาที่ Isla ตั้งให้: คนโปรด, คนขี้แกล้ง
-fact:
-- ชอบให้ไอล่าเรียกว่าที่รัก
-- ชอบหมา
-- เคยบอกว่าเป็นประธานบริษัท
-</user_profile>
-```
-
-Gemini 2 can return fact and nickname updates. The pipeline persists those updates together with the relationship/stat changes through `applyTurnStateAtomic()`.
-
-## Atomic turn state
-
-`src/sql/turn-transaction.ts` is the single atomic write path for the structured state produced by a completed turn.
-
-One SQLite transaction commits these changes together:
-
-- relationship/bond derivation
-- XP
-- flirt count
-- relationship approval flags
-- facts
-- nicknames
-- the idempotency record for the turn
-
-The transaction uses `BEGIN IMMEDIATE` and rolls back the whole mutation on failure.
-
-The idempotency key is `(session_key, user_id, event_timestamp)` and is stored in `turn_state_applied`. A retry with the same key is detected inside the transaction and produces no second state mutation.
-
-Chroma writes are not included in this transaction. They are background, best-effort persistence of semantic and episodic memory.
-
-## Conversation history
-
-SQLite also stores conversation history so context can be reconstructed after restart.
-
-User messages retain the application-side user ID, username, text, timestamp and optional filename. Model responses retain their role/text/timestamp. Attachment binary data is not stored here; only the filename is retained.
-
-Every row also carries `session_key` — the conversation stream it belongs to (`user:<id>` or `group:<channel>`). `getHistory(limit, sessionKey)` reads one stream, never the whole table, and `saveMessage()` requires the key at compile time so a call site cannot forget it. Rows written before session scoping were backfilled at startup from the user turn they answer; anything with no attributable author is filed under `legacy:unattributed` and is never read.
-
-## Sessions
-
-`group_sessions` is the membership registry for shared conversations: one row per user (`user_id`, `channel_id`, `joined_at`), written only by `/isla join-group` and `/isla leave-group`. It is deliberately a separate table rather than a column on `user_profiles` — a session is routing, not a fact about the relationship, so joining a room can never touch bond/xp/facts.
-
-`sessionKeyFor(userId, channelId)` is the single decision point: a user who joined in channel A and writes in channel B gets their private stream, because they are not in A's room.
-
-## Temporary data
-
-Fake tool calls/results used to provide Chroma memories to Gemini are request-local and are not stored as conversation history.
+The admin CLI supports filtered listing and dry-run deletion. A deletion is executed only with `--yes`; the CLI does not create an automatic backup.

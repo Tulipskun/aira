@@ -1,220 +1,137 @@
-# aira
+# Aira
 
-Discord AI roleplay/chatbot pipeline built around Gemini, SQLite, Chroma, and local emotion images.
+Discord AI character bot powered by Gemini, SQLite and Chroma. Runtime: Python 3.13. Isla is the default character; additional characters can join the same bot and Discord response channel.
 
-## Architecture
+## Features
 
-Aira separates the response path from background memory persistence. SQLite is the source of truth for conversation history and structured user state. Chroma is the semantic and episodic memory store. Gemini 1 produces the user-facing response; Gemini 2 analyzes the completed turn and produces structured state signals used by the response pipeline.
-
-### End-to-end turn flow
-
-```text
-Discord message
-  -> command filter + channel lock
-  -> per-session scheduler
-       5s debounce / 12s maximum wait
-  -> processMessage()
-       -> load recent SQLite history
-       -> prepare text/media
-       -> save incoming message to SQLite history
-       -> Embedding 2: query embedding
-       -> Chroma semantic-memory retrieval
-       -> Chroma episodic-memory retrieval
-       -> load/update SQLite user profiles
-       -> build Gemini 1 context
-            profile + current state + history + memories + episode context + media
-       -> Gemini 1: user-facing response
-       -> Gemini 1 response + summary -> SQLite history
-       -> Gemini 2: post-response state analysis
-       -> applyTurnStateAtomic()
-            BEGIN IMMEDIATE
-              -> idempotency check
-              -> relationship / XP / flirt / approvals
-              -> facts / nicknames
-              -> record applied turn key
-            COMMIT
-       -> local emotion-image selection
-       -> Discord reply
-       -> background ingestion
-            -> Memory: Embedding 2 (document)
-                 -> duplicate check
-                 -> Chroma write
-            -> Episode: rebuild recent episode from SQLite history
-                 -> Embedding 2 (document)
-                 -> Chroma write
-```
-
-The scheduler groups messages per session before the pipeline runs. A session is identified by `sessionKey`; group sessions can contain multiple speakers, while each speaker keeps a separate SQLite profile and relationship state.
-
-### Hybrid multi-character conversations
-
-Aira uses one Discord bot and one response channel for all characters. Isla remains the default and always runs through the existing relationship-aware pipeline. When more character definitions are present in `characters/*.json`, a Gemini 2 router may select at most one additional character per user turn. Directly mentioning a character by its configured name or alias forces that character to join.
-
-All selected characters see the shared SQLite conversation history, so an additional character can react to Isla's response in the same turn. Each non-Isla character has its own Chroma memory namespace and its own SQLite relationship row per Discord user. Character replies are sent as separately named embeds. Bot-authored messages are ignored by the gateway, so characters cannot recursively trigger one another indefinitely.
-
-To add a character, create a JSON definition and its prompt file under `characters/`; see [characters/README.md](characters/README.md). Character definitions are loaded during each selection, so file-based changes apply to subsequent turns without a restart. The Discord Control Panel can also create and edit characters while the bot is running.
-
-## State persistence and idempotency
-
-The response-critical structured state write is atomic. `src/sql/turn-transaction.ts` applies the state changes from one completed turn in a single SQLite transaction. Relationship level, XP, flirt count, approval flags, facts, and nicknames are committed together or not at all.
-
-Each state application is identified by the tuple:
-
-```text
-(session_key, user_id, event_timestamp)
-```
-
-The tuple is stored in the `turn_state_applied` table in the same transaction as the profile update. If the same turn is retried, the existing key is detected and the state mutation is skipped. A duplicate retry therefore does not add XP, increment the flirt counter, consume approvals, or add duplicate facts/nicknames.
-
-This idempotency mechanism protects the structured SQLite state only. Chroma ingestion is deliberately outside the response-critical transaction and is best-effort. Memory and episode ingestion failures are logged without turning an otherwise successful Discord response into a failed turn.
-
-The transaction also deduplicates facts and nicknames case-insensitively and respects the configured maximum counts. Bond transitions and approval consumption are calculated from the same pre-update state before the single profile write.
-
-## Memory architecture
-
-Aira uses the same embedding service for retrieval and ingestion, but with different task types:
-
-- `query`: embeds the incoming user message for retrieval.
-- `document`: embeds the actual memory or episode text before storing it.
-
-Semantic memory retrieval and episodic retrieval happen before Gemini 1 generates the response. Background memory ingestion runs after the response path. Memory ingestion performs a duplicate check before writing a new vector to Chroma.
-
-Episodes are reconstructed from recent SQLite history, then embedded and stored as episodic memories. Episode records retain participant IDs so group-session memories preserve identity context.
-
-Memory timestamps distinguish the source event timestamp from the record creation timestamp. This allows the system to preserve when an event actually happened while also tracking when the memory record was created.
-
-## Gemini pipeline
-
-Gemini 1 is the user-facing dialogue model. It receives the assembled conversation context, user profile/state, retrieved semantic memories, episodic context, and supported media information, then produces the response text and turn-level summary data used by the pipeline.
-
-Gemini 2 is an analyzer, not the user-facing dialogue model. It receives the current turn, Gemini 1's response, the turn summary, and the relevant current state, then returns structured state information such as affinity, flirt detection, approvals, facts, nicknames, memory text, and emotion-image selection.
-
-The Gemini 2 analysis is awaited before the Discord reply because its state result and selected emotion image are part of the response result. Chroma writes are not part of the structured SQLite state transaction.
-
-Thought signatures required by the Gemini context protocol are kept in a process-local cache of at most 5 real signatures. The cache is persisted only after inactivity or graceful shutdown rather than after every mutation.
-
-## Relationship state
-
-SQLite is the source of truth for relationship state.
-
-XP is intentionally unbounded so it can be used for leaderboard ranking. Normal relationship progression uses the configured XP ladder. `crush` additionally requires the configured minimum XP and the required accepted flirt history. A successful flirt event increments the flirt counter and grants the explicit flirt XP bonus.
-
-Approval-based transitions are handled by the state derivation logic. Relationship, XP, flirt count, approval flags, facts, and nicknames are persisted atomically for the turn that produced them.
-
-## Discord behavior
-
-`!islacomehere` and `!unset` are owner-only commands.
-
-- `!islacomehere` locks Aira to the current channel.
-- `!unset` removes the channel lock.
-- The channel configuration persists in `.aira/discord-config.json` across restart.
-- Unknown `!` commands are ignored and do not enter the AI pipeline.
-- Normal messages from channels other than the configured channel are ignored.
-
-Group sessions use `/isla join-group` and share conversation history and semantic/episodic context for the session, while user profiles, facts, nicknames, and relationship state remain separated by user ID.
-
-## Storage
-
-| Store | Responsibility |
-| --- | --- |
-| SQLite | Conversation history, user profiles, Isla relationship state, per-character relationship state, XP, flirt/approval state, facts, nicknames, and episode source history |
-| Chroma | Long-term semantic memory and episodic memory vectors |
-| `images/` | Bundled local emotion assets selected by filename |
-| `.aira/` | Persistent runtime configuration, Chroma environment/data, and local service state; not committed |
-
-SQLite is authoritative for structured state. Chroma is an auxiliary long-term memory index and is not part of the atomic response-state transaction.
-
-## Development and runtime separation
-
-The development checkout and the runtime installation are intentionally separate:
-
-- `$HOME/aira` — an example development checkout used for editing, testing, committing and pushing to GitHub.
-- `~/.local/share/aira` — runtime checkout. Do not edit source files here.
-
-The installed `aira` CLI operates on the runtime checkout. After a development commit is pushed, run `aira update`; it pulls the new commit, runs `bun install --frozen-lockfile` when the revision changes, registers Discord commands, and restarts Aira if it was running. Runtime `.env` and `.aira/` are preserved because they are local and ignored by Git.
-
-Recommended workflow:
-
-```bash
-cd "$HOME/aira"
-bun run typecheck
-bun run test:cli
-git add .
-git commit -m "describe the change"
-git push
-
-# deploy to runtime
-aira update
-```
+- One Discord bot with Isla and multiple configurable characters. Isla always replies first; Gemini can invite at most one additional character, and direct character mentions take priority.
+- Gemini 1 generates dialogue and summaries. Gemini 2 analyzes relationship changes, facts, nicknames, memory and Isla's expression image.
+- Per-user relationship state, XP, accepted flirt count, gated proposals, facts and nicknames. Group sessions share conversation context but retain individual user profiles.
+- SQLite conversation history and atomic, idempotent relationship-state updates.
+- Chroma semantic and episodic memory, separated by conversation session and character.
+- Owner-only Discord Control Panel for Gemini keys/models, response channel and character prompts.
+- Attachment understanding for images, audio, video, PDF and text; images are resized before being sent to Gemini.
+- Debounced message batching, typing indicator, RPS interactions, slash commands and a loopback health endpoint.
+- Admin CLI for reviewing and selectively deleting history and memories. Destructive commands are dry-run unless `--yes` is supplied.
 
 ## Pterodactyl deployment
 
-Deploy Aira directly from its public Git repository through a Pterodactyl panel. Configure these environment variables:
+Use a **Python 3.13** egg/image and deploy the public Git repository:
 
-| Variable | Value |
+| Setting | Value |
 | --- | --- |
-| GIT_ADDRESS | https://github.com/Tulipskun/aira |
-| BRANCH | main |
-| USER_UPLOAD | 0 |
-| AUTO_UPDATE | 1 |
-| NODE_PACKAGES | bun |
-| DISCORD | Your Discord bot token |
+| Git repository | `https://github.com/Tulipskun/aira` |
+| Branch | `main` |
+| User upload | `0` |
+| Auto update | `1` |
+| Startup command | `python -m pip install -r requirements.txt && python main.py` |
 
-Set the startup command to node index.js. The egg must install NODE_PACKAGES before startup so Bun is available. Aira requires Bun APIs such as bun:sqlite; Node.js alone cannot run it.
+Set these environment variables in the panel:
 
-The entrypoint installs locked dependencies, registers slash commands, and starts the bot in the foreground. Logs appear in the panel console. Gemini API keys, model names, response channel, and character settings are managed through the Discord Control Panel.
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `DISCORD` | Yes | Discord bot token |
+| `DISCORD_OWNER_ID` | Recommended | Discord owner user ID. The bot also checks the application owner returned by Discord. |
+| `GEMINI_API_KEY` | No | Optional shared comma-separated Gemini API key pool. Can also be configured after startup through the owner-only Discord Control Panel. |
+| `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, `GEMINI_EMBEDDING2_API_KEYS` | No | Optional stage-specific key pools; fall back to `GEMINI_API_KEY`. |
+| `DISCORD_RESPONSE_CHANNEL_ID` | No | Optional initial response channel. The panel can select/change it later. |
+| `GEMINI1_MODEL` | No | Gemini dialogue model; defaults to `gemini-3.1-flash-lite`. |
+| `GEMINI2_MODEL` | No | Gemini analysis model; defaults to `gemini-3.5-flash-lite`. |
+| `GEMINI_EMBEDDING2_MODEL` | No | Embedding model; defaults to `gemini-embedding-2`. |
+| `CHROMA_URL` | No | Optional remote Chroma server. Leave empty to use embedded persistent Chroma in `.aira/chroma`. |
+| `SQLITE_PATH` | No | Defaults to `.aira/aira.db`. |
+| `ISLA_TIMEZONE` | No | Defaults to `Asia/Bangkok`. |
 
-Invite the bot with the bot and applications.commands OAuth scopes. Grant View Channels, Send Messages, Read Message History, and Embed Links, and enable the Message Content privileged intent in the Discord Developer Portal.
+The startup command installs the pinned Python requirements and runs the bot in the foreground. Logs are written to the panel console and to the private rotating file `.aira/aira.log`. The process handles SIGTERM and SIGINT and drains queued turns before exiting.
 
-See docs/installation.md for the full setup.
+**Discord setup:** invite the application with the `bot` and `applications.commands` OAuth scopes. Grant View Channels, Send Messages, Read Message History, Embed Links and Attach Files in the response channel. Enable the privileged **Message Content Intent** in the Discord Developer Portal.
 
-## Development and verification
+After the first successful login, Aira posts its Control Panel in a server text channel. Only the Discord application owner (or `DISCORD_OWNER_ID`) can change settings. Add a Gemini key in the panel before asking Aira to respond if `GEMINI_API_KEY` was not supplied at deployment.
 
-These commands are for development and verification. They are not required for a normal end-user installation.
+### Persistent data
+
+Keep the Pterodactyl server's filesystem persistent across restarts and redeployments. Aira writes its SQLite database, Chroma data, model settings, selected channel and API-key state under `.aira/`. This directory is excluded from Git. When moving an existing installation, preserve/copy its existing `.aira/` directory; deploying the source code alone does not transfer private data from another server. Do not replace an existing `.aira/` directory with an empty one during an update.
+
+Aira uses embedded Chroma by default, and the pinned Python FFmpeg package supplies GIF-to-video conversion without requiring an OS-level FFmpeg installation. No Node.js runtime, Bun runtime, shell installer or separate Chroma container is required. To use an external Chroma server, set `CHROMA_URL` to its URL. The optional `docker-compose.yml` starts a local Chroma service; when using it, set `CHROMA_URL=http://127.0.0.1:8000`.
+
+## Local run
+
+Python 3.13 is recommended.
 
 ```bash
-bun install
-bun run typecheck
-bun run test:cli
-bun run test:chroma
-bun run scripts/test-turn-transaction.ts
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+# Set DISCORD in .env, then:
+python main.py
 ```
 
-The atomic turn-state regression test verifies both the first atomic application and a duplicate retry using the same `(sessionKey, userId, timestamp)` idempotency key. Relationship, XP, flirt count, facts, and nicknames must remain consistent after the retry.
+The bot runs in the foreground. The `DISCORD` environment variable is required. Gemini credentials can be supplied through `GEMINI_API_KEY` or added through the Discord Control Panel. On startup, Aira performs a bounded DNS/HTTPS warm-up before connecting to Discord.
 
-Other focused regression suites include relationship-state, private-footer, episodic-memory, session, Gemini API-key configuration, CLI, and Chroma setup tests. The repository's CI runs the standard typecheck and test suites on changes to the main codebase.
+## Discord commands
 
-## CLI
+- `!islacomehere` — owner-only; select the current channel for responses.
+- `!unset` — owner-only; remove the response-channel lock.
+- `/isla join-group` — join the current channel's shared conversation session.
+- `/isla leave-group` — return to the private session.
+- `/isla status` — inspect the active session and group members.
+- `/isla leaderboard` — show the top users by XP.
 
-The CLI controls the existing supervisor and can be called from any directory after installation.
+The runtime does not automatically replace Discord's global command list on every restart. Existing application commands are preserved. To install/update only Aira's `/isla` command group while retaining unrelated app commands, run `python -m aira.register_commands --dry-run` first, then `python -m aira.register_commands` once after reviewing the payload.
 
-```text
-aira setup
-aira start
-aira stop
-aira restart
-aira status
-aira log
-aira logs
+Unknown prefix commands are ignored. Normal messages outside the configured response channel are ignored. Bot-authored messages are never fed back into the pipeline.
+
+## Characters
+
+Each `characters/*.json` file registers a character. Prompts are Markdown files within the repository. Isla remains enabled and is the default character. Character definitions are loaded when a turn is processed, so file-based changes apply without a restart. The Discord Control Panel can also add/edit character profiles and prompts.
+
+Example:
+
+```json
+{
+  "id": "nova",
+  "name": "Nova",
+  "aliases": ["โนวา"],
+  "promptFile": "prompts/nova.md",
+  "enabled": true
+}
 ```
 
-All commands return to the shell. `log` and `logs` print the last 100 lines instead of following the log stream.
+Additional characters use a separate Chroma memory namespace and separate relationship record per user. They share the current Discord conversation history with Isla.
 
-## Security and license
+## Data and admin commands
 
-Keep `.env`, `.aira/`, database files, logs and real API credentials private. See [SECURITY.md](SECURITY.md) for vulnerability reporting. Aira is licensed under the **GNU Affero General Public License v3.0 only (AGPL-3.0-only)**. If you modify Aira and make it available for users to interact with over a network, you must offer those users the complete corresponding source code under the same AGPL-3.0 terms. Distributed modified versions must also remain under this license. See [LICENSE](LICENSE) for the full license text.
+SQLite is authoritative for structured user state and conversation history. Chroma holds semantic and episodic vectors. The bot stores UTC timestamps and renders them in the configured timezone.
 
-## Documentation
+Inspect history:
 
-Detailed component contracts are maintained under `docs/`:
+```bash
+python -m aira.cli history list --user DISCORD_USER_ID --limit 20
+python -m aira.cli history list --session user:DISCORD_USER_ID
+python -m aira.cli memory list --session user:DISCORD_USER_ID
+python -m aira.cli memory search "กาแฟ" --session user:DISCORD_USER_ID
+```
 
-- `docs/installation.md` — requirements, one-command install, Discord setup and runtime files.
-- `docs/architecture.md` — overall architecture and component boundaries.
-- `docs/pipeline.md` — turn-processing pipeline and response flow.
-- `docs/memory.md` — semantic and episodic memory behavior.
-- `docs/sql.md` — SQLite storage and structured state.
-- `docs/gemini.md` — Gemini integration and context handling.
-- `docs/discord.md` — Discord commands and channel/session behavior.
-- `docs/scheduler.md` — per-session scheduling and debounce behavior.
+Destructive commands are dry-run by default. Add `--yes` to execute:
 
-The README describes the current system at a high level; the component documents are the detailed contracts for individual subsystems. Older dated plans and design notes under `docs/superpowers/` are historical records, not current operational instructions.
+```bash
+python -m aira.cli history clear --session user:DISCORD_USER_ID --yes
+python -m aira.cli memory clear --user DISCORD_USER_ID --yes
+python -m aira.cli history clear --all --yes
+python -m aira.cli memory clear --all --yes
+```
+
+Use these commands only when the bot is stopped or when you understand that deleted records cannot be recovered. No automatic backup is created by the admin CLI.
+
+## Development and tests
+
+```bash
+python -m pip install -r requirements.txt
+python -m compileall -q aira tests main.py
+python -m unittest discover -s tests -v
+```
+
+See `docs/` for the architecture, Discord, Gemini, memory, pipeline, scheduler and SQLite details. See `SECURITY.md` for responsible vulnerability reporting.
+
+Aira is licensed under AGPL-3.0-only. Network users of modified versions must be offered the corresponding source under the same license.

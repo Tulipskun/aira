@@ -19,7 +19,7 @@ Create the prompt at `characters/prompts/luna.md`. The prompt defines that chara
 ## Hybrid behavior
 
 - Isla always responds through her existing relationship-aware pipeline.
-- The router may invite at most one additional character for each user turn.
+- The router may invite at most one additional character for each user turn (Isla plus one other character).
 - Mentioning a character by name or alias forces that character into the turn.
 - The selected character sees the shared Discord conversation history.
 - Non-Isla character memories are stored under a character-specific Chroma session key and cannot be recalled by another character.

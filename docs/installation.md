@@ -1,58 +1,58 @@
-# Installation and first startup
+# Installation and deployment
 
-## Pterodactyl (recommended)
+## Pterodactyl Python 3.13
 
-Deploy Aira from its public Git repository using the panel's Git settings. No shell installer or curl pipe is required.
+1. Create a server using a Python 3.13 egg/image.
+2. Configure the Git repository as `https://github.com/Tulipskun/aira`, branch `main`, with user upload disabled. Enable automatic repository updates only if the panel's Git deployment workflow is configured to preserve the writable server data directory.
+3. Use this startup command exactly:
 
-Configure Startup / Environment Variables:
+   ```bash
+   python -m pip install -r requirements.txt && python main.py
+   ```
 
-| Variable | Value |
-| --- | --- |
-| GIT_ADDRESS | https://github.com/Tulipskun/aira |
-| BRANCH | main |
-| USER_UPLOAD | 0 |
-| AUTO_UPDATE | 1 |
-| NODE_PACKAGES | bun |
-| DISCORD | Your Discord bot token |
+4. Add the `DISCORD` environment variable with the bot token. Set `DISCORD_OWNER_ID` if desired. The bot can start without a Gemini key so that its owner can add one through the Control Panel.
+5. Start the server. Aira warms DNS/HTTPS connections, logs in and posts its owner-only Control Panel to a text channel it can access. Use the panel to choose the response channel and configure Gemini API keys/model names.
+6. Enable Message Content Intent in the Discord Developer Portal. Invite the bot with `bot` and `applications.commands` scopes and grant View Channels, Send Messages, Read Message History, Embed Links and Attach Files.
 
-Set the startup command to node index.js. The egg must install NODE_PACKAGES before startup so Bun is available on PATH. Aira uses Bun APIs, including bun:sqlite; a plain Node.js runtime is not sufficient.
+Pterodactyl manages the foreground process. Do not wrap `main.py` in a daemon or shell installer. SIGTERM/SIGINT are handled for graceful shutdown.
 
-On startup, index.js installs locked dependencies, registers Discord slash commands, and launches Aira in the foreground. Logs remain attached to the Pterodactyl console. Use the panel controls to stop or restart the bot.
+## Slash-command registration
 
-Keep DISCORD private. Do not put the token in Git, the repository URL, or uploaded files. Gemini API keys and character configuration can be managed from the Discord Control Panel after startup.
+Aira does not run a global Discord application-command sync on every startup, because a full sync could overwrite unrelated commands registered by other app features. Existing `/isla` commands continue to work. To update this command group, first run `python -m aira.register_commands --dry-run`, review the preserved-command count and payload, and then run `python -m aira.register_commands` once. This replaces only the `/isla` group and preserves every other global command.
 
-## Requirements
+## Environment variables
 
-- A Discord application and bot token.
-- A Pterodactyl Node.js egg with Git repository deployment support.
-- Bun installed by the egg before the startup command runs.
-- An invite to the target Discord server using the bot and applications.commands OAuth scopes.
+See [`.env.example`](../.env.example). Only `DISCORD` is required at process startup. The owner-only Control Panel can store Gemini keys and models in `.aira/settings.json`; this file is private runtime state and is not committed.
 
-## Discord setup
+## Persistent storage and upgrades
 
-1. In the Discord Developer Portal, enable the Message Content privileged intent.
-2. Invite the bot with the bot and applications.commands scopes.
-3. Grant View Channels, Send Messages, Read Message History and Embed Links in the channels it will use.
-4. After startup, find the Aira Control Panel message. It is posted in the first guild text channel where the bot can view and send messages.
-5. Use the panel as the Discord application owner to select the actual response channel.
-6. Add one or more Gemini API keys and optionally change model names.
+The following paths must survive restarts and code updates:
 
-The Control Panel also lets the application owner create/edit character definitions, aliases and prompts. Changes apply to subsequent turns.
+- `.aira/aira.db` — SQLite history and structured user state.
+- `.aira/chroma/` — semantic and episodic memory.
+- `.aira/settings.json` — API keys/models saved from Discord.
+- `.aira/discord-config.json` — selected response channel.
 
-## Runtime files
+Do not delete or replace `.aira/` during an update. A fresh Pterodactyl server does not automatically inherit data from an older server; transfer the existing data directory using the panel's supported file migration before switching traffic.
 
-- .aira/settings.json — Control Panel Gemini keys and model names; keep private.
-- .aira/discord-config.json — selected response channel.
-- .aira/aira.db — SQLite history and structured user state.
-- .aira/chroma/ — Chroma vector data.
-- .aira/logs/ — runtime logs.
+Embedded Chroma is used by default. The Python requirements include a bundled FFmpeg binary for animated GIF conversion, so the egg does not need to install FFmpeg through apt. A separate Chroma server is optional; set `CHROMA_URL` to its endpoint when using one. The repository's optional `docker-compose.yml` starts Chroma on loopback port 8000.
 
-Keep the entire .aira/ directory private. It contains runtime state and must not be committed or uploaded publicly.
+## Local development
 
-## CLI operations
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+# Set DISCORD in .env
+python main.py
+```
 
-For a manually managed Bun checkout, these commands remain available:
+## Troubleshooting
 
-    bun run start
-    bun run stop
-    bun run logs
+- **Missing DISCORD:** set the bot token in Pterodactyl environment variables. Do not put it in the Git repository.
+- **Bot connects but ignores messages:** select the response channel in the Control Panel and enable Message Content Intent.
+- **Gemini API key missing:** configure one through the Discord Control Panel or set `GEMINI_API_KEY`.
+- **Memory is empty after migration:** confirm that the previous `.aira/chroma/` data was transferred; Chroma is not included in the Git repository.
+- **Data disappears after redeploy:** configure persistent Pterodactyl storage for `.aira/` and avoid deleting it in Git deployment hooks.
+- **Python dependency installation fails:** confirm that the server uses Python 3.13 and that the egg permits outbound package downloads.

@@ -1,43 +1,16 @@
-# Gemini
+# Gemini integration
 
-Gemini 1 and Gemini 2 are separate model roles. They are configured from one shared `GEMINI_API_KEY` pool, while the runtime maintains independent rotation state for each stage. The pool can be set in `.env` or through the owner-only Discord Control Panel; panel settings are stored in `.aira/settings.json`.
+Gemini 1 generates Isla's user-facing response. Gemini 2 analyzes the completed turn and returns structured relationship signals, facts, nicknames, memory candidates and an emotion-image selection. Embedding uses the configured Gemini embedding model for query and document vectors.
 
-## Gemini 1
+The integration uses the Google Gen AI Python SDK Interactions API. Requests are asynchronous and provide a system instruction, structured JSON response schema and `store=False`. API keys are pooled and rotated on rate-limit responses. Transient server errors receive bounded retries.
 
-Gemini 1 is the user-facing dialogue model. Its system instruction is assembled from `GEMINI1_SYSTEM_PROMPT_FILE`, the current user/group profile block, and current time.
+API keys can be provided through `GEMINI_API_KEY` (comma-separated), optional stage-specific `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, `GEMINI_EMBEDDING2_API_KEYS`, or the owner-only Discord Control Panel. Panel settings are stored in `.aira/settings.json`. Do not put keys in source files or logs.
 
-Relevant Chroma memories are represented as a temporary fake `search_memory(username)` call/result. That representation exists only in the current request and is never persisted as history.
+Gemini 1's prompt is `prompts/isla.md`; Gemini 2's state-analysis prompt is `prompts/isla-state.md`. The state prompt is re-read per turn so wording changes can take effect without restarting the process. Numeric thresholds and relationship permissions remain enforced in Python/SQLite, not delegated to model output.
 
-Gemini 1 returns the response text and turn-level summary used by the pipeline. The response and summary are persisted to SQLite before Gemini 2 analysis.
+The parser accepts the original reply field names, validates image filenames against the actual local `images/` files, provides their descriptions to Gemini after removing internal grouping tags, and clamps state changes to the configured affinity range. A malformed JSON response falls back to plain reply text and applies neutral state.
 
-## Gemini 2
 
-Gemini 2 is an analyzer/state model. It runs after Gemini 1 and receives Gemini 1's completed response and summary.
+## Optional payload diagnostics
 
-It returns one flat JSON object containing state signals such as:
-
-- `affinity`
-- `is_flirt`
-- relationship approval flags
-- `select_image`
-- `add_facts`
-- `add_nicknames`
-- `ingest_memory`
-
-Gemini 2 does not choose the relationship rung. The application derives the rung from SQLite state and these signals. `crush` requires at least 500 XP plus the accepted flirt requirement; an accepted flirt also gives a separate XP bonus.
-
-Gemini 2 remains on the response path because its state and emotion-image selection can affect the final Discord message. New Chroma memory/episode writes are not on that critical path.
-
-## API-key rotation
-
-`GEMINI_API_KEY` accepts one or more comma-separated keys. `src/config.ts` maps the shared pool to the internal stage-specific variables. The runtime keeps independent key-rotation state per stage, so a rate limit in one stage does not advance the rotation counter of another stage.
-
-The stage-specific `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, and `GEMINI_EMBEDDING2_API_KEYS` variables are internal runtime aliases and are not required in `.env` setup.
-
-## Embedding
-
-Gemini Embedding 2 uses its own model name, configured through `GEMINI_EMBEDDING2_MODEL` or the Control Panel. It uses the same shared API-key pool as the dialogue/analyzer stages. Retrieval uses the `query` task and memory/episode ingestion uses the `document` task.
-
-## Thought signatures
-
-The temporary Gemini context protocol uses real thought signatures harvested from Gemini 2. At most 5 real signatures are kept in process memory and selected round-robin. The cache is persisted only after inactivity or graceful shutdown. Disk persistence is best-effort and is never performed for every add/invalidate operation.
+Set `GEMINI_DEBUG_PAYLOAD=1` to enable the bounded payload dump. It stores the latest six request/response/error records under `.aira/logs/gemini-payload.json` (or `GEMINI_DEBUG_PAYLOAD_FILE`). Files use owner-only permissions; API-key/token fields and known credential strings are redacted. Payloads can include user messages, attached media and system prompts, so keep this option disabled unless actively diagnosing a model issue.

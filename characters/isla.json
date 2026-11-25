@@ -1,7 +1,10 @@
 {
   "id": "isla",
   "name": "Isla",
-  "aliases": ["ไอล่า", "ไอลา"],
-  "promptFile": "../src/gemini/prompts/isla.md",
+  "aliases": [
+    "ไอล่า",
+    "ไอลา"
+  ],
+  "promptFile": "../prompts/isla.md",
   "enabled": true
 }

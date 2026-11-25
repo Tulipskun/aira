@@ -1,57 +1,22 @@
 # Memory
 
-## Components
+Aira stores structured conversation history in SQLite and long-term semantic/episodic vectors in Chroma.
 
-Gemini Embedding 2 creates vectors for semantic and episodic memory. Chroma is the long-term vector store.
-SQLite stores conversation history and structured relationship/profile state.
+## Semantic memory
 
-## Runtime
+Incoming user text (or a short attachment description for media-only turns) is embedded with the query task. Memories are retrieved only within the active session. A memory written by one private user session is not visible in another private session. Group memories are visible to members of the same group session. Additional characters use a character-specific session namespace.
 
-The Bun supervisor starts local Chroma at `.aira/chroma/` and the application connects to
-`CHROMA_URL` (default `http://127.0.0.1:8000`). `.aira/` is ignored by Git.
+Background ingestion embeds the proposed memory as a document, checks for a near-duplicate in the same session and then upserts it. Failures are logged and do not roll back a successful Discord response.
 
-## Retrieval
+## Episodic memory
 
-```text
-current input
-  -> Gemini Embedding 2
-  -> Chroma semantic search + episodic search
-  -> session-scoped results
-  -> temporary search_memory(username) result
-  -> Gemini 1
-```
+An episode is built from recent SQLite turn summaries within a time window. It stores the text, session, local date/period, start/end timestamps and participant IDs. The episode ID uses the same deterministic hash as the TypeScript implementation so an existing episode is updated rather than duplicated after migration.
 
-Every pipeline memory query is scoped to one `sessionKey`. `userId` identifies who the memory is about;
-`sessionKey` identifies which conversation stream can retrieve it. This distinction is especially
-important for group sessions.
+Temporal words such as “yesterday”, “last night” and “this morning” add date/period filters to episodic recall.
 
-## Ingestion
+## Chroma deployment
 
-Gemini 2 may return `ingest_memory`. The response path does not wait for it:
+By default, Chroma runs embedded with persistent storage under `.aira/chroma`; a separate service is not required. If the previous TypeScript deployment used a remote Chroma server, set the same `CHROMA_URL` before switching runtimes so the existing collection data remains in place. Set `CHROMA_URL` only when pointing to that remote Chroma server. On startup, records without a `sessionKey` metadata field are assigned to the corresponding `user:<id>` session or to `legacy:unattributed` when no user ID exists.
 
-```text
-Gemini 2
-  -> return response/state
-  -> Discord reply
-  -> background Embedding 2
-  -> duplicate check
-  -> Chroma
-```
 
-Background ingestion is best-effort. Embedding/Chroma failure is logged and does not invalidate a
-successful Discord response.
-
-## Timestamps
-
-Semantic memories store:
-
-- `eventTimestamp`: timestamp of the source event represented by the memory.
-- `createdAt`: timestamp when the memory record was persisted.
-
-Facts use their source event timestamp. Episodes additionally store `createdAt` and the participant
-IDs that contributed to the episode, which prevents group-session episodes from losing identity context.
-
-## Request isolation
-
-The fake `search_memory(username)` representation exists only inside the current Gemini 1 request. It
-is never stored as conversation history.
+The admin memory list and clear operations include both semantic records and episodic vectors. A user-filtered delete removes semantic records belonging to that user and episodes listing that user as a participant; a session-filtered delete removes both kinds within that session.

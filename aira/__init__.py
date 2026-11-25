@@ -1,0 +1,2 @@
+"""Aira Python runtime."""
+__version__ = "0.2.0"

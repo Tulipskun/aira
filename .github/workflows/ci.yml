@@ -1,41 +1,29 @@
-name: CI
+name: Python CI
 
 on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-python@v5
         with:
-          bun-version: latest
-
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun run test:cli
-      - run: bun run test:chroma
-      - run: bun run test:characters
-      - run: bun run scripts/start-readiness.test.ts
-      - run: bun run scripts/stop-all-instances.test.ts
-      - run: bun run scripts/test-gemini-api-key-config.ts
-      - run: bun run scripts/test-relationship-v2.ts
-      - run: bun run scripts/test-private-footer.ts
-      - run: bun run scripts/test-episodic.ts
-      - run: bun run scripts/test-sessions.ts
-      - run: bun run scripts/test-turn-transaction.ts
-      - run: bun run scripts/test-memory-integrity.ts
-      - run: bun run scripts/test-rps.ts
-      - run: bun run scripts/test-isla-dialogue-style.ts
-      - run: bun run scripts/test-debug-turn-correlation.ts
-      - run: bun run scripts/test-relationship-xp-thresholds.ts
-      - run: bun run scripts/test-typing-race.ts
-      - run: bun run scripts/test-relationship-coexistence.ts
-      - run: bun run scripts/test-relationship-permissions.ts
-      - run: bun run scripts/test-relationship-permission-context.ts
-      - run: bun run scripts/test-relationship-permission-prompt.ts
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python sources
+        run: python -m compileall -q aira tests main.py
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
