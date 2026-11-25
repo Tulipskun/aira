@@ -25,7 +25,7 @@ def configure_logging() -> None:
     except OSError as exc:
         print(f"[LOG] file logging unavailable: {exc}", file=sys.stderr)
     logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        level="INFO",
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=handlers,
         force=True,
@@ -34,20 +34,13 @@ def configure_logging() -> None:
 
 def main() -> int:
     try:
-        try:
-            from dotenv import load_dotenv
-        except ImportError:
-            load_dotenv = None
-        if load_dotenv is not None:
-            load_dotenv(ROOT / ".env", override=False)
         configure_logging()
         from aira.discord_auth import get_discord_owner_id, get_discord_token
         os.environ["DISCORD"] = get_discord_token()
         os.environ["DISCORD_OWNER_ID"] = get_discord_owner_id()
         from aira.config import config
 
-        # Update the global /isla command definition once per schema version.
-        # The registrar merges commands and preserves unrelated application commands.
+        # Replace the global command schema once per version.
         command_version = "aira-admin-panel-v1"
         command_marker = ROOT / ".aira" / "discord-commands-version"
         try:
@@ -77,9 +70,8 @@ def main() -> int:
         config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         config.chroma_path.mkdir(parents=True, exist_ok=True)
         logging.getLogger("aira").info(
-            "Starting Aira Python %s | Python %s | SQLite %s | Chroma %s",
+            "Starting Aira Python %s | Python %s | SQLite %s",
             __import__("aira").__version__, sys.version.split()[0], config.sqlite_path,
-            config.chroma_url or config.chroma_path,
         )
         asyncio.run(run_bot())
         return 0
