@@ -200,7 +200,7 @@ All commands return to the shell. `log` and `logs` print the last 100 lines inst
 
 ## Security and license
 
-Keep `.env`, `.aira/`, database files, logs and real API credentials private. See [SECURITY.md](SECURITY.md) for vulnerability reporting. This repository currently has no `LICENSE` file; public visibility does not grant a license to reuse, modify or redistribute the source.
+Keep `.env`, `.aira/`, database files, logs and real API credentials private. See [SECURITY.md](SECURITY.md) for vulnerability reporting. Aira is licensed under the **GNU Affero General Public License v3.0 only (AGPL-3.0-only)**. If you modify Aira and make it available for users to interact with over a network, you must offer those users the complete corresponding source code under the same AGPL-3.0 terms. Distributed modified versions must also remain under this license. See [LICENSE](LICENSE) for the full license text.
 
 ## Documentation
 
