@@ -229,6 +229,24 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
         self.assertIn("เลือกได้ 0-4 คน", captured["prompt"])
 
+    async def test_a_call_to_the_whole_room_wakes_every_character(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
+            Character("origami", "Origami Tobiichi", ("Origami",), Path("origami.md")),
+        ]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_json", new=AsyncMock(
+                 return_value={"addressed_to": "room", "mentioned_only": [],
+                               "selected_character_ids": ["bocchi", "isla", "origami"],
+                               "reason": "ทุกคนแชร์ความเห็น"})
+             ):
+            selected = await pipeline.select_characters({
+                "text": "ทุกคนคิดว่ายังไงบ้าง", "session_key": "group:room4",
+            })
+        self.assertEqual([item.id for item in selected], ["bocchi", "isla", "origami", "rem"])
+
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({
             "user_id": "alice", "user": "Alice", "text": "Hi Isla",

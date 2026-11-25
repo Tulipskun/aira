@@ -242,8 +242,16 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         return []
     selected_ids = [str(value).strip() for value in parsed["selected_character_ids"] if isinstance(value, str)]
     addressed = str(parsed.get("addressed_to") or "").strip()
+    mentioned_only = [str(value) for value in (parsed.get("mentioned_only") or []) if isinstance(value, str)]
     by_id = {item.id: item for item in characters}
-    if addressed in by_id and addressed not in selected_ids:
+    if addressed == "room" and broadcast:
+        # A call to the whole room is a request for every character, minus anyone who is only
+        # being talked about (the new member being greeted, for example).
+        room = [item.id for item in characters if item.id not in mentioned_only][:max_speakers]
+        if room:
+            selected_ids = room
+            log.info("Room-wide request: waking every character except mention-only %s", mentioned_only)
+    elif addressed in by_id and addressed not in selected_ids:
         # The message speaks to this character even though the answer forgot to list them.
         selected_ids.insert(0, addressed)
     selected = resolve_character_speakers(characters, [], selected_ids[:max_speakers])
@@ -255,8 +263,7 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
                      [item.id for item in selected])
     log.info("Character selector decision: selected=%s max=%s addressed=%s mentioned_only=%s "
              "name_hits=%s ms=%s reason=%s",
-             [item.id for item in selected], max_speakers, addressed or "-",
-             [str(value) for value in (parsed.get("mentioned_only") or []) if isinstance(value, str)],
+             [item.id for item in selected], max_speakers, addressed or "-", mentioned_only,
              [item.id for item in mentioned], decision_ms, str(parsed.get("reason") or "")[:200])
     return selected
 
