@@ -365,8 +365,8 @@ class Store:
         ).fetchall()]
 
     def session_key_for(self, user_id: str, channel_id: str | None) -> str:
-        row = self.group_membership(user_id)
-        return group_session_key(channel_id) if channel_id and row and row["channel_id"] == channel_id else user_session_key(user_id)
+        # Every conversation is scoped to its Discord channel, never to a user's opt-in state.
+        return group_session_key(channel_id) if channel_id else user_session_key(user_id)
 
     def get_character_relationship(self, character_id: str, user_id: str) -> str:
         row = self.db.execute("SELECT relationship FROM character_relationships WHERE character_id=? AND user_id=?",
