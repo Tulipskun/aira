@@ -31,7 +31,7 @@ Set these environment variables in the panel:
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DISCORD` | No (legacy) | Optional migration source. Without it, enter the bot token in the server Console on first start; Aira saves it in `.aira/discord.token`. |
-| `DISCORD_OWNER_ID` | Recommended | Discord owner user ID. The bot also checks the application owner returned by Discord. |
+| `DISCORD_OWNER_ID` | Recommended | Optional migration source. If absent, enter the owner user ID in Console on first start; Aira saves it in `.aira/owner.id`. |
 | `GEMINI_API_KEY` | No | Optional shared comma-separated Gemini API key pool. Can also be configured after startup through the owner-only Discord Control Panel. |
 | `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, `GEMINI_EMBEDDING2_API_KEYS` | No | Optional stage-specific key pools; fall back to `GEMINI_API_KEY`. |
 | `DISCORD_RESPONSE_CHANNEL_ID` | No | Optional initial response channel. The panel can select/change it later. |
@@ -46,7 +46,7 @@ The startup command installs the pinned Python requirements and runs the bot in 
 
 **Discord setup:** invite the application with the `bot` and `applications.commands` OAuth scopes. Grant View Channels, Send Messages, Read Message History, Embed Links and Attach Files in the response channel. Enable the privileged **Message Content Intent** in the Discord Developer Portal.
 
-On first start, paste the Discord bot token into the server Console when prompted. Aira verifies it with Discord and stores it at `.aira/discord.token`; later starts read the saved token automatically. Keep the server Console history private because panel behavior determines whether pasted input is echoed or retained. After login, Aira posts its Control Panel in a server text channel. Only the Discord application owner (or `DISCORD_OWNER_ID`) can change settings. Add a Gemini key in the panel before asking Aira to respond if `GEMINI_API_KEY` was not supplied at deployment.
+On first start, enter the Discord bot token and your Discord user ID in the server Console when prompted. Aira verifies and saves the token at `.aira/discord.token` and saves the owner ID at `.aira/owner.id`; later starts reuse both. Keep the server Console history private because panel behavior determines whether pasted input is echoed or retained. After login, use `/aira` to open a private admin panel. Only the exact Discord user ID entered in Console can open or use it. Add a Gemini key in the panel before asking Aira to respond if `GEMINI_API_KEY` was not supplied at deployment.
 
 ### Persistent data
 
@@ -71,12 +71,9 @@ The bot runs in the foreground. On first launch, enter the Discord bot token in 
 
 ## Discord commands
 
-- `!islacomehere` — owner-only; select the current channel for responses.
-- `!unset` — owner-only; remove the response-channel lock.
-- `/isla status` — inspect the current channel's shared conversation session.
-- `/isla leaderboard` — show the top users by XP.
+- `/aira` — open the private owner-only admin panel.
 
-After a slash-command schema change, the next startup synchronizes Aira's `/isla` command group once. The registrar preserves unrelated global application commands and records the synced schema version under `.aira/`, so it does not sync on every restart. Manual registration remains available with `python -m aira.register_commands --dry-run` followed by `python -m aira.register_commands`.
+After a slash-command schema change, the next startup replaces the global slash-command list with exactly `/aira`; all other global slash commands are removed. The schema version is stored under `.aira/` to avoid syncing on every restart. Manual registration remains available with `python -m aira.register_commands --dry-run` followed by `python -m aira.register_commands`.
 
 Unknown prefix commands are ignored. Normal messages outside the configured response channel are ignored. Bot-authored messages are never fed back into the pipeline.
 
