@@ -6,7 +6,7 @@ Discord AI character bot powered by Gemini, SQLite and Chroma. Runtime: Python 3
 
 - One Discord bot with Isla and multiple configurable characters. Isla always replies first; Gemini can invite at most one additional character, and direct character mentions take priority.
 - Gemini 1 generates dialogue and summaries. Gemini 2 analyzes relationship changes, facts, nicknames, memory and Isla's expression image.
-- Per-user relationship state, XP, accepted flirt count, gated proposals, facts and nicknames. Group sessions share conversation context but retain individual user profiles.
+- Per-user relationship state, XP, accepted flirt count, gated proposals, facts and nicknames. Each Discord channel has one shared conversation context; users in the same channel share history and memory while personal profiles remain separate.
 - SQLite conversation history and atomic, idempotent relationship-state updates.
 - Chroma semantic and episodic memory, separated by conversation session and character.
 - Owner-only Discord Control Panel for Gemini keys/models, response channel and character prompts.
@@ -73,9 +73,7 @@ The bot runs in the foreground. On first launch, enter the Discord bot token in 
 
 - `!islacomehere` — owner-only; select the current channel for responses.
 - `!unset` — owner-only; remove the response-channel lock.
-- `/isla join-group` — join the current channel's shared conversation session.
-- `/isla leave-group` — return to the private session.
-- `/isla status` — inspect the active session and group members.
+- `/isla status` — inspect the current channel's shared conversation session.
 - `/isla leaderboard` — show the top users by XP.
 
 The runtime does not automatically replace Discord's global command list on every restart. Existing application commands are preserved. To install/update only Aira's `/isla` command group while retaining unrelated app commands, run `python -m aira.register_commands --dry-run` first, then `python -m aira.register_commands` once after reviewing the payload.
@@ -104,19 +102,20 @@ Additional characters use a separate Chroma memory namespace and separate relati
 
 SQLite is authoritative for structured user state and conversation history. Chroma holds semantic and episodic vectors. The bot stores UTC timestamps and renders them in the configured timezone.
 
-Inspect history:
+Inspect history for a channel (replace CHANNEL_ID with its Discord ID):
 
 ```bash
-python -m aira.cli history list --user DISCORD_USER_ID --limit 20
-python -m aira.cli history list --session user:DISCORD_USER_ID
-python -m aira.cli memory list --session user:DISCORD_USER_ID
-python -m aira.cli memory search "กาแฟ" --session user:DISCORD_USER_ID
+python -m aira.cli history list --session group:CHANNEL_ID
+python -m aira.cli memory list --session group:CHANNEL_ID
+python -m aira.cli memory search "กาแฟ" --session group:CHANNEL_ID
 ```
+
+Legacy `user:DISCORD_USER_ID` sessions remain available for inspecting older personal history.
 
 Destructive commands are dry-run by default. Add `--yes` to execute:
 
 ```bash
-python -m aira.cli history clear --session user:DISCORD_USER_ID --yes
+python -m aira.cli history clear --session group:CHANNEL_ID --yes
 python -m aira.cli memory clear --user DISCORD_USER_ID --yes
 python -m aira.cli history clear --all --yes
 python -m aira.cli memory clear --all --yes
