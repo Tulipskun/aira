@@ -44,6 +44,30 @@ def main() -> int:
         from aira.discord_auth import get_discord_token
         os.environ["DISCORD"] = get_discord_token()
         from aira.config import config
+
+        # Update the global /isla command definition once per schema version.
+        # The registrar merges commands and preserves unrelated application commands.
+        command_version = "channel-sessions-v1"
+        command_marker = ROOT / ".aira" / "discord-commands-version"
+        try:
+            current_version = command_marker.read_text("utf-8").strip()
+        except FileNotFoundError:
+            current_version = ""
+        if current_version != command_version:
+            try:
+                from aira.register_commands import register_commands
+                asyncio.run(register_commands(config.discord_token))
+                temporary_marker = command_marker.with_suffix(".tmp")
+                temporary_marker.write_text(command_version + "\\n", encoding="utf-8")
+                os.chmod(temporary_marker, 0o600)
+                temporary_marker.replace(command_marker)
+                logging.getLogger("aira").info("Discord slash commands updated")
+            except Exception:
+                logging.getLogger("aira").warning(
+                    "Discord slash-command update failed; it will retry on the next start",
+                    exc_info=True,
+                )
+
         from aira.discord_app import run_bot
         if not config.gemini_keys:
             logging.getLogger("aira").warning(
