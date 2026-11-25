@@ -16,6 +16,7 @@ from aira.discord_auth import (
     get_discord_token,
     save_token,
     validate_discord_token,
+    get_discord_owner_id,
 )
 
 
@@ -122,6 +123,40 @@ class DiscordAuthTests(unittest.TestCase):
 
         with self.assertRaises(InvalidDiscordToken):
             validate_discord_token("invalid", opener=opener)
+
+
+    def test_owner_id_is_prompted_once_and_saved_privately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner_path = Path(directory) / ".aira" / "owner.id"
+            result = get_discord_owner_id(
+                owner_path=owner_path, environ={},
+                prompt=lambda _message: "123456789012345678",
+                notify=lambda _message: None,
+            )
+            self.assertEqual(result, "123456789012345678")
+            self.assertEqual(owner_path.read_text("utf-8").strip(), result)
+            self.assertEqual(owner_path.stat().st_mode & 0o777, 0o600)
+
+    def test_saved_owner_id_is_reused_without_prompt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner_path = Path(directory) / ".aira" / "owner.id"
+            owner_path.parent.mkdir()
+            owner_path.write_text("123456789012345678\\n", encoding="utf-8")
+            result = get_discord_owner_id(
+                owner_path=owner_path, environ={},
+                prompt=lambda _message: self.fail("prompt should not be called"),
+                notify=lambda _message: None,
+            )
+            self.assertEqual(result, "123456789012345678")
+
+    def test_invalid_owner_id_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "valid Discord user ID"):
+                get_discord_owner_id(
+                    owner_path=Path(directory) / ".aira" / "owner.id",
+                    environ={}, prompt=lambda _message: "not-an-id",
+                    notify=lambda _message: None,
+                )
 
 
 if __name__ == "__main__":
