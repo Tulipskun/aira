@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
+
+import aira.config as config_module
 
 from aira.discord_auth import (
     InvalidDiscordToken,
@@ -71,6 +75,22 @@ class DiscordAuthTests(unittest.TestCase):
             )
             self.assertEqual(result, "legacy-token")
             self.assertEqual(token_path.read_text("utf-8").strip(), "legacy-token")
+
+
+    def test_config_prefers_saved_token_to_legacy_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_dir = Path(directory) / ".aira"
+            runtime_dir.mkdir()
+            (runtime_dir / "discord.token").write_text("saved-token\\n", encoding="utf-8")
+            with patch.object(config_module, "ROOT", Path(directory)), patch.dict(os.environ, {"DISCORD": "old-env-token"}):
+                config = config_module.Config()
+            self.assertEqual(config.discord_token, "saved-token")
+
+    def test_config_falls_back_to_legacy_environment_without_saved_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(config_module, "ROOT", Path(directory)), patch.dict(os.environ, {"DISCORD": "legacy-token"}):
+                config = config_module.Config()
+            self.assertEqual(config.discord_token, "legacy-token")
 
     def test_discord_rejects_non_bot_identity(self):
         class FakeResponse(io.BytesIO):
