@@ -153,7 +153,7 @@ Aira can be installed and started with one command. Set the Discord bot token, t
 
 ```bash
 export DISCORD=YOUR_DISCORD_BOT_TOKEN
-curl -fsSL https://raw.githubusercontent.com/Tulipskun/aira/main/install.sh | bash
+curl -fsSL https://github.com/Tulipskun/aira/raw/refs/heads/main/install.sh | bash
 ```
 
 The installer downloads or updates Aira in `~/.local/share/aira`, installs Bun if needed, installs locked dependencies, saves the token in `.env` with mode `0600`, and starts the bot. Existing `.aira/` settings and data are preserved. No GitHub login, npm login, `aira setup`, or separate `aira start` command is required.
