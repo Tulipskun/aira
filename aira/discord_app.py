@@ -24,7 +24,6 @@ from .thought_signatures import close_thought_signatures
 
 log = logging.getLogger("aira.discord")
 DISCORD_CONFIG = ROOT / ".aira" / "discord-config.json"
-VALID_PREFIX_COMMANDS = {"islacomehere", "unset"}
 RPS_CHOICES = {"rock": ("ค้อน", "✊🏻"), "paper": ("กระดาษ", "🖐🏻"), "scissors": ("กรรไกร", "✌🏻")}
 RPS_GAMES: dict[str, dict] = {}
 
@@ -256,38 +255,6 @@ class PanelView(discord.ui.View):
         await interaction.response.edit_message(embed=self.bot_ref.panel_embed(), view=self)
 
 
-class IslaCommands(app_commands.Group):
-    def __init__(self):
-        super().__init__(name="isla", description="คำสั่ง isla")
-
-    @app_commands.command(name="status", description="ดูสถานะบทสนทนาของห้องนี้")
-    async def status(self, interaction: discord.Interaction):
-        channel_id = str(interaction.channel_id) if interaction.channel_id else None
-        if not channel_id:
-            await interaction.response.send_message("ไม่พบ channel", ephemeral=True)
-            return
-        key = store.session_key_for(str(interaction.user.id), channel_id)
-        lines = [
-            f"**Session ของห้องนี้:** {key}",
-            "ทุกคนที่คุยกับ Aira ในห้องนี้ใช้ประวัติและความทรงจำร่วมกัน",
-        ]
-        response_channel = get_response_channel_id()
-        if response_channel and channel_id != response_channel:
-            lines.append(f"หมายเหตุ: Aira รับข้อความเฉพาะ <#{response_channel}>")
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-    @app_commands.command(name="leaderboard", description="ดู 10 อันดับผู้ใช้ที่มี XP สูงสุด")
-    async def leaderboard(self, interaction: discord.Interaction):
-        profiles = store.list_profiles(10)
-        description = "\n".join(
-            f"{index}. **{p['user_name'] or p['user_id']}** ({bond_label(p['bond'])}) {bond_emoji(p['bond'])} {p['xp']} [Flirt: {p['flirt_count']}]"
-            for index, p in enumerate(profiles, 1)
-        ) or "ยังไม่มีข้อมูลผู้ใช้"
-        embed = discord.Embed(title="Isla Leaderboard", description=description)
-        embed.set_footer(text="จัดอันดับตาม XP")
-        await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
-
 class AiraBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.none()
@@ -296,9 +263,8 @@ class AiraBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         self.owner_id = int(config.owner_id) if config.owner_id.isdigit() else None
-        self.application_owner_id = None
         self.scheduler = MessageScheduler(self._flush, debounce_ms=5000, max_wait_ms=12000)
-        self.tree.add_command(IslaCommands())
+        self.tree.add_command(app_commands.Command(name="aira", description="เปิดแผงควบคุมผู้ดูแล Aira", callback=self.open_admin_panel))
         self.in_flight = 0
         self.typing_tasks: dict[str, asyncio.Task] = {}
         self.started_at = time.time()
@@ -311,7 +277,13 @@ class AiraBot(commands.Bot):
         )
 
     def is_owner(self, user_id: int) -> bool:
-        return user_id in {self.owner_id, self.application_owner_id}
+        return self.owner_id is not None and user_id == self.owner_id
+
+    async def open_admin_panel(self, interaction: discord.Interaction):
+        if not self.is_owner(interaction.user.id):
+            await interaction.response.send_message("คำสั่งนี้ใช้ได้เฉพาะเจ้าของบอท", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=self.panel_embed(), view=PanelView(self), ephemeral=True)
 
     def panel_embed(self) -> discord.Embed:
         channel_id = get_response_channel_id()
@@ -337,43 +309,14 @@ class AiraBot(commands.Bot):
         if migration["backfilled"]:
             log.info("Chroma memory sessions backfilled: %s", migration)
         self.add_view(PanelView(self))
-        log.info("Discord application commands are managed separately; existing global commands are preserved")
+        log.info("Registered owner-only /aira admin panel command")
 
     async def on_ready(self):
-        try:
-            info = await self.application_info()
-            if info.owner:
-                self.application_owner_id = info.owner.id
-        except Exception:
-            log.exception("Could not resolve Discord application owner")
         log.info("Logged in as %s", self.user)
         log.info("Response channel: %s", get_response_channel_id() or "not set")
-        await self.publish_control_panel()
         if self.health_server is None:
             self.health_server = await self.start_health_server()
         self.liveness.start()
-
-    async def publish_control_panel(self):
-        for guild in self.guilds:
-            channels = await guild.fetch_channels()
-            channel = guild.system_channel
-            if not channel or not channel.permissions_for(guild.me).send_messages:
-                channel = next((item for item in channels if isinstance(item, discord.TextChannel)
-                                and item.permissions_for(guild.me).view_channel
-                                and item.permissions_for(guild.me).send_messages), None)
-            if not isinstance(channel, discord.TextChannel):
-                continue
-            try:
-                async for message in channel.history(limit=30):
-                    if message.author.id == self.user.id and message.embeds and message.embeds[0].title == "Aira • Control Panel":
-                        await message.edit(embed=self.panel_embed(), view=PanelView(self))
-                        break
-                else:
-                    await channel.send(embed=self.panel_embed(), view=PanelView(self))
-                log.info("Control panel published in #%s (%s)", channel.name, guild.name)
-                return
-            except discord.HTTPException:
-                log.exception("Could not publish control panel in guild %s", guild.id)
 
     async def start_health_server(self):
         from aiohttp import web
