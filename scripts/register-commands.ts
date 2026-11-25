@@ -16,8 +16,8 @@
 import "dotenv/config";
 import { ISLA_COMMAND_NAME, ISLA_SUBCOMMANDS, islaCommandPayload } from "../src/bot/interactions.js";
 
-const token = process.env.ISLA_TOKEN;
-if (!token) throw new Error("ISLA_TOKEN is required");
+const token = process.env.DISCORD ?? process.env.ISLA_TOKEN;
+if (!token) throw new Error("DISCORD (or ISLA_TOKEN) is required");
 
 const API = "https://discord.com/api/v10";
 

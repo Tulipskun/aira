@@ -33,7 +33,7 @@
     "sharp": "^0.35.5"
   },
   "version": "0.1.0",
-  "description": "Aira Discord AI bot — one-command runtime",
+  "description": "Aira Discord AI bot — Pterodactyl-ready runtime",
   "bin": {
     "aira": "bin/aira.cjs"
   },
@@ -44,7 +44,6 @@
     "characters/",
     "images/",
     "docs/",
-    "install.sh",
     "bun.lock",
     "tsconfig.json",
     ".env.example",

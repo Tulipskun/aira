@@ -55,12 +55,7 @@ function saveToken() {
 function ensureBun() {
   const check = spawnSync('bun', ['--version'], { encoding: 'utf8' });
   if (check.status === 0) return;
-  if (process.platform === 'win32') fail('ติดตั้ง Bun ก่อน: https://bun.sh');
-  console.log('[AIRA] Installing Bun runtime...');
-  run('sh', ['-c', 'curl -fsSL https://bun.sh/install | bash'], { cwd: os.homedir() });
-  const bun = path.join(os.homedir(), '.bun', 'bin', 'bun');
-  if (!fs.existsSync(bun)) fail('ติดตั้ง Bun ไม่สำเร็จ');
-  process.env.PATH = path.dirname(bun) + path.delimiter + process.env.PATH;
+  fail('Bun runtime is required. Install Bun first: https://bun.sh');
 }
 
 function main() {

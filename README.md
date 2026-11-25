@@ -147,24 +147,26 @@ git push
 aira update
 ```
 
-## One-command install and start
+## Pterodactyl deployment
 
-Aira can be installed and started with one command. Set the Discord bot token, then run the public installer:
+Deploy Aira directly from its public Git repository through a Pterodactyl panel. Configure these environment variables:
 
-```bash
-export DISCORD=YOUR_DISCORD_BOT_TOKEN
-curl -fsSL https://github.com/Tulipskun/aira/raw/refs/heads/main/install.sh | bash
-```
+| Variable | Value |
+| --- | --- |
+| GIT_ADDRESS | https://github.com/Tulipskun/aira |
+| BRANCH | main |
+| USER_UPLOAD | 0 |
+| AUTO_UPDATE | 1 |
+| NODE_PACKAGES | bun |
+| DISCORD | Your Discord bot token |
 
-The installer downloads or updates Aira in `~/.local/share/aira`, installs Bun if needed, installs locked dependencies, registers the `/isla` slash commands, saves the token in `.env` with mode `0600`, and starts the bot. Existing `.aira/` settings and data are preserved. No GitHub login, npm login, `aira setup`, or separate `aira start` command is required.
+Set the startup command to node index.js. The egg must install NODE_PACKAGES before startup so Bun is available. Aira requires Bun APIs such as bun:sqlite; Node.js alone cannot run it.
 
-When the bot connects, it posts an Aira Control Panel in the first server text channel where it can send messages. This panel location is only where the controls are posted; the bot does not process ordinary messages until a response channel is selected. The Discord application owner can use the panel to choose that response channel, configure Gemini API keys and model names, and create/edit character definitions and prompts. API keys are accepted through an ephemeral modal and stored in `.aira/settings.json` with mode `0600`; the panel is restricted to the Discord application owner.
+The entrypoint installs locked dependencies, registers slash commands, and starts the bot in the foreground. Logs appear in the panel console. Gemini API keys, model names, response channel, and character settings are managed through the Discord Control Panel.
 
-Invite the bot with the `bot` and `applications.commands` OAuth scopes. Grant it View Channels, Send Messages, Read Message History, and Embed Links in the channels it uses, and enable the Message Content privileged intent in the Discord Developer Portal. A Gemini API key can be added after startup through the panel; without a key, Gemini-powered replies cannot run.
+Invite the bot with the bot and applications.commands OAuth scopes. Grant View Channels, Send Messages, Read Message History, and Embed Links, and enable the Message Content privileged intent in the Discord Developer Portal.
 
-To run the installer again after an update, repeat the same command. It updates the existing Git checkout and starts/restarts through the supervisor. To use another installation directory, set `AIRA_INSTALL_ROOT` before running the installer.
-
-For an already cloned checkout, run `export DISCORD=...` and then `./install.sh`.
+See docs/installation.md for the full setup.
 
 ## Development and verification
 
