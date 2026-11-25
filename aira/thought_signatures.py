@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import uuid
 from pathlib import Path
 
@@ -15,7 +14,7 @@ BOOTSTRAP_SIGNATURE = "El4KXAERTTIPV5DSwWOxBfzxqrZ7KbEV9e9KtO4jGvcB6fuuTxysDRrjC
 
 
 def _load() -> list[str]:
-    values = [item.strip() for item in os.getenv("GEMINI1_THOUGHT_SIGNATURE", "").split(",") if item.strip()]
+    values = []
     try:
         state = json.loads(config.thought_state_file.read_text("utf-8"))
         saved = state.get("signatures", []) if isinstance(state, dict) else []
