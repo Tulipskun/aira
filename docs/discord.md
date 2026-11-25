@@ -19,10 +19,10 @@ Settings are written under `.aira/` with restrictive file permissions. Do not up
 
 ## Slash commands
 
-- `/isla join-group` associates the user with the current channel's shared session.
-- `/isla leave-group` returns the user to a private session.
-- `/isla status` shows the session key and group members.
+- `/isla status` shows the current channel's shared conversation session.
 - `/isla leaderboard` shows the highest XP profiles.
+
+Every Discord channel has its own conversation history and semantic/episodic memory. Everyone speaking in the same channel shares that channel's context automatically; users do not need to join or leave a group. Different channels remain isolated.
 
 ## Message processing
 
