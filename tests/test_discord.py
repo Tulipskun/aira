@@ -1,10 +1,61 @@
 import asyncio
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import discord
 
 from aira.discord_app import AiraBot, PanelView, build_footer, _rps_outcome
+
+
+class ChannelSelectInteractionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.bot = AiraBot()
+        self.view = PanelView(self.bot)
+        self.select = next(item for item in self.view.children if isinstance(item, discord.ui.ChannelSelect))
+        self.bot.is_owner = lambda user_id: True
+        self.bot.panel_embed = lambda: discord.Embed(title="updated")
+
+    async def asyncTearDown(self):
+        await self.bot.close()
+
+    def make_interaction(self, permissions):
+        channel = SimpleNamespace(
+            id=987654,
+            permissions_for=lambda member: permissions,
+        )
+        response = SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock())
+        followup = SimpleNamespace(send=AsyncMock())
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=123),
+            guild=SimpleNamespace(me=object()),
+            response=response,
+            followup=followup,
+            edit_original_response=AsyncMock(),
+        )
+        return interaction, SimpleNamespace(values=[channel])
+
+    async def test_channel_select_defers_before_saving_and_updates_panel(self):
+        permissions = SimpleNamespace(view_channel=True, send_messages=True)
+        interaction, select = self.make_interaction(permissions)
+        self.select._values = select.values
+        with patch('aira.discord_app.set_response_channel_id') as save:
+            await self.select.callback(interaction)
+        interaction.response.defer.assert_awaited_once_with()
+        save.assert_called_once_with('987654')
+        interaction.edit_original_response.assert_awaited_once()
+        interaction.followup.send.assert_not_awaited()
+
+    async def test_channel_select_defers_and_reports_missing_permissions(self):
+        permissions = SimpleNamespace(view_channel=True, send_messages=False)
+        interaction, select = self.make_interaction(permissions)
+        self.select._values = select.values
+        with patch('aira.discord_app.set_response_channel_id') as save:
+            await self.select.callback(interaction)
+        interaction.response.defer.assert_awaited_once_with()
+        save.assert_not_called()
+        interaction.followup.send.assert_awaited_once()
+        interaction.edit_original_response.assert_not_awaited()
 
 
 class DiscordTests(unittest.TestCase):

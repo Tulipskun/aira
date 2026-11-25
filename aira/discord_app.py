@@ -246,13 +246,23 @@ class PanelView(discord.ui.View):
         if not self.bot_ref.is_owner(interaction.user.id):
             await interaction.response.send_message("แผงควบคุมนี้ใช้ได้เฉพาะเจ้าของบอท", ephemeral=True)
             return
-        channel = select.values[0]
-        permissions = channel.permissions_for(interaction.guild.me) if interaction.guild and interaction.guild.me else None
-        if not permissions or not permissions.view_channel or not permissions.send_messages:
-            await interaction.response.send_message("บอทไม่มีสิทธิ์ดูหรือส่งข้อความในห้องนี้", ephemeral=True)
-            return
-        set_response_channel_id(str(channel.id))
-        await interaction.response.edit_message(embed=self.bot_ref.panel_embed(), view=self)
+
+        # A component interaction has a strict 3-second acknowledgement deadline.
+        # Defer before permission checks and disk I/O, then edit the original panel.
+        await interaction.response.defer()
+        try:
+            channel = select.values[0]
+            guild = interaction.guild
+            bot_member = guild.me if guild else None
+            permissions = channel.permissions_for(bot_member) if bot_member else None
+            if not permissions or not permissions.view_channel or not permissions.send_messages:
+                await interaction.followup.send("บอทไม่มีสิทธิ์ดูหรือส่งข้อความในห้องนี้", ephemeral=True)
+                return
+            set_response_channel_id(str(channel.id))
+            await interaction.edit_original_response(embed=self.bot_ref.panel_embed(), view=self)
+        except (discord.HTTPException, OSError, ValueError):
+            log.exception("Failed to save selected response channel")
+            await interaction.followup.send("บันทึกห้องไม่สำเร็จ กรุณาลองใหม่อีกครั้ง", ephemeral=True)
 
 
 class AiraBot(commands.Bot):
