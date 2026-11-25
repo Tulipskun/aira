@@ -703,13 +703,18 @@ class AiraBot(commands.Bot):
 
             outputs = []
             failed = []
+            answered_this_turn: list[str] = []
             for character in selected:
                 try:
                     log.info("Generating character reply: message=%s character=%s", batch_id, character.id)
+                    # Characters generated later in the same batch can see what the earlier ones
+                    # already said, so they add a new angle instead of echoing the same sentence.
+                    incoming["answered_this_turn"] = list(answered_this_turn)
                     response = await process_character_reply(
                         incoming, character, prepared, input_saved=True, superseded=superseded,
                     )
                     if response["text"]:
+                        answered_this_turn.append(character.id)
                         outputs.append(response)
                         log.info("Character reply generated: message=%s character=%s chars=%s",
                                  batch_id, character.id, len(response["text"]))

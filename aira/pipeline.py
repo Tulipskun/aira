@@ -372,6 +372,8 @@ async def process_character_reply(message: dict, character: Character, prepared_
         "เป็นธรรมชาติมากกว่าการแสดงบทบาท: ไม่ต้องพูดคำติดปากหรือท่าทางประจำตัวทุกข้อความ "
         "อารมณ์และน้ำเสียงเปลี่ยนได้ตามเรื่องที่คุย ตอบสั้นหรือยาวตามจังหวะ ไม่ต้องสรุปหรืออธิบายทุกครั้ง",
         "หลีกเลี่ยงการพูดถึงตัวเองในฐานะ 'ตัวละคร' หรือบรรยายนิสัยของตัวเอง ให้แสดงออกผ่านสิ่งที่พูดแทน",
+        "ห้ามลอกหรือเลียนโครงประโยคของตัวละครอื่นในห้อง ตอบด้วยถ้อยคำและมุมของคุณเอง "
+        "ถ้าประเด็นนั้นถูกพูดครบแล้วและคุณไม่มีอะไรใหม่ ให้พูดสั้นลงหรือเงียบ (reply เป็นสตริงว่าง)",
         "ประวัติห้องทุกคนเห็นร่วมกัน ส่วนความทรงจำและความสัมพันธ์ของคุณเป็นของคุณคนเดียว",
         relationship_label + ": " + (relationship or "ยังไม่เคยสร้างความสัมพันธ์"),
         f"relationship ในคำตอบคือ{relationship_scope} เขียนเป็นภาษาธรรมชาติ 1-3 ประโยค "
@@ -413,6 +415,13 @@ async def process_character_reply(message: dict, character: Character, prepared_
             context_lines.append(
                 "คนอื่นที่อยู่ในห้องนี้ตอนนี้ (ข้อมูลที่คุณรู้เอง ห้ามนำไปปนกับคนอื่น):\n" + "\n".join(others)
             )
+    answered_now = [str(value) for value in message.get("answered_this_turn", []) if value]
+    if answered_now:
+        spoken = ", ".join(character_names.get(value, value) for value in answered_now[:4])
+        context_lines.append(
+            f"ในเทิร์นนี้ {spoken} เพิ่งตอบไปแล้ว — ห้ามพูดซ้ำประเด็นหรือเลียนสำนวนของเขา "
+            "ให้เพิ่มมุมใหม่ของตัวเอง หรือถ้าไม่มีอะไรจะเสริมจริง ๆ ให้ตอบสั้นมาก ๆ"
+        )
     if nicknames or fact_lines:
         context_lines.append(
             f"สิ่งที่คุณรู้เกี่ยวกับผู้ใช้คนนี้ ({owner_name}): "
