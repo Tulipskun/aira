@@ -41,13 +41,14 @@ def main() -> int:
         if load_dotenv is not None:
             load_dotenv(ROOT / ".env", override=False)
         configure_logging()
-        from aira.discord_auth import get_discord_token
+        from aira.discord_auth import get_discord_owner_id, get_discord_token
         os.environ["DISCORD"] = get_discord_token()
+        os.environ["DISCORD_OWNER_ID"] = get_discord_owner_id()
         from aira.config import config
 
         # Update the global /isla command definition once per schema version.
         # The registrar merges commands and preserves unrelated application commands.
-        command_version = "channel-sessions-v1"
+        command_version = "aira-admin-panel-v1"
         command_marker = ROOT / ".aira" / "discord-commands-version"
         try:
             current_version = command_marker.read_text("utf-8").strip()
