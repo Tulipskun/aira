@@ -13,62 +13,21 @@ from google import genai
 from google.genai import types
 
 from .config import config, ROOT
-from .relationships import (
-    BOND_LEVELS, CRUSH_XP_THRESHOLD, FLIRT_REQUIREMENT, LOVER_XP_THRESHOLD,
-    SOULMATE_XP_THRESHOLD, SPECIAL_XP, XP_THRESHOLDS, bond_for_xp,
-    relationship_permissions,
-)
 from .store import utc_now
-from .thought_signatures import add_thought_signature, rotate_thought_signatures
+from .token_budget import (
+    estimate_live_request_tokens, live_token_budget, usage_metrics, usage_tpm_tokens,
+)
 from .debug_dump import debug_dump
 
 log = logging.getLogger("aira.gemini")
 _clients: dict[str, genai.Client] = {}
 _live_clients: dict[str, genai.Client] = {}
+_model_input_limits: dict[str, int] = {}
 _key_state = {"gemini1": 0, "gemini2": 0, "embedding2": 0}
 try:
     _key_state.update(json.loads(config.key_state_file.read_text("utf-8")))
 except (OSError, ValueError, TypeError):
     pass
-
-REPLY_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "Isla": {"type": "string", "description": "ข้อความตอบกลับของไอล่าถึง {{partner}} คงคาแรคเตอร์และน้ำเสียงของไอล่า"},
-        "summery": {"type": "string", "description": "สรุปสั้น ๆ หนึ่งบรรทัดของบทสนทนาในเทิร์นนี้"},
-        "mood": {"type": "string", "description": "อารมณ์ภาษาไทยสั้น ๆ 1-3 คำ"},
-        "color": {"type": "string", "description": "สีแทนอารมณ์ hex 6 หลัก เช่น #F1C40F"},
-        "rps": {"type": "string", "enum": ["rock", "paper", "scissors"]},
-        "character_relationships": {"type": "array", "items": {"type": "object", "properties": {
-            "target_character_id": {"type": "string"},
-            "relationship": {"type": "string"},
-        }, "required": ["target_character_id", "relationship"]}},
-    },
-    "required": ["Isla", "summery", "mood", "color"],
-}
-
-STATE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "affinity": {"type": "number", "description": "คะแนนความสัมพันธ์ที่เปลี่ยนในเทิร์นนี้ (-100 ถึง 100)"},
-        "is_flirt": {"type": "boolean", "description": "true เมื่อ {{partner}} เป็นฝ่ายจีบหรือเข้าหาเชิงชู้สาวในเทิร์นนี้"},
-        "approve_lover": {"type": "boolean"},
-        "approve_soulmate": {"type": "boolean"},
-        "approve_sibling": {"type": "boolean"},
-        "approve_family": {"type": "boolean"},
-        "select_image": {"type": "string", "description": "Known local expression image filename or none"},
-        "add_facts": {"type": "array", "items": {"type": "object", "properties": {
-            "text": {"type": "string"}, "owner_user_id": {"type": "string"},
-            "confirmed_by_owner": {"type": "boolean"}, "replaces_fact": {"type": "string"},
-        }, "required": ["text", "owner_user_id", "confirmed_by_owner"]}},
-        "add_nicknames": {"type": "array", "items": {"type": "string"}},
-        "ingest_memory": {"type": "string"},
-    },
-    "required": ["affinity", "select_image"],
-}
-
-NO_IMAGE = "none"
-
 
 def _save_key_state() -> None:
     config.key_state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +86,30 @@ def _live_client(stage: str) -> genai.Client:
     return _live_clients[key]
 
 
+async def _model_input_limit(client: genai.Client, model: str) -> int:
+    """Read the model's real input-token limit once and cache it per process."""
+    cached = _model_input_limits.get(model)
+    if cached:
+        return cached
+    try:
+        info = await client.aio.models.get(model=model)
+        limit = int(getattr(info, "input_token_limit", 0) or 0)
+        if limit > 0:
+            _model_input_limits[model] = limit
+            log.info("Gemini model context limit: model=%s input=%s output=%s",
+                     model, limit, getattr(info, "output_token_limit", None))
+            return limit
+    except Exception as exc:
+        log.warning("Could not read Gemini model input-token limit: model=%s error=%s",
+                    model, type(exc).__name__)
+    # Safe fallback if model metadata is temporarily unavailable.
+    import os
+    fallback = max(4096, int(os.environ.get("AIRA_CONTEXT_INPUT_LIMIT", "32768")))
+    _model_input_limits[model] = fallback
+    log.warning("Using fallback context limit: model=%s input=%s", model, fallback)
+    return fallback
+
+
 def thai_timestamp(timestamp: str | None) -> str:
     if not timestamp:
         return ""
@@ -183,16 +166,6 @@ def fill_partner(text: str, name: str | None) -> str:
     return result
 
 
-def _fill_partner(value, partner: str):
-    if isinstance(value, str):
-        return fill_partner(value, partner)
-    if isinstance(value, list):
-        return [_fill_partner(item, partner) for item in value]
-    if isinstance(value, dict):
-        return {key: _fill_partner(item, partner) for key, item in value.items()}
-    return value
-
-
 def _extract_object(raw: str) -> dict | None:
     raw = (raw or "").strip()
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, re.I)
@@ -231,30 +204,27 @@ def _to_bool(value) -> bool | None:
     return None
 
 
-def _to_number(value) -> int | None:
-    import math
-    try:
-        number = float(value)
-        return math.floor(number + 0.5)
-    except (TypeError, ValueError, OverflowError):
-        return None
+def _character_image_dir(character_id: str | None) -> Path:
+    # Every character uses the same directory convention: images/<character_id>/.
+    return config.images_dir / (character_id or "isla")
 
 
-def _image_names() -> list[str]:
+def _image_names(character_id: str | None = None) -> list[str]:
     extensions = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-    if not config.images_dir.is_dir():
+    directory = _character_image_dir(character_id)
+    if not directory.is_dir():
         return []
     return sorted(
-        path.name for path in config.images_dir.iterdir()
+        path.name for path in directory.iterdir()
         if path.is_file() and path.suffix.lower() in extensions
     )
 
 
-def _normalize_image(value: str | None) -> str:
+def _normalize_image(value: str | None, character_id: str | None = None) -> str:
     if not value or value.strip().lower() in {"none", "no_image", "null"}:
         return ""
     value = Path(value.strip()).name
-    return value if value in _image_names() else ""
+    return value if value in _image_names(character_id) else ""
 
 
 def parse_reply(raw: str) -> dict:
@@ -283,6 +253,7 @@ def parse_reply(raw: str) -> dict:
         "color": normalize_color(color),
         "rps": rps if rps in {"rock", "paper", "scissors"} else None,
         "relationships": relationships,
+        "next_speaker_id": str(_pick(parsed, "next_speaker_id", "nextSpeakerId") or "").strip(),
         "parsed": True,
     }
 
@@ -326,75 +297,9 @@ def normalize_color(value) -> int | None:
     return None
 
 
-def required_state_fields(bond: str) -> list[str]:
-    required = ["affinity", "select_image"]
-    if bond not in {"enemy", "sibling", "family"}:
-        required.append("is_flirt")
-    if bond == "crush":
-        required.append("approve_lover")
-    if bond == "lover":
-        required.append("approve_soulmate")
-    return required
-
-
-def _state_schema(bond: str) -> dict:
-    import copy
-    schema = copy.deepcopy(STATE_SCHEMA)
-    schema["required"] = required_state_fields(bond)
-    return schema
-
-
-def parse_state(raw: str, bond: str) -> dict:
-    obj = _extract_object(raw)
-    empty = {"affinity": 0, "is_flirt": False, "approvals": {}, "image": "",
-             "facts": [], "nicknames": [], "memory": "", "parsed": False, "warnings": ["reply was not JSON"]}
-    if obj is None:
-        return empty
-    warnings = []
-    affinity_raw = _to_number(_pick(obj, "affinity", "xp", "delta", "relationship", "relation", "xp_delta", "relationship_delta"))
-    if affinity_raw is None:
-        affinity = 0
-        warnings.append("missing affinity")
-    else:
-        affinity = max(-100, min(100, affinity_raw))
-        if affinity > 0 and affinity < 10:
-            affinity = 10
-    if bond not in {"enemy", "sibling", "family"}:
-        is_flirt = _to_bool(_pick(obj, "is_flirt", "isFlirt", "flirt", "flirtatious")) is True
-    else:
-        is_flirt = False
-    approvals = {
-        "lover": _to_bool(_pick(obj, "approve_lover", "approveLover", "lover_accepted", "accept_lover")) is True if bond == "crush" else False,
-        "soulmate": _to_bool(_pick(obj, "approve_soulmate", "approveSoulmate", "soulmate_accepted", "accept_soulmate")) is True if bond == "lover" else False,
-        "sibling": _to_bool(_pick(obj, "approve_sibling", "approveSibling", "sibling_accepted", "accept_sibling")) is True,
-        "family": _to_bool(_pick(obj, "approve_family", "approveFamily", "family_accepted", "accept_family")) is True,
-    }
-    facts = _pick(obj, "add_facts", "addFacts", "facts") or []
-    proposals = []
-    if isinstance(facts, list):
-        for fact in facts[:3]:
-            if not isinstance(fact, dict):
-                continue
-            text = str(fact.get("text") or "").strip()
-            owner = str(fact.get("owner_user_id") or fact.get("ownerUserId") or "").strip()
-            confirmed = _to_bool(fact.get("confirmed_by_owner", fact.get("confirmedByOwner")))
-            if text and owner and confirmed is not None:
-                proposals.append({"text": text, "owner_user_id": owner, "confirmed_by_owner": confirmed,
-                                  "replaces_fact": str(fact.get("replaces_fact") or fact.get("replacesFact") or "").strip()})
-    nicknames = _pick(obj, "add_nicknames", "addNicknames", "nicknames", "nickname") or []
-    if isinstance(nicknames, str): nicknames = [nicknames]
-    nicknames = [x.strip() for x in nicknames if isinstance(x, str) and x.strip()] if isinstance(nicknames, list) else []
-    memory = _pick(obj, "ingest_memory", "ingestMemory", "memory") or ""
-    image = _normalize_image(str(_pick(obj, "select_image", "selectImage", "image", "expression") or ""))
-    if not image:
-        warnings.append("no known expression image")
-    return {"affinity": affinity, "is_flirt": is_flirt, "approvals": approvals,
-            "image": image, "facts": proposals, "nicknames": nicknames,
-            "memory": str(memory).strip(), "parsed": True, "warnings": warnings}
-
-
-def _image_catalog_prompt() -> str:
-    manifest = config.images_dir / "manifest.json"
+def _image_catalog_prompt(character_id: str | None = None) -> str:
+    directory = _character_image_dir(character_id)
+    manifest = directory / "manifest.json"
     try:
         data = json.loads(manifest.read_text("utf-8"))
         if not isinstance(data, dict):
@@ -402,7 +307,7 @@ def _image_catalog_prompt() -> str:
     except (OSError, ValueError):
         data = {}
     entries = []
-    for name in _image_names():
+    for name in _image_names(character_id):
         raw = data.get(name)
         usage = raw.strip() if isinstance(raw, str) else ""
         usage = re.sub(r"//group\s*=\s*([^\s/]+)", "", usage).strip()
@@ -410,84 +315,17 @@ def _image_catalog_prompt() -> str:
     return "\n".join(entries) if entries else "(ไม่มีรูปภาพให้ใช้ — ส่ง none เสมอ)"
 
 
-def _xp_range(bond: str) -> str:
-    if bond == "enemy":
-        return f"<= {XP_THRESHOLDS[-1]}"
-    bounds = {
-        "stranger": (XP_THRESHOLDS[-1] + 1, XP_THRESHOLDS[1] - 1),
-        "acquaintance": (XP_THRESHOLDS[1], XP_THRESHOLDS[2] - 1),
-        "friend": (XP_THRESHOLDS[2], XP_THRESHOLDS[3] - 1),
-        "close_friend": (XP_THRESHOLDS[3], None),
-    }
-    low, high = bounds[bond]
-    return f">= {low}" if high is None else f"{low}..{high}"
-
-
-def _bond_ladder_with_thresholds(partner: str) -> str:
-    who = _partner(partner)
-    lines = []
-    for name in ("stranger", "acquaintance", "friend", "close_friend", "crush",
-                 "lover", "soulmate", "sibling", "family", "enemy"):
-        info = BOND_LEVELS[name]
-        head = f"- {name} (ระดับ {info['level']}) = {info['label']}"
-        if name in {"stranger", "acquaintance", "friend", "close_friend", "enemy"}:
-            line = f"{head} — xp {_xp_range(name)}"
-        elif name == "crush":
-            line = f"{head} — xp >= {CRUSH_XP_THRESHOLD} และ {who} จีบสะสม >= {FLIRT_REQUIREMENT} ครั้ง"
-        elif name == "lover":
-            line = f"{head} — ต้องเป็น crush ก่อน + {who} ขอคบ + Isla ตอบตกลง (xp >= {LOVER_XP_THRESHOLD})"
-        elif name == "soulmate":
-            line = f"{head} — ต้องเป็น lover ก่อน + {who} ขอแต่งงาน + Isla ตอบตกลง (xp >= {SOULMATE_XP_THRESHOLD})"
-        else:
-            label = "ขอเป็นพี่น้อง" if name == "sibling" else "ขอเป็นครอบครัว"
-            line = f"{head} — xp >= {SPECIAL_XP} + {label} + Isla ตอบตกลง (ไประดับ lover ไม่ได้)"
-        if info.get("max_level") is not None:
-            line += f" — ไปต่อได้ถึงระดับ {info['max_level']} เท่านั้น"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def state_prompt_values(bond: str, xp: int, flirt_count: int, user_id: str,
-                        partner: str = "เพื่อน") -> str:
-    who = _partner(partner)
-    tiers = (
-        "การคุยปกติ/ไม่ใช่ด้านลบ +10..+100; ด้านลบเล็กน้อย -9..-1; "
-        "ด่า/ทำร้ายความรู้สึก -40..-10; หยาบคายมาก/ดูถูกซ้ำ ๆ -100..-41"
-    )
-    values = {
-        "partner": who,
-        "affinity_min": "-100", "affinity_max": "100", "affinity_floor": "10",
-        "affinity_tiers": tiers, "facts_per_turn": "3", "no_image": NO_IMAGE,
-        "bond_ladder": _bond_ladder_with_thresholds(who),
-        "flirt_requirement": str(FLIRT_REQUIREMENT), "proposal_xp": str(LOVER_XP_THRESHOLD),
-        "enemy_xp": str(XP_THRESHOLDS[-1]), "recovery_bond": "friend",
-        "capped_level": str(BOND_LEVELS["sibling"]["max_level"]),
-        "expression_images": _image_catalog_prompt(),
-    }
-    prompt = fill_partner(_read_prompt(config.gemini2_prompt, "Gemini 2"), who)
-    missing = []
-
-    def substitute(match):
-        key = match.group(1)
-        value = values.get(key)
-        if value is None or value == "":
-            if key not in missing:
-                missing.append(key)
-            return match.group(0)
-        return str(value)
-
-    rendered = re.sub(r"{{\s*([A-Za-z0-9_.-]+)\s*}}", substitute, prompt)
-    if missing:
-        log.warning("Gemini 2 prompt has unresolved placeholders: %s", ", ".join(missing))
-    return rendered.strip()
-
-
 def build_context(history: list[dict], current: str, user_name: str, timestamp: str,
                   memory_items: list[dict], profile: dict | None,
                   group_profiles: list[dict], group: bool, media_summary: str = "") -> str:
     lines = ["บทสนทนาก่อนหน้า:"]
-    for item in history[-50:]:
-        role = (item.get("user_name") or "Isla") if item.get("role") == "model" else (item.get("user_name") or "User")
+    for item in history:
+        if item.get("role") == "model":
+            role = item.get("user_name") or "Isla"
+        else:
+            role = item.get("user_name") or "User"
+            if item.get("user_id"):
+                role += f" [Discord User ID: {item['user_id']}]"
         date = thai_timestamp(item.get("timestamp"))
         text = str(item.get("text") or "")
         if item.get("file_name"):
@@ -505,37 +343,20 @@ def build_context(history: list[dict], current: str, user_name: str, timestamp: 
         lines.extend(["", "<group_session>"])
         for item in group_profiles:
             lines.append(f"<user id={item['user_id']} name={item['user_name']}>")
-            lines.append(f"relationship={item['bond']}; xp={item['xp']}; nicknames={', '.join(item['nickname'])}")
+            lines.append(f"nicknames={', '.join(item.get('nickname', []))}")
             lines.extend(f"fact={f['text']}" for f in item["facts"] if f.get("status") != "historical")
             lines.append("</user>")
         lines.append("</group_session>")
     if profile:
         lines.extend(["", "<user_profile>", f"userId={profile['user_id']}", f"name={profile['user_name']}",
-                      f"bond={profile['bond']}", f"xp={profile['xp']}", f"flirt_count={profile['flirt_count']}",
-                      f"nicknames={', '.join(profile['nickname'])}"])
+                      f"nicknames={', '.join(profile.get('nickname', []))}"])
         for fact in profile["facts"]:
             lines.append(f"fact[{fact.get('status','confirmed')}]: {fact['text']}")
-        permissions = relationship_permissions(profile["bond"], profile["xp"], profile["flirt_count"])
-        lines.extend(f"can_accept_{key}={str(value).lower()}" for key, value in permissions.items())
         lines.append("</user_profile>")
     return "\n".join(lines)
 
 
-def _temporary_context(steps: list[dict] | None) -> str:
-    """Convert locally executed memory-tool results into ordinary Live API context."""
-    if not steps:
-        return ""
-    results = []
-    for step in steps:
-        if step.get("type") != "function_result":
-            continue
-        for item in step.get("result", []) or []:
-            if item.get("type") == "text" and item.get("text"):
-                results.append(f"ผลจาก {step.get('name', 'เครื่องมือ')}:\n{item['text']}")
-    return "\n\nข้อมูลบริบทจากระบบความจำ (ผลจากเครื่องมือที่ระบบเรียกใช้แล้ว):\n" + "\n\n".join(results) if results else ""
-
-
-def _live_parts(input_parts: list[dict], temporary_steps: list[dict] | None):
+def _live_parts(input_parts: list[dict]):
     import base64
     parts = []
     for item in input_parts:
@@ -548,32 +369,38 @@ def _live_parts(input_parts: list[dict], temporary_steps: list[dict] | None):
                 data = base64.b64decode(data)
             if data:
                 parts.append(types.Part.from_bytes(data=data, mime_type=item.get("mime_type") or "image/jpeg"))
-    extra = _temporary_context(temporary_steps)
-    if extra:
-        parts.append(types.Part.from_text(text=extra))
     return parts
 
 
 async def _create_live_response(stage: str, input_parts: list[dict], system_instruction: str,
                                 response_schema: dict | None = None,
-                                temporary_steps: list[dict] | None = None,
                                 debug_context: dict | None = None) -> str:
     key_attempts = 0
     retry = 0
     attempt = 0
     max_keys = max(1, len(_keys(stage)))
     chosen_model = config.gemini2_model if stage == "gemini2" else config.gemini1_model
-    content_parts = _live_parts(input_parts, temporary_steps)
+    content_parts = _live_parts(input_parts)
     if response_schema:
         system_instruction = "\n\n".join([
             system_instruction,
             "ส่งคำตอบเป็น JSON ที่ถูกต้องเท่านั้น ห้ามใส่ Markdown หรือข้อความนอก JSON และต้องทำตาม JSON Schema นี้:",
             json.dumps(response_schema, ensure_ascii=False, separators=(",", ":")),
         ])
+    # Aira opens one Live connection per generated turn. Compression protects
+    # the Live session when a large seeded context approaches the model window;
+    # cross-turn resumption is intentionally not enabled here because every
+    # Aira call already seeds its own authoritative transcript and memories.
+    # Reusing a prior handle while resending that transcript would duplicate
+    # conversation state and can corrupt character continuity.
     live_config = types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         output_audio_transcription=types.AudioTranscriptionConfig(),
         system_instruction=system_instruction,
+        context_window_compression=types.ContextWindowCompressionConfig(
+            trigger_tokens=100_000,
+            sliding_window=types.SlidingWindow(target_tokens=80_000),
+        ),
     )
     while key_attempts < max_keys:
         client = _live_client(stage)
@@ -589,6 +416,18 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
             "system_instruction": system_instruction,
             "parts": [{"text": p.text} if p.text is not None else {"mime_type": p.inline_data.mime_type} for p in content_parts],
         }})
+        # TPM is input-token throughput. Do not reserve output/thinking tokens here.
+        estimate = estimate_live_request_tokens(system_instruction, content_parts, output_reserve=0)
+        input_limit = await _model_input_limit(client, chosen_model)
+        context_budget = max(1, int(input_limit * 0.90))
+        if estimate > context_budget:
+            raise ValueError(
+                f"Gemini input estimate ({estimate}) exceeds the safe context budget "
+                f"({context_budget}/{input_limit}); trim conversation history or attachments"
+            )
+        reservation = await live_token_budget.reserve(estimate, label=stage)
+        usage_tokens = None
+        usage_detail = None
         try:
             output = []
             async with client.aio.live.connect(model=chosen_model, config=live_config) as session:
@@ -598,6 +437,12 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
                 )
                 async with asyncio.timeout(120):
                     async for message in session.receive():
+                        metadata = getattr(message, "usage_metadata", None)
+                        if metadata is not None:
+                            usage_detail = usage_metrics(metadata)
+                            current_input = usage_tpm_tokens(metadata)
+                            if current_input is not None:
+                                usage_tokens = current_input
                         server_content = getattr(message, "server_content", None)
                         if server_content:
                             transcription = getattr(server_content, "output_transcription", None)
@@ -611,13 +456,31 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
                                         output.append(part.text)
                         if server_content and getattr(server_content, "turn_complete", False):
                             break
+            await live_token_budget.settle(reservation, usage_tokens)
             result = "".join(output).strip()
-            debug_dump({**debug_meta, "event": "response", "text": result})
+            debug_dump({**debug_meta, "event": "response", "text": result,
+                        "estimated_tokens": estimate, "usage_tokens": usage_tokens})
+            usage_detail = usage_detail or {}
+            log.info(
+                "Gemini Live usage: stage=%s model=%s input_tpm=%s estimated_input=%s "
+                "output=%s thinking=%s tool_input=%s cached=%s total=%s "
+                "context_estimate=%s/%s remaining_tpm=%s/%s",
+                stage, chosen_model, usage_tokens if usage_tokens is not None else "unreported",
+                estimate, usage_detail.get("output", "unreported"),
+                usage_detail.get("thinking", "unreported"),
+                usage_detail.get("tool_input", "unreported"),
+                usage_detail.get("cached", "unreported"),
+                usage_detail.get("total", "unreported"), estimate, input_limit,
+                live_token_budget.available_tokens(), live_token_budget.capacity,
+            )
             if not result:
                 raise RuntimeError("Gemini Live completed without a text response")
             return result
         except Exception as exc:
             status = _status(exc)
+            await live_token_budget.settle(
+                reservation, 0 if status == 429 and usage_tokens is None else usage_tokens,
+            )
             debug_dump({**debug_meta, "event": "error", "error": {
                 "name": type(exc).__name__, "status": status, "message": str(exc),
             }})
@@ -635,17 +498,21 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
 
 async def generate_text(stage: str, prompt: str, system_instruction: str,
                         media_parts: list[dict] | None = None, schema: dict | None = None,
-                        temporary_steps: list[dict] | None = None,
                         debug_context: dict | None = None) -> str:
     parts = [{"type": "text", "text": prompt}, *(media_parts or [])]
     return await _create_live_response(
         stage, parts, system_instruction, response_schema=schema,
-        temporary_steps=temporary_steps, debug_context=debug_context,
+        debug_context=debug_context,
     )
 
 
 async def embed(text: str, task: str = "query") -> list[float]:
-    prompt = f"task: search result | query: {text}" if task == "query" else f"title: none | text: {text}"
+    if task == "query":
+        prompt = f"task: search result | query: {text}"
+    elif task == "document":
+        prompt = f"title: none | text: {text}"
+    else:
+        raise ValueError(f"Unsupported embedding task: {task}")
     attempts = len(_keys("embedding2"))
     last_error = None
     for _ in range(attempts):
@@ -669,42 +536,10 @@ async def embed(text: str, task: str = "query") -> list[float]:
     raise RuntimeError("All Gemini Embedding API keys were rate-limited") from last_error
 
 
-async def choose_character_speakers(message: str, user_name: str, characters: list[dict],
-                                    mentioned_ids: list[str] | None = None,
-                                    recent_history: list[dict] | None = None) -> list[str]:
-    mentioned_ids = list(dict.fromkeys(mentioned_ids or []))
-    history_lines = []
-    for row in (recent_history or [])[-12:]:
-        speaker = row.get("user_name") or ("ผู้ใช้" if row.get("role") == "user" else "ตัวละคร")
-        history_lines.append(f"{speaker}: {row.get('text', '')}")
-    prompt = "\n".join([
-        "คุณเป็นผู้กำกับจังหวะบทสนทนาของกลุ่มตัวละครในห้อง Discord",
-        "เลือกตัวละครจากรายชื่อได้ 0-2 ตัว จะเป็นตัวละครเสริมสองตัวพร้อมกันก็ได้ ไม่จำเป็นต้องมี Isla",
-        "หากเลือก Isla ร่วมกับตัวละครอื่น ให้ Isla พูดก่อน; หากไม่มี Isla ให้เรียงตามเหตุผลและจังหวะบทสนทนา",
-        "ตัวละครไม่จำเป็นต้องตอบทุกข้อความ และการเงียบเป็นตัวเลือกปกติ ห้ามเลือกเพียงเพื่อให้มีคนตอบ",
-        "พิจารณาว่าใครสนใจหัวข้อ มีเรื่องจะเสริม มีอารมณ์อยากตอบ หรืออยากโต้ตอบกับตัวละครที่เพิ่งพูด",
-        "ตัวละครที่ถูกเรียกชื่อโดยตรงต้องอยู่ในผลลัพธ์ก่อนตัวละครอื่น และต้องตอบข้อความที่เรียกถึงตน",
-        "ตัวละครที่เลือกจะเห็นประวัติห้องเดียวกัน แต่มีความทรงจำและมุมมองส่วนตัวแยกกัน",
-        "หลีกเลี่ยงการเลือกตัวละครเดิมซ้ำ ๆ หากตัวละครอื่นมีเหตุผลเหมาะสมกว่า",
-        "ส่งกลับเฉพาะ JSON รูปแบบ {\"speakers\":[\"character_id\"]}; หากไม่มีใครควรพูดให้ใช้ array ว่าง",
-        "รายชื่อตัวละคร:",
-        *[f"- id={c['id']}; name={c['name']}; aliases={', '.join(c['aliases'])}" for c in characters],
-        "ตัวละครที่ถูกเรียกโดยตรง (ต้องเลือก): " + (", ".join(mentioned_ids) or "ไม่มี"),
-        "บทสนทนาก่อนหน้า:\n" + ("\n".join(history_lines) if history_lines else "(ยังไม่มี)"),
-        f"ข้อความล่าสุดจาก {user_name}: {message or '(ข้อความมีเฉพาะไฟล์แนบ)'}",
-    ])
-    result = await generate_text("gemini2", prompt, "ตอบเป็น JSON เท่านั้น", schema={
-        "type": "object", "properties": {"speakers": {"type": "array", "items": {"type": "string"}}},
-        "required": ["speakers"],
-    })
-    obj = _extract_object(result) or {}
-    values = obj.get("speakers", [])
-    return [str(x) for x in values if isinstance(x, str)] if isinstance(values, list) else []
 
 
 async def generate_character_reply(prompt: str, context: str,
                                    media_parts: list[dict] | None = None,
-                                   temporary_steps: list[dict] | None = None,
                                    debug_context: dict | None = None) -> dict:
     schema = {"type": "object", "properties": {
         "reply": {"type": "string"}, "summary": {"type": "string"},
@@ -712,13 +547,34 @@ async def generate_character_reply(prompt: str, context: str,
         "character_relationships": {"type": "array", "items": {"type": "object", "properties": {
             "target_character_id": {"type": "string"}, "relationship": {"type": "string"}
         }, "required": ["target_character_id", "relationship"]}},
-    }, "required": ["reply", "summary", "memory", "relationship", "character_relationships"]}
+        "next_speaker_id": {"type": "string", "description": "ID ของตัวละครอื่นที่ควรพูดต่อ หรือสตริงว่างเมื่อบทสนทนาจบ"},
+        "mood": {"type": "string", "description": "อารมณ์ภาษาไทยสั้น ๆ 1-3 คำ"},
+        "color": {"type": "string", "description": "สี HEX 6 หลักที่สื่ออารมณ์ เช่น #F1C40F"},
+        "select_image": {"type": "string", "description": "ชื่อไฟล์รูปแสดงสีหน้าจากรายการที่ให้ไว้ หรือ none"},
+        "rps": {"type": "string", "enum": ["rock", "paper", "scissors"]},
+    }, "required": ["reply", "summary", "memory", "relationship", "character_relationships",
+                   "next_speaker_id", "mood", "color", "select_image"]}
     raw = await generate_text("gemini1", context, prompt, media_parts=media_parts,
-                              schema=schema, temporary_steps=temporary_steps,
-                              debug_context=debug_context)
+                              schema=schema, debug_context=debug_context)
     parsed = _extract_object(raw)
     if not parsed:
-        return {"reply": raw.strip(), "summary": "", "memory": "", "relationship": "", "relationships": []}
+        # Never expose malformed model output (including fenced/raw JSON) as a Discord reply.
+        log.error("Gemini character response was not valid JSON; refusing to publish raw output")
+        raise ValueError("Gemini returned an invalid character response; raw output was not sent")
+    facts = []
+    for item in (parsed.get("add_facts") or parsed.get("facts") or [])[:3]:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "").strip()[:1000]
+            owner = str(item.get("owner_user_id") or item.get("ownerUserId") or "").strip()
+            if text and owner:
+                facts.append({"text": text, "owner_user_id": owner,
+                              "confirmed_by_owner": item.get("confirmed_by_owner", item.get("confirmedByOwner", False)) is True,
+                              "replaces_fact": str(item.get("replaces_fact") or item.get("replacesFact") or "").strip()})
+    raw_nicknames = parsed.get("add_nicknames") or parsed.get("nicknames") or []
+    if isinstance(raw_nicknames, str):
+        raw_nicknames = [raw_nicknames]
+    nicknames = [str(item).strip()[:80] for item in raw_nicknames
+                 if isinstance(item, str) and item.strip()][:8] if isinstance(raw_nicknames, list) else []
     relationships = []
     for item in parsed.get("character_relationships", []) or []:
         if isinstance(item, dict):
@@ -726,33 +582,17 @@ async def generate_character_reply(prompt: str, context: str,
             value = str(item.get("relationship") or "").strip()
             if target and value:
                 relationships.append({"target_character_id": target, "relationship": value})
+    rps = parsed.get("rps")
     return {"reply": str(parsed.get("reply") or "").strip(),
             "summary": str(parsed.get("summary") or "").strip(),
             "memory": str(parsed.get("memory") or "").strip(),
-            "relationship": str(parsed.get("relationship") or "").strip(),
-            "relationships": relationships}
-
-
-def build_isla_prompt(partner: str) -> str:
-    return fill_partner(_read_prompt(config.gemini1_prompt, "Gemini 1"), partner)
-
-
-async def generate_isla_reply(context: str, partner: str, media_parts: list[dict] | None = None,
-                              temporary_steps: list[dict] | None = None,
-                              system_context: str = "",
-                              debug_context: dict | None = None) -> dict:
-    schema = _fill_partner(REPLY_SCHEMA, partner)
-    system = build_isla_prompt(partner) + ("\n\n" + system_context if system_context else "")
-    return parse_reply(await generate_text("gemini1", context, system,
-                                            media_parts=media_parts, schema=schema,
-                                            temporary_steps=temporary_steps,
-                                            debug_context=debug_context))
-
-
-async def analyze_turn(context: str, partner: str, bond: str, xp: int,
-                       flirt_count: int, media_parts: list[dict] | None = None,
-                       user_id: str = "", debug_context: dict | None = None) -> dict:
-    system = state_prompt_values(bond, xp, flirt_count, user_id, partner)
-    return parse_state(await generate_text("gemini2", context, system, media_parts=media_parts,
-                                           schema=_fill_partner(_state_schema(bond), partner),
-                                           debug_context=debug_context), bond)
+            "relationship": str(parsed.get("relationship") or "").strip()[:1200],
+            "relationships": relationships, "facts": facts, "nicknames": nicknames,
+            "next_speaker_id": str(parsed.get("next_speaker_id") or "").strip(),
+            "mood": str(parsed.get("mood") or "").strip()[:60],
+            "color": normalize_color(parsed.get("color")),
+            "image": _normalize_image(
+                str(parsed.get("select_image") or parsed.get("image") or ""),
+                str((debug_context or {}).get("character_id") or "isla"),
+            ),
+            "rps": rps if rps in {"rock", "paper", "scissors"} else None}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +69,12 @@ class Store:
         self.db = sqlite3.connect(self.path, timeout=5, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=5000")
+        self._history_cache: OrderedDict[str, list[dict]] = OrderedDict()
+        self._history_cache_capacity = 48
+        self._history_cache_rows = 500
+        self._history_cache_hits = 0
+        self._history_cache_misses = 0
+        self._history_cache_evictions = 0
         self._initialize()
 
     @contextmanager
@@ -163,9 +170,39 @@ class Store:
             character_id TEXT NOT NULL, target_character_id TEXT NOT NULL, relationship TEXT NOT NULL,
             updated_at TEXT NOT NULL, PRIMARY KEY(character_id,target_character_id),
             CHECK(character_id<>target_character_id))""")
+        # Convert Isla's former numeric bond state into a plain-language relationship
+        # only when no narrative relationship has already been recorded.
+        legacy_descriptions = {
+            "stranger": "เราเพิ่งเริ่มรู้จักกัน ยังอยู่ในช่วงทำความรู้จัก",
+            "acquaintance": "เราเริ่มคุ้นเคยกันในฐานะคนรู้จัก",
+            "friend": "เรามีความเป็นเพื่อนและพูดคุยกันได้อย่างสบายใจ",
+            "close_friend": "เราสนิทและไว้ใจกันมากขึ้น",
+            "crush": "มีความรู้สึกพิเศษและความสนใจเชิงโรแมนติกที่กำลังก่อตัว",
+            "lover": "เราเคยตกลงคบหากันในฐานะคนรัก",
+            "soulmate": "เรามีความผูกพันลึกซึ้งและเคยตกลงเป็นคู่ชีวิต",
+            "enemy": "เราเคยมีความขัดแย้งและความไม่ไว้วางใจกัน",
+            "sibling": "เราเคยตกลงผูกพันกันแบบพี่น้อง",
+            "family": "เราเคยตกลงผูกพันกันแบบครอบครัว",
+        }
+        for row in self.db.execute("SELECT user_id,bond,xp FROM user_profiles").fetchall():
+            if self.db.execute("SELECT 1 FROM character_relationships WHERE character_id='isla' AND user_id=?",
+                               (row["user_id"],)).fetchone():
+                continue
+            bond = row["bond"] if row["bond"] in legacy_descriptions else "stranger"
+            if bond == "stranger" and int(row["xp"] or 0) == 0:
+                continue
+            self.db.execute("INSERT INTO character_relationships(character_id,user_id,relationship,updated_at) VALUES('isla',?,?,?)",
+                            (row["user_id"], legacy_descriptions[bond], utc_now()))
+        self.db.execute("""CREATE TABLE IF NOT EXISTS autonomous_continuations(
+            session_key TEXT PRIMARY KEY, channel_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL)""")
         self.db.execute("""CREATE TABLE IF NOT EXISTS turn_state_applied(
             session_key TEXT NOT NULL, user_id TEXT NOT NULL, event_timestamp TEXT NOT NULL,
             applied_at TEXT NOT NULL, PRIMARY KEY(session_key,user_id,event_timestamp))""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS character_profile_updates(
+            session_key TEXT NOT NULL, user_id TEXT NOT NULL, character_id TEXT NOT NULL,
+            event_timestamp TEXT NOT NULL, applied_at TEXT NOT NULL,
+            PRIMARY KEY(session_key,user_id,character_id,event_timestamp))""")
         for row in self.db.execute("SELECT user_id,facts_json FROM user_profiles").fetchall():
             normalized = _normalize_facts(row["facts_json"])
             serial = json.dumps(normalized, ensure_ascii=False)
@@ -244,6 +281,65 @@ class Store:
         )
         return self.get_profile(user_id)
 
+    def apply_character_profile_updates(self, user_id: str, user_name: str, character_id: str,
+                                        facts: list[dict], nicknames: list[str],
+                                        timestamp: str, session_key: str) -> dict:
+        """Persist user-owned facts/nicknames without touching legacy relationship scores."""
+        with self.transaction(immediate=True):
+            duplicate = self.db.execute("""SELECT 1 FROM character_profile_updates
+                WHERE session_key=? AND user_id=? AND character_id=? AND event_timestamp=?""",
+                (session_key, user_id, character_id, timestamp)).fetchone()
+            current = self.get_profile(user_id) or self.upsert_profile(user_id, user_name=user_name)
+            if duplicate:
+                return {"profile": current, "duplicate": True, "facts_added": 0, "nicknames_added": 0}
+
+            existing = list((current or {}).get("facts", []))
+            by_text = {item["text"].casefold(): item for item in existing}
+            replaced: set[str] = set()
+            fresh: list[dict] = []
+            fresh_keys: set[str] = set()
+            for proposal in facts[:3] if isinstance(facts, list) else []:
+                if not isinstance(proposal, dict):
+                    continue
+                text = str(proposal.get("text") or "").strip()[:1000]
+                owner = str(proposal.get("owner_user_id") or proposal.get("ownerUserId") or "").strip()
+                confirmed = proposal.get("confirmed_by_owner", proposal.get("confirmedByOwner", False)) is True
+                if not text or owner != user_id:
+                    continue
+                replaces = str(proposal.get("replaces_fact") or proposal.get("replacesFact") or "").strip()
+                old = by_text.get((replaces or text).casefold())
+                if old and old["text"].casefold() != text.casefold():
+                    if not confirmed:
+                        continue
+                    replaced.add(old["text"].casefold())
+                elif old:
+                    continue
+                if text.casefold() not in fresh_keys:
+                    fresh_keys.add(text.casefold())
+                    fresh.append({"text": text, "timestamp": timestamp, "status": "confirmed"})
+
+            keep = [item for item in existing if item["text"].casefold() not in replaced]
+            historical = [{**item, "status": "historical"} for item in existing
+                          if item["text"].casefold() in replaced]
+            final_facts = (fresh + keep + historical)[:MAX_FACTS]
+
+            old_names = list((current or {}).get("nickname", []))
+            seen = {name.casefold() for name in old_names}
+            fresh_names = []
+            for nickname in nicknames if isinstance(nicknames, list) else []:
+                value = str(nickname).strip()[:80]
+                if value and value.casefold() not in seen:
+                    seen.add(value.casefold())
+                    fresh_names.append(value)
+            all_names = (fresh_names + old_names)[:MAX_NICKNAMES]
+            profile = self.upsert_profile(user_id, user_name=user_name,
+                                          facts=final_facts, nickname=all_names)
+            self.db.execute("""INSERT INTO character_profile_updates
+                (session_key,user_id,character_id,event_timestamp,applied_at) VALUES(?,?,?,?,?)""",
+                (session_key, user_id, character_id, timestamp, utc_now()))
+        return {"profile": profile, "duplicate": False,
+                "facts_added": len(fresh), "nicknames_added": len(fresh_names)}
+
     def save_message(self, role: str, text: str, timestamp: str, session_key: str,
                      user_id: str | None = None, user_name: str | None = None,
                      file_name: str | None = None, summary: str | None = None,
@@ -252,12 +348,71 @@ class Store:
             (role,user_id,user_name,text,timestamp,file_name,summary,session_key,character_id)
             VALUES(?,?,?,?,?,?,?,?,?)""",
             (role, user_id, user_name, text, timestamp, file_name, summary, session_key, character_id))
+        row = {
+            "id": int(cursor.lastrowid), "role": role, "user_id": user_id,
+            "user_name": user_name, "text": text, "timestamp": timestamp,
+            "file_name": file_name, "summary": summary, "session_key": session_key,
+            "character_id": character_id,
+        }
+        cached = self._history_cache.get(session_key)
+        if cached is not None:
+            cached.append(row)
+            if len(cached) > self._history_cache_rows:
+                del cached[:-self._history_cache_rows]
+            self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
 
     def get_history(self, limit: int, session_key: str) -> list[dict]:
-        rows = self.db.execute("""SELECT id,role,user_id,user_name,text,summary,timestamp,file_name,session_key,character_id
-            FROM messages WHERE session_key=? ORDER BY id DESC LIMIT ?""", (session_key, limit)).fetchall()
-        return [dict(row) for row in reversed(rows)]
+        cached = self._history_cache.get(session_key)
+        if cached is None:
+            self._history_cache_misses += 1
+            rows = self.db.execute("""SELECT id,role,user_id,user_name,text,summary,timestamp,file_name,session_key,character_id
+                FROM messages WHERE session_key=? ORDER BY id DESC LIMIT ?""",
+                (session_key, self._history_cache_rows)).fetchall()
+            cached = [dict(row) for row in reversed(rows)]
+            self._history_cache[session_key] = cached
+            if len(self._history_cache) > self._history_cache_capacity:
+                self._history_cache.popitem(last=False)
+                self._history_cache_evictions += 1
+        else:
+            self._history_cache_hits += 1
+            self._history_cache.move_to_end(session_key)
+        selected = cached[-max(0, int(limit)):] if limit else []
+        return [dict(row) for row in selected]
+
+    def get_history_by_budget(self, session_key: str, token_budget: int,
+                              estimate_tokens, max_messages: int = 500) -> list[dict]:
+        budget = max(0, int(token_budget))
+        if budget <= 0:
+            return []
+        rows = self.get_history(max_messages, session_key)
+        selected = []
+        used = 0
+        for row in reversed(rows):
+            text = " ".join(str(row.get(key) or "") for key in ("text", "summary"))
+            cost = max(1, int(estimate_tokens(text)))
+            if used + cost > budget:
+                break
+            selected.append(row)
+            used += cost
+        selected.reverse()
+        return selected
+
+    def history_cache_stats(self) -> dict:
+        requests = self._history_cache_hits + self._history_cache_misses
+        return {
+            "hits": self._history_cache_hits,
+            "misses": self._history_cache_misses,
+            "evictions": self._history_cache_evictions,
+            "hitRate": round(self._history_cache_hits / requests, 4) if requests else 0.0,
+            "sessions": len(self._history_cache),
+            "sessionCapacity": self._history_cache_capacity,
+            "cachedMessages": sum(len(rows) for rows in self._history_cache.values()),
+            "maxMessagesPerSession": self._history_cache_rows,
+        }
+
+    def _invalidate_history_cache(self) -> None:
+        self._history_cache.clear()
 
     @staticmethod
     def _message_where(filters: dict | None = None) -> tuple[str, list]:
@@ -290,6 +445,7 @@ class Store:
         return [dict(row) for row in rows]
 
     def delete_filtered_messages(self, filters: dict | None = None, limit: int | None = None) -> int:
+        self._invalidate_history_cache()
         where, args = self._message_where(filters)
         if not where:
             raise ValueError("Refusing to delete all messages without an explicit all operation")
@@ -311,6 +467,7 @@ class Store:
 
     def delete_messages(self, user_id: str | None = None, session_key: str | None = None,
                         limit: int | None = None, delete_all: bool = False) -> int:
+        self._invalidate_history_cache()
         where, args = [], []
         if user_id: where.append("user_id=?"); args.append(user_id)
         if session_key: where.append("session_key=?"); args.append(session_key)
@@ -329,6 +486,46 @@ class Store:
     def session_key_for(self, user_id: str, channel_id: str | None) -> str:
         # Every conversation is scoped to its Discord channel, never to a user's opt-in state.
         return group_session_key(channel_id) if channel_id else user_session_key(user_id)
+
+    def save_autonomous_continuation(self, session_key: str, channel_id: str, payload: dict) -> None:
+        # Keep the routing ID in both indexed form and payload so workers can
+        # resume from get_autonomous_continuation() without a second DB lookup.
+        payload = {**payload, "channel_id": str(channel_id)}
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        self.db.execute("""INSERT INTO autonomous_continuations(session_key,channel_id,payload_json,updated_at)
+            VALUES(?,?,?,?) ON CONFLICT(session_key) DO UPDATE SET
+            channel_id=excluded.channel_id,payload_json=excluded.payload_json,updated_at=excluded.updated_at""",
+            (session_key, str(channel_id), encoded, utc_now()))
+
+    def get_autonomous_continuation(self, session_key: str) -> dict | None:
+        row = self.db.execute("SELECT payload_json FROM autonomous_continuations WHERE session_key=?",
+                              (session_key,)).fetchone()
+        if not row:
+            return None
+        try:
+            value = json.loads(row["payload_json"])
+            return value if isinstance(value, dict) else None
+        except (ValueError, TypeError):
+            return None
+
+    def list_autonomous_continuations(self) -> list[tuple[str, str, dict]]:
+        rows = self.db.execute("SELECT session_key,channel_id,payload_json FROM autonomous_continuations").fetchall()
+        result = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (ValueError, TypeError):
+                self.delete_autonomous_continuation(row["session_key"])
+                continue
+            if isinstance(payload, dict):
+                result.append((row["session_key"], row["channel_id"], payload))
+        return result
+
+    def delete_autonomous_continuation(self, session_key: str) -> None:
+        self.db.execute("DELETE FROM autonomous_continuations WHERE session_key=?", (session_key,))
+
+    def autonomous_continuation_count(self) -> int:
+        return int(self.db.execute("SELECT COUNT(*) FROM autonomous_continuations").fetchone()[0])
 
     def get_character_relationship(self, character_id: str, user_id: str) -> str:
         row = self.db.execute("SELECT relationship FROM character_relationships WHERE character_id=? AND user_id=?",

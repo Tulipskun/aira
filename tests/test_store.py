@@ -29,6 +29,27 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([x["text"] for x in self.db.get_history(10, "user:1")], ["private"])
         self.assertEqual([x["text"] for x in self.db.get_history(10, "group:9")], ["group"])
 
+    def test_history_cache_tracks_appends_and_budget_slices_recent_turns(self):
+        timestamp = utc_now()
+        self.db.save_message("user", "first", timestamp, "group:cache", "1", "Alice")
+        self.assertEqual([row["text"] for row in self.db.get_history(20, "group:cache")], ["first"])
+        self.db.save_message("model", "second", timestamp, "group:cache", None, "Nova", None, None, "nova")
+        self.db.save_message("user", "third", timestamp, "group:cache", "1", "Alice")
+        rows = self.db.get_history(20, "group:cache")
+        self.assertEqual([row["text"] for row in rows], ["first", "second", "third"])
+        budgeted = self.db.get_history_by_budget(
+            "group:cache", 6, lambda text: len(text), max_messages=20,
+        )
+        self.assertEqual([row["text"] for row in budgeted], ["third"])
+
+    def test_history_cache_is_invalidated_after_deletion(self):
+        timestamp = utc_now()
+        self.db.save_message("user", "keep", timestamp, "group:cache", "1", "Alice")
+        self.db.get_history(10, "group:cache")
+        self.db.save_message("user", "remove", timestamp, "group:cache", "1", "Alice")
+        self.assertEqual(self.db.delete_messages(session_key="group:cache", limit=1), 1)
+        self.assertEqual([row["text"] for row in self.db.get_history(10, "group:cache")], ["keep"])
+
     def test_character_messages_and_directed_character_relationships_are_persisted(self):
         timestamp = utc_now()
         self.db.save_message(
@@ -48,6 +69,37 @@ class StoreTests(unittest.TestCase):
                          {"isla": "Nova thinks Isla is kind"})
         self.db.save_character_pair_relationship("nova", "nova", "invalid")
         self.assertEqual(self.db.get_character_pair_relationship("nova", "nova"), "")
+
+
+    def test_autonomous_continuations_are_persisted_updated_and_deleted(self):
+        payload = {"created_at": 1000, "previous": {"character_id": "isla", "next_speaker_id": "rem"}}
+        self.db.save_autonomous_continuation("group:9", "9", payload)
+        self.assertEqual(self.db.autonomous_continuation_count(), 1)
+        payload = {**payload, "channel_id": "9"}
+        self.assertEqual(self.db.get_autonomous_continuation("group:9"), payload)
+        updated = {**payload, "previous": {"character_id": "rem", "next_speaker_id": "bocchi"}}
+        self.db.save_autonomous_continuation("group:9", "9", updated)
+        self.assertEqual(self.db.get_autonomous_continuation("group:9"), updated)
+        self.assertEqual(len(self.db.list_autonomous_continuations()), 1)
+        self.db.delete_autonomous_continuation("group:9")
+        self.assertEqual(self.db.autonomous_continuation_count(), 0)
+
+
+    def test_character_profile_updates_are_idempotent_and_owner_scoped(self):
+        timestamp = utc_now()
+        facts = [{"text": "Alice ชอบชา", "owner_user_id": "1", "confirmed_by_owner": True},
+                 {"text": "Bob ชอบกาแฟ", "owner_user_id": "2", "confirmed_by_owner": True}]
+        first = self.db.apply_character_profile_updates(
+            "1", "Alice", "isla", facts, ["คนรักชา"], timestamp, "group:9")
+        second = self.db.apply_character_profile_updates(
+            "1", "Alice", "isla", facts, ["คนรักชา"], timestamp, "group:9")
+        profile = self.db.get_profile("1")
+        self.assertEqual(first["facts_added"], 1)
+        self.assertTrue(second["duplicate"])
+        self.assertEqual([item["text"] for item in profile["facts"]], ["Alice ชอบชา"])
+        self.assertEqual(profile["nickname"], ["คนรักชา"])
+        self.assertEqual(profile["xp"], 0)
+        self.assertEqual(profile["bond"], "stranger")
 
     def test_state_update_is_idempotent_and_owner_scoped(self):
         timestamp = utc_now()
@@ -88,6 +140,8 @@ class StoreTests(unittest.TestCase):
         self.db = Store(legacy_path)
         self.assertEqual(self.db.get_profile("42")["bond"], "friend")
         self.assertEqual(self.db.get_profile("42")["xp"], 150)
+        self.assertEqual(self.db.get_character_relationship("isla", "42"),
+                         "เรามีความเป็นเพื่อนและพูดคุยกันได้อย่างสบายใจ")
         self.assertEqual([x["session_key"] for x in self.db.get_history(10, "user:42")],
                          ["user:42", "user:42"])
         tables = {row[0] for row in self.db.db.execute(
@@ -115,6 +169,16 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([f["text"] for f in self.db.get_profile("1")["facts"]], ["Alice likes tea"])
 
 
+
+    def test_history_cache_reports_miss_then_hit(self):
+        self.db.save_message("user", "cache telemetry", utc_now(), "group:telemetry", "1", "Alice")
+        self.db.get_history(10, "group:telemetry")
+        self.db.get_history(10, "group:telemetry")
+        stats = self.db.history_cache_stats()
+        self.assertEqual(stats["misses"], 1)
+        self.assertEqual(stats["hits"], 1)
+        self.assertEqual(stats["hitRate"], 0.5)
+        self.assertEqual(stats["sessions"], 1)
 
 if __name__ == "__main__":
     unittest.main()

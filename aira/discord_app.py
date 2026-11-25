@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import json
 import logging
 import mimetypes
 import time
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -16,17 +19,17 @@ from .characters import load_characters, save_character
 from .config import ROOT, config, load_settings, save_settings
 from .media import prepare_attachments
 from .liveness import Liveness
-from .pipeline import process_character_reply, process_message, select_characters, shutdown_pipeline
-from .relationships import bond_emoji, bond_label
+from .pipeline import process_character_reply, select_characters, shutdown_pipeline
 from .scheduler import MessageScheduler
 from .store import store, utc_now
-from .thought_signatures import close_thought_signatures
+from .token_budget import live_token_budget
 
 log = logging.getLogger("aira.discord")
 DISCORD_CONFIG = ROOT / ".aira" / "discord-config.json"
 RPS_CHOICES = {"rock": ("ค้อน", "✊🏻"), "paper": ("กระดาษ", "🖐🏻"), "scissors": ("กรรไกร", "✌🏻")}
 RPS_GAMES: dict[str, dict] = {}
 CHARACTER_WEBHOOKS: dict[tuple[int, str], discord.Webhook] = {}
+CHARACTER_WEBHOOK_AVATARS: set[tuple[int, str]] = set()
 
 
 def _load_discord_config() -> dict:
@@ -57,30 +60,9 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:max(0, limit - 1)] + "…"
 
 
-def build_footer(status: dict | None, mood: str | None, private: bool) -> str:
-    status = status or {}
-    name = _clip(str(status.get("user_name") or "Isla"), 12)
-    bond = status.get("bond")
-    parts = [name]
-    if bond in {"stranger", "acquaintance", "friend", "close_friend", "crush", "lover", "soulmate", "enemy", "sibling", "family"}:
-        parts.extend([f"({bond_label(bond)})", f"({bond_emoji(bond)})" if private else bond_emoji(bond)])
-    if isinstance(status.get("xp"), int):
-        parts.append(str(status["xp"]))
-    delta = status.get("xp_delta")
-    if isinstance(delta, int) and delta:
-        parts.append(f"[{delta:+d}]")
-    if status.get("flirt_delta"):
-        parts.append(f"[Flirt +{status['flirt_delta']}]")
-    if status.get("bond_unlocked"):
-        parts.append(f"[{bond_label(bond)} Unlocked]")
-    for nickname in (status.get("nickname") or [])[:3]:
-        cleaned = _clip(str(nickname).replace("#", "").strip(), 24)
-        if cleaned:
-            parts.append("#" + cleaned)
-    footer = " ".join(filter(None, parts))
-    if mood:
-        footer += "\nอารมณ์: " + _clip(str(mood), 60)
-    return footer or "Isla"
+def build_footer(mood: str | None) -> str:
+    mood = _clip(str(mood or ""), 60)
+    return "อารมณ์: " + mood if mood else ""
 
 
 def _rps_outcome(isla: str, user: str, user_name: str) -> str:
@@ -279,10 +261,11 @@ class AiraBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         self.owner_id = int(config.owner_id) if config.owner_id.isdigit() else None
-        self.scheduler = MessageScheduler(self._flush, debounce_ms=5000, max_wait_ms=12000)
+        self.scheduler = MessageScheduler(self._flush, debounce_ms=320, max_wait_ms=1500)
         self.tree.add_command(app_commands.Command(name="aira", description="เปิดแผงควบคุมผู้ดูแล Aira", callback=self.open_admin_panel))
         self.in_flight = 0
-        self.typing_tasks: dict[str, asyncio.Task] = {}
+        self.autonomous_history: dict[str, deque[float]] = {}
+        self.autonomous_tasks: dict[str, asyncio.Task] = {}
         self.started_at = time.time()
         self.health_server = None
         self._closed = False
@@ -345,13 +328,21 @@ class AiraBot(commands.Bot):
         if self.health_server is None:
             self.health_server = await self.start_health_server()
         self.liveness.start()
+        for session_key, _channel_id, _payload in store.list_autonomous_continuations():
+            self._schedule_autonomous_continuation(session_key)
 
     async def start_health_server(self):
         from aiohttp import web
 
         async def health(_request):
             state = self.liveness.state()
-            state.update({"pending": self.scheduler.pending_count(), "inFlight": self.in_flight})
+            state.update({
+                "pending": self.scheduler.pending_count(),
+                "inFlight": self.in_flight,
+                "autonomousContinuations": store.autonomous_continuation_count(),
+                "historyCache": store.history_cache_stats(),
+                "geminiTPM": live_token_budget.snapshot(),
+            })
             return web.json_response(state)
         app = web.Application()
         app.router.add_get("/health", health)
@@ -403,27 +394,12 @@ class AiraBot(commands.Bot):
             "channel_id": str(message.channel.id), "message_id": str(message.id),
             "session_key": session_key,
         }
+        self._cancel_autonomous_continuation(session_key)
         self.scheduler.interrupt_other_sessions(session_key)
         self.scheduler.push(scheduled)
         self.liveness.note("queued")
-        self._start_typing(str(message.channel.id))
-
-    def _start_typing(self, channel_id: str):
-        task = self.typing_tasks.get(channel_id)
-        if task and not task.done():
-            return
-        async def loop():
-            while self.scheduler.has_pending() or self.in_flight:
-                channel = self.get_channel(int(channel_id))
-                if channel and hasattr(channel, "typing"):
-                    try:
-                        async with channel.typing():
-                            await asyncio.sleep(7)
-                    except (discord.HTTPException, asyncio.CancelledError):
-                        if asyncio.current_task() and asyncio.current_task().cancelled():
-                            return
-                await asyncio.sleep(0.5)
-        self.typing_tasks[channel_id] = asyncio.create_task(loop())
+        log.info("Message received and queued: message=%s channel=%s user=%s chars=%s attachments=%s",
+                 message.id, message.channel.id, message.author.id, len(text), len(attachments))
 
     async def _character_webhook(self, channel, character):
         parent = channel.parent if isinstance(channel, discord.Thread) else channel
@@ -444,6 +420,27 @@ class AiraBot(commands.Bot):
                         and item.user.id == self.user.id), None)
         if webhook is None:
             webhook = await parent.create_webhook(name=hook_name, reason="Separate Aira character identities")
+        if character.avatar_url and cache_key not in CHARACTER_WEBHOOK_AVATARS:
+            try:
+                timeout = aiohttp.ClientTimeout(total=12, connect=5)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(character.avatar_url, allow_redirects=True) as response:
+                        response.raise_for_status()
+                        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                        if not content_type.startswith("image/"):
+                            raise ValueError(f"Character avatar URL returned non-image content: {content_type}")
+                        avatar_bytes = await response.content.read(8 * 1024 * 1024 + 1)
+                        if not avatar_bytes or len(avatar_bytes) > 8 * 1024 * 1024:
+                            raise ValueError("Character avatar image is empty or exceeds 8 MiB")
+                updated = await webhook.edit(avatar=avatar_bytes, reason=f"Set {character.id} character avatar")
+                if updated is not None:
+                    webhook = updated
+                CHARACTER_WEBHOOK_AVATARS.add(cache_key)
+                log.info("Character webhook avatar updated: channel=%s character=%s bytes=%s",
+                         parent.id, character.id, len(avatar_bytes))
+            except Exception:
+                log.exception("Could not set webhook avatar from configured URL: channel=%s character=%s",
+                              parent.id, character.id)
         CHARACTER_WEBHOOKS[cache_key] = webhook
         return webhook
 
@@ -453,7 +450,220 @@ class AiraBot(commands.Bot):
         channel = self.get_channel(int(messages[-1]["channel_id"]))
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             return
+        await self._process_batch(messages)
+
+    def _autonomous_wait_seconds(self, channel_id: str) -> float:
+        now = time.monotonic()
+        history = self.autonomous_history.setdefault(channel_id, deque())
+        while history and history[0] <= now - 300:
+            history.popleft()
+        if len(history) < 4:
+            return 0.0
+        return max(0.05, history[0] + 300 - now)
+
+    def _record_autonomous_turn(self, channel_id: str) -> None:
+        self.autonomous_history.setdefault(channel_id, deque()).append(time.monotonic())
+
+    def _cancel_autonomous_continuation(self, session_key: str) -> None:
+        store.delete_autonomous_continuation(session_key)
+        task = self.autonomous_tasks.pop(session_key, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _schedule_autonomous_continuation(self, session_key: str) -> None:
+        current = self.autonomous_tasks.get(session_key)
+        if current and not current.done():
+            return
+        self.autonomous_tasks[session_key] = asyncio.create_task(
+            self._run_autonomous_continuation(session_key),
+            name=f"aira-autonomous-{session_key}",
+        )
+
+    @staticmethod
+    def _continuation_output(state: dict) -> dict:
+        from .characters import load_characters
+        character_id = str(state.get("character_id") or "")
+        character = next((item for item in load_characters() if item.id == character_id), None)
+        if character is None:
+            raise RuntimeError(f"Unknown character in autonomous continuation: {character_id}")
+        return {"character": character, "text": str(state.get("text") or ""),
+                "mood": str(state.get("mood") or ""), "color": state.get("color"),
+                "image": str(state.get("image") or ""), "rps": state.get("rps"),
+                "character_turn": bool(state.get("character_turn", True)),
+                "next_speaker_id": str(state.get("next_speaker_id") or "")}
+
+    async def _run_autonomous_continuation(self, session_key: str) -> None:
+        try:
+            while True:
+                state = store.get_autonomous_continuation(session_key)
+                if not state:
+                    return
+                if self.scheduler.has_pending_session(session_key):
+                    log.info("Autonomous exchange interrupted by a new user message: session=%s", session_key)
+                    store.delete_autonomous_continuation(session_key)
+                    return
+                if time.time() - float(state.get("created_at", time.time())) > 86400:
+                    log.info("Discarding stale autonomous continuation: session=%s", session_key)
+                    store.delete_autonomous_continuation(session_key)
+                    return
+                channel_id = str(state.get("channel_id") or "")
+                channel = self.get_channel(int(channel_id)) if channel_id.isdigit() else None
+                if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                    try:
+                        channel = await self.fetch_channel(int(channel_id))
+                    except (discord.HTTPException, ValueError, TypeError):
+                        log.exception("Could not restore channel for autonomous continuation: %s; retrying", channel_id)
+                        await asyncio.sleep(30.0)
+                        continue
+                last = state["last"]
+                batch_id = str(state.get("batch_id") or "autonomous")
+
+                # A generated response is persisted before sending. If Discord briefly fails,
+                # retry the same response instead of asking the model to generate it again.
+                pending_send = state.get("pending_send")
+                if pending_send:
+                    try:
+                        await self._send_character_output(
+                            channel, self._continuation_output(pending_send), last, batch_id, False,
+                        )
+                    except Exception:
+                        log.exception("Could not send a persisted autonomous character reply; retrying")
+                        await asyncio.sleep(10.0)
+                        continue
+                    state["pending_send"] = None
+                    store.save_autonomous_continuation(session_key, channel_id, state)
+                    continue
+
+                previous = state.get("previous") or {}
+                previous_id = str(previous.get("character_id") or "")
+                next_id = str(previous.get("next_speaker_id") or "").strip()
+                characters = load_characters()
+                next_character = next((item for item in characters
+                                        if item.id == next_id and item.id != previous_id), None)
+                if next_character is None:
+                    log.info("Autonomous exchange ended naturally: session=%s previous=%s next=%s",
+                             session_key, previous_id, next_id or "(none)")
+                    store.delete_autonomous_continuation(session_key)
+                    return
+
+                wait_seconds = self._autonomous_wait_seconds(channel_id)
+                if wait_seconds > 0:
+                    log.info("Autonomous exchange paused by channel turn guard: session=%s wait=%.1fs",
+                             session_key, wait_seconds)
+                    await asyncio.sleep(min(wait_seconds, 10.0))
+                    continue
+                if live_token_budget.available_tokens() <= 4096:
+                    log.info("Autonomous exchange paused for TPM capacity: session=%s", session_key)
+                    await asyncio.sleep(5.0)
+                    continue
+
+                turn_message = {
+                    **state["incoming"],
+                    "text": str(previous.get("text") or ""),
+                    "timestamp": utc_now(),
+                    "trigger_character": str(previous.get("character_name") or previous_id),
+                    "trigger_character_id": previous_id,
+                    "character_turn": True,
+                }
+                self._record_autonomous_turn(channel_id)
+                log.info("Autonomous character turn: channel=%s speaker=%s replying_to=%s",
+                         channel_id, next_character.id, previous_id)
+                try:
+                    response = await process_character_reply(
+                        turn_message, next_character, prepared_media=None, input_saved=True,
+                    )
+                except Exception:
+                    log.exception("Autonomous generation failed for %s; preserving continuation and retrying",
+                                  next_character.id)
+                    await asyncio.sleep(15.0)
+                    continue
+                if not response.get("text"):
+                    log.info("Autonomous character chose silence: speaker=%s", next_character.id)
+                    store.delete_autonomous_continuation(session_key)
+                    return
+                response["character_turn"] = True
+                saved_output = {
+                    "character_id": next_character.id, "text": response["text"],
+                    "mood": response.get("mood", ""), "color": response.get("color"),
+                    "image": response.get("image", ""), "rps": response.get("rps"),
+                    "character_turn": True,
+                    "next_speaker_id": response.get("next_speaker_id", ""),
+                }
+                state["previous"] = {
+                    **saved_output, "character_name": next_character.name,
+                }
+                state["pending_send"] = saved_output
+                store.save_autonomous_continuation(session_key, channel_id, state)
+                # The next loop iteration sends the persisted output, then follows its next_speaker_id.
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Autonomous continuation worker failed: session=%s; retrying", session_key)
+            if not self._closed:
+                await asyncio.sleep(15.0)
+                self.autonomous_tasks.pop(session_key, None)
+                self._schedule_autonomous_continuation(session_key)
+        finally:
+            current = self.autonomous_tasks.get(session_key)
+            if current is asyncio.current_task():
+                self.autonomous_tasks.pop(session_key, None)
+
+    async def _send_character_output(self, channel, output: dict, last: dict, batch_id: str,
+                                     private: bool = False):
+        character = output["character"]
+        files = []
+        view = None
+        embed = discord.Embed(description=output["text"])
+        embed.color = (discord.Color(output["color"])
+                       if output.get("color") is not None else discord.Color.default())
+        embed.timestamp = discord.utils.utcnow()
+        footer = build_footer(output.get("mood"))
+        if footer:
+            embed.set_footer(text=footer)
+        if output.get("image"):
+            image_directory = config.images_dir / character.id
+            path = image_directory / Path(output["image"]).name
+            if path.is_file():
+                files.append(discord.File(path, filename=path.name))
+                embed.set_image(url=f"attachment://{path.name}")
+        if character.id == "isla" and not output.get("character_turn") and output.get("rps") in RPS_CHOICES:
+            game_id = str(uuid.uuid4())
+            RPS_GAMES[game_id] = {
+                "user_id": int(last["user_id"]), "user_name": last["user"],
+                "isla_choice": output["rps"], "session_key": last["session_key"],
+                "channel_id": last["channel_id"], "message_id": last["message_id"],
+            }
+            view = RpsView(self, game_id)
+
+        webhook = await self._character_webhook(channel, character)
+        send_kwargs = {"username": character.name, "wait": True, "embed": embed}
+        if character.avatar_url:
+            send_kwargs["avatar_url"] = character.avatar_url
+        if isinstance(channel, discord.Thread):
+            send_kwargs["thread"] = channel
+        if files:
+            send_kwargs["files"] = files
+        if view is not None:
+            send_kwargs["view"] = view
+        sent = await webhook.send(**send_kwargs)
+        if sent is None:
+            raise RuntimeError(f"Discord did not return the sent message for {character.id}")
+        returned_avatar = getattr(getattr(sent, "author", None), "avatar", None)
+        log.info("Discord webhook send succeeded: message=%s channel=%s character=%s sent_message=%s avatar_configured=%s avatar_applied=%s webhook=%s",
+                 batch_id, last["channel_id"], character.id, sent.id,
+                 bool(character.avatar_url), bool(returned_avatar), getattr(webhook, "id", None))
+        return sent
+
+    async def _process_batch(self, messages: list[dict]):
+        if not messages or messages[0]["channel_id"] != get_response_channel_id():
+            return
+        channel = self.get_channel(int(messages[-1]["channel_id"]))
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return
         self.in_flight += 1
+        batch_id = messages[-1].get("message_id", "unknown")
+        log.info("Processing batch: last_message=%s channel=%s messages=%s",
+                 batch_id, messages[-1].get("channel_id"), len(messages))
         try:
             speakers = []
             for message in messages:
@@ -477,80 +687,72 @@ class AiraBot(commands.Bot):
                 incoming["session_key"], incoming["user_id"], incoming["user"],
                 incoming["file_name"], None,
             )
-            selected = await select_characters(incoming)
+            selected = await select_characters(incoming, prepared)
+            log.info("Character selection complete: message=%s selected=%s",
+                     batch_id, [character.id for character in selected])
             if not selected:
-                log.debug("No character chose to speak in channel %s", last["channel_id"])
+                log.info("No character chose to speak: message=%s channel=%s", batch_id, last["channel_id"])
                 return
 
             outputs = []
             failed = []
             for character in selected:
                 try:
-                    if character.id == "isla":
-                        response = await process_message(incoming, prepared, input_saved=True)
-                        if response["text"]:
-                            outputs.append({"character": character, **response})
+                    log.info("Generating character reply: message=%s character=%s", batch_id, character.id)
+                    response = await process_character_reply(
+                        incoming, character, prepared, input_saved=True,
+                    )
+                    if response["text"]:
+                        outputs.append(response)
+                        log.info("Character reply generated: message=%s character=%s chars=%s",
+                                 batch_id, character.id, len(response["text"]))
                     else:
-                        response = await process_character_reply(
-                            incoming, character, prepared, input_saved=True,
-                        )
-                        if response["text"]:
-                            outputs.append(response)
+                        log.info("Character chose silence: message=%s character=%s", batch_id, character.id)
                 except Exception:
                     failed.append(character.name)
                     log.exception("Character %s failed for %s", character.id, last["user_id"])
 
-            sent = None
             for output in outputs:
-                character = output["character"]
-                if character.id == "isla":
-                    result = output
-                    embed = discord.Embed(description=result["text"])
-                    embed.color = (discord.Color(result["color"])
-                                   if result.get("color") is not None else discord.Color.default())
-                    embed.timestamp = discord.utils.utcnow()
-                    embed.set_footer(text=build_footer(
-                        result.get("status"), result.get("mood"),
-                        messages[0]["session_key"].startswith("user:"),
-                    ))
-                    files = []
-                    if result.get("image"):
-                        path = config.images_dir / result["image"]
-                        if path.is_file():
-                            files.append(discord.File(path, filename=path.name))
-                            embed.set_image(url=f"attachment://{path.name}")
-                    view = None
-                    if result.get("rps") in RPS_CHOICES:
-                        game_id = str(uuid.uuid4())
-                        RPS_GAMES[game_id] = {
-                            "user_id": int(last["user_id"]), "user_name": last["user"],
-                            "isla_choice": result["rps"], "session_key": incoming["session_key"],
-                            "channel_id": last["channel_id"], "message_id": last["message_id"],
-                        }
-                        view = RpsView(self, game_id)
-                else:
-                    embed = discord.Embed(description=output["text"])
-                    embed.timestamp = discord.utils.utcnow()
-                webhook = await self._character_webhook(channel, character)
-                send_kwargs = {
-                    "username": character.name,
-                    "wait": True,
-                }
-                if character.avatar_url:
-                    send_kwargs["avatar_url"] = character.avatar_url
-                if isinstance(channel, discord.Thread):
-                    send_kwargs["thread"] = channel
-                send_kwargs["embed"] = embed
-                if character.id == "isla":
-                    send_kwargs["files"] = files
-                    if view is not None:
-                        send_kwargs["view"] = view
-                sent = await webhook.send(**send_kwargs)
-                if sent is None:
-                    raise RuntimeError(f"Discord did not return the sent message for {character.id}")
+                await self._send_character_output(
+                    channel, output, last, batch_id,
+                    messages[0]["session_key"].startswith("user:"),
+                )
+
+            # Persist the chosen next speaker and let a resumable worker continue it.
+            # Pauses for TPM / channel pacing no longer discard an unfinished conversation.
+            if outputs:
+                previous = outputs[-1]
+                if previous.get("next_speaker_id"):
+                    payload = {
+                        "created_at": time.time(), "batch_id": batch_id,
+                        "incoming": {
+                            "user_id": incoming["user_id"], "user": incoming["user"],
+                            "text": incoming["text"], "timestamp": incoming["timestamp"],
+                            "session_key": incoming["session_key"],
+                            "speakers": incoming.get("speakers", []),
+                        },
+                        "last": {
+                            "user_id": last["user_id"], "user": last["user"],
+                            "channel_id": str(last["channel_id"]),
+                            "message_id": str(last["message_id"]),
+                            "session_key": last["session_key"],
+                        },
+                        "previous": {
+                            "character_id": previous["character"].id,
+                            "character_name": previous["character"].name,
+                            "text": previous["text"],
+                            "next_speaker_id": previous["next_speaker_id"],
+                        },
+                        "pending_send": None,
+                    }
+                    store.save_autonomous_continuation(incoming["session_key"], str(last["channel_id"]), payload)
+                    self._schedule_autonomous_continuation(incoming["session_key"])
 
             if failed and not outputs and len(failed) == len(selected):
                 raise RuntimeError("All selected characters failed: " + ", ".join(failed))
+            if not outputs:
+                log.info("Batch finished without a reply: message=%s selected=%s failed=%s",
+                         batch_id, len(selected), len(failed))
         except Exception as exc:
             log.exception("Message pipeline failed")
             try:
@@ -568,14 +770,17 @@ class AiraBot(commands.Bot):
             return
         self._closed = True
         await self.scheduler.close()
+        tasks = list(self.autonomous_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.autonomous_tasks.clear()
         await shutdown_pipeline()
         await self.liveness.close()
         if self.health_server:
             await self.health_server.cleanup()
-        for task in self.typing_tasks.values():
-            task.cancel()
         RPS_GAMES.clear()
-        await close_thought_signatures()
         store.close()
         await super().close()
 

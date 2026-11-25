@@ -91,6 +91,14 @@ class MemoryTests(unittest.TestCase):
         rows=memory.search_memories_by_vector([1,0,0],"user:1",5,0.5)
         self.assertEqual([row["text"] for row in rows],["Alice likes tea"])
 
+    def test_group_character_memories_are_filtered_by_discord_user_id(self):
+        memory.save_memory_vector("Alice private fact", [1, 0, 0], "alice", "2026-11-25T00:00:00Z", "group:9:character:isla")
+        memory.save_memory_vector("Bob private fact", [0.99, 0.01, 0], "bob", "2026-11-25T00:00:00Z", "group:9:character:isla")
+        alice = memory.search_memories_by_vector([1, 0, 0], "group:9:character:isla", 5, 0.0, user_id="alice")
+        bob = memory.search_memories_by_vector([1, 0, 0], "group:9:character:isla", 5, 0.0, user_id="bob")
+        self.assertEqual([row["text"] for row in alice], ["Alice private fact"])
+        self.assertEqual([row["text"] for row in bob], ["Bob private fact"])
+
     def test_legacy_room_memory_moves_to_isla_without_moving_other_characters(self):
         memory.save_memory_vector("Isla memory", [1, 0, 0], "1", "2026-11-25T00:00:00Z", "group:9")
         memory.save_memory_vector("Nova memory", [0, 1, 0], "1", "2026-11-25T00:00:00Z",
@@ -106,6 +114,28 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(memory.count_memories({"session_key": "group:9:character:nova"}), 1)
         self.assertEqual(memory.migrate_character_memory_sessions(),
                          {"semantic_memories": 0, "episodic_memories": 0})
+
+    def test_episodic_recall_is_limited_to_participating_discord_user(self):
+        base = {"text": "shared room episode", "date": "2026-11-25", "period": "night",
+                "start_time": "2026-11-25T00:00:00Z", "end_time": "2026-11-25T00:01:00Z",
+                "created_at": "2026-11-25T00:01:00Z"}
+        memory.save_episode_vector({"id": "alice-episode", "session_key": "group:9:character:isla",
+                                    "participants": ["alice"], **base}, [1, 0, 0])
+        memory.save_episode_vector({"id": "bob-episode", "session_key": "group:9:character:isla",
+                                    "participants": ["bob"], **base}, [0.99, 0.01, 0])
+        alice = asyncio.run(memory.recall_episodes([1, 0, 0], "group:9:character:isla", "", user_id="alice"))
+        bob = asyncio.run(memory.recall_episodes([1, 0, 0], "group:9:character:isla", "", user_id="bob"))
+        self.assertEqual([item["id"] for item in alice], ["alice-episode"])
+        self.assertEqual([item["id"] for item in bob], ["bob-episode"])
+
+    def test_episode_participants_include_users_who_spoke_before_character_summary(self):
+        memory.store.save_message("user", "Alice asks", "2026-11-25T00:59:00Z", "group:9", "alice", "Alice")
+        memory.store.save_message("model", "Isla reply", "2026-11-25T01:00:00Z", "group:9",
+                                  None, "Isla", None, "Isla answered Alice", "isla")
+        episode = asyncio.run(memory.build_recent_episode(
+            "group:9:character:isla", "group:9", "isla",
+        ))
+        self.assertEqual(episode["participants"], ["alice"])
 
     def test_episode_history_is_filtered_to_the_character_who_created_it(self):
         memory.store.save_message("model", "Isla text", "2026-11-25T01:00:00Z", "group:9",

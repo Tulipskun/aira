@@ -1,11 +1,14 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import discord
 
 from aira.discord_app import AiraBot, PanelView, build_footer, _rps_outcome
+from aira.characters import Character
 
 
 class ChannelSelectInteractionTests(unittest.IsolatedAsyncioTestCase):
@@ -99,12 +102,113 @@ class DiscordTests(unittest.TestCase):
         finally:
             asyncio.run(bot.close())
 
-    def test_private_and_group_footer(self):
-        private = build_footer({"user_name": "Alice", "bond": "friend", "xp": 150}, "ดีใจ", True)
-        group = build_footer({"user_name": "Alice", "bond": "friend", "xp": 150}, None, False)
-        self.assertIn("Alice", private)
-        self.assertIn("ดีใจ", private)
-        self.assertIn("Alice", group)
+    def test_footer_shows_emotion_only_without_relationship_scores(self):
+        footer = build_footer("ดีใจ")
+        self.assertIn("ดีใจ", footer)
+        self.assertNotIn("xp", footer.lower())
+        self.assertNotIn("friend", footer.lower())
+        self.assertEqual(build_footer(""), "")
+
+
+    def test_every_character_embed_keeps_mood_color_and_expression_image(self):
+        async def run_test():
+            with tempfile.TemporaryDirectory() as directory:
+                image_dir = Path(directory) / "rem"
+                image_dir.mkdir()
+                image_path = image_dir / "smile.png"
+                image_path.write_bytes(b"image")
+                character = Character("rem", "Rem", ("Rem",), Path("rem.md"), avatar_url="https://example.com/rem.png")
+                webhook = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=456)))
+                channel = SimpleNamespace()
+                last = {"user_id": "1", "user": "Alice", "channel_id": "9",
+                        "message_id": "10", "session_key": "group:9"}
+                bot = AiraBot()
+                try:
+                    with patch("aira.discord_app.config.images_dir", Path(directory)), \
+                         patch.object(bot, "_character_webhook", new=AsyncMock(return_value=webhook)):
+                        await bot._send_character_output(channel, {
+                            "character": character, "text": "สวัสดี", "mood": "ดีใจ",
+                            "color": 0x12ABEF, "image": "smile.png", "character_turn": False,
+                        }, last, "batch")
+                    kwargs = webhook.send.await_args.kwargs
+                    embed = kwargs["embed"]
+                    self.assertEqual(embed.colour.value, 0x12ABEF)
+                    self.assertIn("ดีใจ", embed.footer.text)
+                    self.assertIn("attachment://smile.png", embed.image.url)
+                    self.assertEqual(kwargs["files"][0].filename, "smile.png")
+                    self.assertEqual(kwargs["avatar_url"], "https://example.com/rem.png")
+                    self.assertNotIn("xp", embed.footer.text.lower())
+                    for file in kwargs.get("files", []):
+                        file.close()
+                finally:
+                    await bot.close()
+        asyncio.run(run_test())
+
+    def test_autonomous_channel_guard_returns_wait_instead_of_dropping_conversation(self):
+        bot = AiraBot()
+        try:
+            from collections import deque
+            bot.autonomous_history["9"] = deque([100.0, 101.0, 102.0, 103.0])
+            with patch("aira.discord_app.time.monotonic", return_value=104.0):
+                self.assertAlmostEqual(bot._autonomous_wait_seconds("9"), 296.0)
+            with patch("aira.discord_app.time.monotonic", return_value=405.0):
+                self.assertEqual(bot._autonomous_wait_seconds("9"), 0.0)
+        finally:
+            asyncio.run(bot.close())
+
+
+    def test_autonomous_worker_resumes_the_next_speaker_and_finishes_naturally(self):
+        async def run_test():
+            import time
+            import aira.discord_app as app
+            from aira.characters import load_characters
+            from aira.store import Store
+            with tempfile.TemporaryDirectory() as directory:
+                test_store = Store(Path(directory) / "continuation.db")
+                bot = AiraBot()
+                chars = load_characters()
+                rem = next(item for item in chars if item.id == "rem")
+                payload = {
+                    "created_at": time.time(), "batch_id": "batch-1",
+                    "incoming": {"user_id": "1", "user": "Alice", "text": "คุยกัน",
+                                 "timestamp": "2026-01-01T00:00:00Z", "session_key": "group:9",
+                                 "speakers": [{"user_id": "1", "user": "Alice"}]},
+                    "last": {"user_id": "1", "user": "Alice", "channel_id": "9",
+                             "message_id": "10", "session_key": "group:9"},
+                    "previous": {"character_id": "isla", "character_name": "Isla",
+                                 "text": "Isla ตอบก่อนหน้า", "next_speaker_id": "rem"},
+                    "pending_send": None,
+                }
+                test_store.save_autonomous_continuation("group:9", "9", payload)
+                class FakeChannel:
+                    pass
+                fake_channel = FakeChannel()
+                generated = AsyncMock(return_value={
+                    "text": "Rem ตอบต่อ", "mood": "สงบ", "color": 0x123456,
+                    "image": "", "rps": None, "next_speaker_id": "",
+                })
+                try:
+                    with patch.object(app, "store", test_store), \
+                         patch.object(app, "process_character_reply", new=generated), \
+                         patch.object(app.live_token_budget, "available_tokens", return_value=50000), \
+                         patch.object(app.discord, "TextChannel", FakeChannel), \
+                         patch.object(app.discord, "Thread", FakeChannel), \
+                         patch.object(bot, "get_channel", return_value=fake_channel), \
+                         patch.object(bot, "_autonomous_wait_seconds", return_value=0), \
+                         patch.object(bot, "_send_character_output", new=AsyncMock()) as send:
+                        await bot._run_autonomous_continuation("group:9")
+                    generated.assert_awaited_once()
+                    self.assertEqual(generated.await_args.args[1].id, "rem")
+                    self.assertEqual(generated.await_args.args[0]["text"], "Isla ตอบก่อนหน้า")
+                    send.assert_awaited_once()
+                    sent = send.await_args.args[1]
+                    self.assertEqual(sent["text"], "Rem ตอบต่อ")
+                    self.assertEqual(test_store.autonomous_continuation_count(), 0)
+                finally:
+                    await bot.close()
+                    test_store.close()
+
+        asyncio.run(run_test())
 
     def test_rps(self):
         self.assertIn("Isla ชนะ", _rps_outcome("rock", "scissors", "Alice"))

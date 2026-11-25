@@ -1,7 +1,7 @@
 import re
 import unittest
 
-from aira.gemini import _state_schema, fill_partner, normalize_color, parse_reply, parse_state, state_prompt_values
+from aira.gemini import fill_partner, normalize_color, parse_reply
 
 
 class FormatTests(unittest.TestCase):
@@ -16,28 +16,6 @@ class FormatTests(unittest.TestCase):
         reply = parse_reply("plain response")
         self.assertEqual(reply["text"], "plain response")
         self.assertFalse(reply["parsed"])
-
-    def test_state_parser_limits_and_fact_owner(self):
-        state = parse_state('{"affinity":5,"is_flirt":true,"add_facts":[{"text":"x","owner_user_id":"1","confirmed_by_owner":true}]}', "crush")
-        self.assertEqual(state["affinity"], 10)
-        self.assertTrue(state["is_flirt"])
-        self.assertEqual(len(state["facts"]), 1)
-
-    def test_romantic_signal_is_ignored_for_family(self):
-        state = parse_state('{"affinity":-500,"is_flirt":true}', "family")
-        self.assertFalse(state["is_flirt"])
-        self.assertEqual(state["affinity"], -100)
-
-    def test_partner_prompt_is_rendered(self):
-        prompt = state_prompt_values("crush", 500, 5, "123", "Example User")
-        self.assertIn("Example User", prompt)
-        self.assertNotIn("{{partner}}", prompt)
-        self.assertEqual(re.findall(r"{{\s*([A-Za-z0-9_.-]+)\s*}}", prompt), [])
-
-    def test_state_schema_does_not_embed_dynamic_image_catalog(self):
-        schema = _state_schema("crush")
-        self.assertNotIn("enum", schema["properties"]["select_image"])
-        self.assertIn("approve_lover", schema["required"])
 
     def test_partner_spacing_keeps_thai_word_boundaries(self):
         self.assertEqual(fill_partner("สวัสดี{{partner}}วันนี้", "Alice"), "สวัสดี Alice วันนี้")

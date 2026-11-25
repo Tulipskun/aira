@@ -10,14 +10,17 @@ from typing import Awaitable, Callable
 class Pending:
     messages: list[dict] = field(default_factory=list)
     first_at: float = 0.0
+    last_at: float = 0.0
     task: asyncio.Task | None = None
 
 
 class MessageScheduler:
-    def __init__(self, on_flush: Callable[[list[dict]], Awaitable[None]], debounce_ms: int = 5000, max_wait_ms: int = 12000):
+    def __init__(self, on_flush: Callable[[list[dict]], Awaitable[None]],
+                 debounce_ms: int = 320, max_wait_ms: int = 1500):
         self.on_flush = on_flush
-        self.debounce = debounce_ms / 1000
-        self.max_wait = max_wait_ms / 1000
+        self.debounce = max(0.01, debounce_ms / 1000)
+        self.max_debounce = max(self.debounce, min(0.95, self.debounce + 0.62))
+        self.max_wait = max(self.debounce, max_wait_ms / 1000)
         self.pending: dict[str, Pending] = {}
         self._flush_tasks: set[asyncio.Task] = set()
         self.closed = False
@@ -26,6 +29,15 @@ class MessageScheduler:
         task = asyncio.create_task(self._flush(messages))
         self._flush_tasks.add(task)
         task.add_done_callback(self._flush_tasks.discard)
+
+    def _adaptive_delay(self, message: dict, gap: float) -> float:
+        text = str(message.get("text") or "")
+        gap = max(0.0, gap)
+        size_adjustment = min(0.35, len(text) * 0.0011)
+        cadence_adjustment = min(0.25, gap * 0.15)
+        punctuation = 0.82 if text.rstrip().endswith(("?", "!", ".", "。", "？", "！")) else 1.0
+        delay = self.debounce * punctuation + size_adjustment + cadence_adjustment
+        return max(self.debounce * 0.55, min(self.max_debounce, delay))
 
     def push(self, message: dict) -> None:
         if self.closed:
@@ -43,13 +55,20 @@ class MessageScheduler:
             return
         now = time.monotonic()
         if current is None:
-            current = Pending(first_at=now)
+            current = Pending(first_at=now, last_at=now)
+            gap = 0.0
             self.pending[key] = current
+        else:
+            gap = max(0.0, now - current.last_at)
         current.messages.append(message)
         if current.task:
             current.task.cancel()
-        delay = max(0.0, min(self.debounce, self.max_wait - (now - current.first_at)))
-        current.task = asyncio.create_task(self._delayed_flush(key, delay))
+        # First message uses a short settle window; subsequent fragments adapt to
+        # message length and the sender's observed pause between messages.
+        delay = self._adaptive_delay(message, gap)
+        current.last_at = now
+        remaining = max(0.0, self.max_wait - (now - current.first_at))
+        current.task = asyncio.create_task(self._delayed_flush(key, min(delay, remaining)))
 
     async def _delayed_flush(self, key: str, delay: float) -> None:
         try:
@@ -84,6 +103,9 @@ class MessageScheduler:
 
     def has_pending(self) -> bool:
         return bool(self.pending)
+
+    def has_pending_session(self, session_key: str) -> bool:
+        return session_key in self.pending
 
     def pending_count(self) -> int:
         return len(self.pending)

@@ -109,11 +109,12 @@ def _semantic_rows(session_key: str | None = None, user_id: str | None = None) -
 
 
 def search_memories_by_vector(vector: list[float], session_key: str, limit: int = 8,
-                              min_similarity: float | None = None) -> list[dict]:
+                              min_similarity: float | None = None,
+                              user_id: str | None = None) -> list[dict]:
     if limit <= 0:
         return []
     rows = []
-    for item in _semantic_rows(session_key=session_key):
+    for item in _semantic_rows(session_key=session_key, user_id=user_id):
         try: stored = json.loads(item["embedding_json"])
         except (ValueError, TypeError): continue
         score = _cosine_similarity(vector, stored)
@@ -127,8 +128,9 @@ def search_memories_by_vector(vector: list[float], session_key: str, limit: int 
     return rows[:limit]
 
 
-async def is_duplicate_memory(vector: list[float], session_key: str) -> dict | None:
-    found = search_memories_by_vector(vector, session_key, 1)
+async def is_duplicate_memory(vector: list[float], session_key: str,
+                              user_id: str | None = None) -> dict | None:
+    found = search_memories_by_vector(vector, session_key, 1, user_id=user_id)
     return found[0] if found and found[0]["score"] >= config.memory_dedupe_similarity else None
 
 
@@ -138,7 +140,7 @@ async def ingest_memory_background(text: str, user_id: str, timestamp: str, sess
         return
     try:
         vector = await embed(text, "document")
-        duplicate = await is_duplicate_memory(vector, session_key)
+        duplicate = await is_duplicate_memory(vector, session_key, user_id=user_id)
         if duplicate:
             log.info("Skipped duplicate memory for user %s, score=%.2f", user_id, duplicate["score"])
             return
@@ -262,15 +264,37 @@ async def build_recent_episode(session_key: str, history_session_key: str | None
         if row["role"] == "model" and row.get("summary")
         and (character_id is None or row.get("character_id") == character_id)
     ]
-    return build_episode(summaries, session_key)
+    episode = build_episode(summaries, session_key)
+    if episode:
+        start = datetime.fromisoformat(episode["start_time"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(episode["end_time"].replace("Z", "+00:00"))
+        margin = timedelta(minutes=config.episode_gap_minutes)
+        participants = []
+        for row in history:
+            if row.get("role") != "user" or not row.get("user_id"):
+                continue
+            try:
+                stamp = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError, KeyError):
+                continue
+            if start - margin <= stamp <= end + margin:
+                participants.append(str(row["user_id"]))
+        episode["participants"] = list(dict.fromkeys(participants))
+    return episode
 
 
-async def recall_episodes(vector: list[float], session_key: str, query_text: str) -> list[dict]:
+async def recall_episodes(vector: list[float], session_key: str, query_text: str,
+                          user_id: str | None = None) -> list[dict]:
     if config.episode_max_results <= 0: return []
     temporal = temporal_query(query_text)
     rows = []
     for item in store.db.execute("SELECT * FROM episodic_memories WHERE session_key=?", (session_key,)).fetchall():
         row = dict(item)
+        participants = json.loads(row["participants_json"] or "[]")
+        if user_id is not None and str(user_id) not in {str(value) for value in participants}:
+            continue
         if temporal.get("date") and row["date"] != temporal["date"]: continue
         if temporal.get("period") and row["period"] != temporal["period"]: continue
         try: stored = json.loads(row["embedding_json"])
@@ -279,7 +303,7 @@ async def recall_episodes(vector: list[float], session_key: str, query_text: str
         if score < config.episode_min_similarity: continue
         rows.append({"id": row["id"], "text": row["text"], "session_key": row["session_key"],
                      "date": row["date"], "period": row["period"], "start_time": row["start_time"],
-                     "end_time": row["end_time"], "participants": json.loads(row["participants_json"] or "[]"),
+                     "end_time": row["end_time"], "participants": participants,
                      "created_at": row["created_at"], "score": score})
     rows.sort(key=lambda row: (row["score"], row["end_time"]), reverse=True)
     return rows[:config.episode_max_results]

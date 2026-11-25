@@ -89,9 +89,6 @@ def resolve_character_speakers(characters: list[Character], mentioned: list[Char
         if char.id not in seen:
             seen.add(char.id)
             selected.append(char)
-    selected = selected[:2]
-    if any(char.id == "isla" for char in selected):
-        selected.sort(key=lambda char: char.id != "isla")
     return selected
 
 

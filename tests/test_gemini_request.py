@@ -3,7 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from aira import gemini, thought_signatures
+from aira import gemini
+from aira.token_budget import SlidingWindowTokenBudget
 
 
 class FakeLiveSession:
@@ -39,16 +40,6 @@ class FakeLive:
 
 
 class GeminiRequestTests(unittest.TestCase):
-    def setUp(self):
-        self.old_pool = list(thought_signatures._pool)
-        self.old_cursor = thought_signatures._cursor
-        thought_signatures._pool[:] = ["test-signature"]
-        thought_signatures._cursor = 0
-
-    def tearDown(self):
-        thought_signatures._pool[:] = self.old_pool
-        thought_signatures._cursor = self.old_cursor
-
     def test_live_request_uses_audio_transcription_and_preserves_memory_context_and_json_schema(self):
         server_content = SimpleNamespace(
             model_turn=SimpleNamespace(parts=[SimpleNamespace(text=None)]),
@@ -57,11 +48,14 @@ class GeminiRequestTests(unittest.TestCase):
         )
         live = FakeLive([SimpleNamespace(server_content=server_content)])
         fake_client = SimpleNamespace(aio=SimpleNamespace(live=live))
-        temporary = thought_signatures.fake_tool_call_result("search_memory", {"user": "Alice"}, {"memories": []})
         schema = {"type": "object", "properties": {"Isla": {"type": "string"}}}
-        with patch.object(gemini, "_live_client", return_value=fake_client):
+        with (
+            patch.object(gemini, "_live_client", return_value=fake_client),
+            patch.object(gemini, "_model_input_limit", return_value=131072),
+            patch.object(gemini, "live_token_budget", SlidingWindowTokenBudget(limit=1_000_000)),
+        ):
             output = asyncio.run(gemini.generate_text(
-                "gemini1", "hello", "system", schema=schema, temporary_steps=temporary,
+                "gemini1", "hello\nความทรงจำที่ค้นพบ: Alice likes tea", "system", schema=schema,
             ))
         self.assertEqual(output, '{"Isla":"Hello"}')
         request = live.calls[0]
@@ -70,12 +64,34 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertIsInstance(request["config"].output_audio_transcription, gemini.types.AudioTranscriptionConfig)
         self.assertTrue(request["config"].system_instruction.startswith("system"))
         self.assertIsNone(request["config"].generation_config)
+        compression = request["config"].context_window_compression
+        self.assertEqual(compression.trigger_tokens, 100_000)
+        self.assertEqual(compression.sliding_window.target_tokens, 80_000)
+        self.assertIsNone(request["config"].session_resumption)
         self.assertIn('"type":"object"', request["config"].system_instruction)
         self.assertIn("JSON", request["config"].system_instruction)
         sent = live.sessions[0].sent[0]["turns"]
         self.assertIn("hello", sent.parts[0].text)
-        self.assertIn("ผลจาก search_memory", sent.parts[1].text)
+        self.assertIn("Alice likes tea", sent.parts[0].text)
 
+
+    def test_embedding_2_uses_query_and_document_instruction_prefixes(self):
+        captured = []
+        class Models:
+            async def embed_content(self, **kwargs):
+                captured.append(kwargs)
+                return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.1, 0.2])])
+        fake = SimpleNamespace(aio=SimpleNamespace(models=Models()))
+        with patch.object(gemini, "_client", return_value=fake), \
+             patch.object(gemini, "_keys", return_value=["key"]), \
+             patch.object(gemini.config, "embedding_dimension", 2):
+            query = asyncio.run(gemini.embed("ใครชอบชา", "query"))
+            document = asyncio.run(gemini.embed("Alice ชอบชา", "document"))
+        self.assertEqual(query, [0.1, 0.2])
+        self.assertEqual(document, [0.1, 0.2])
+        self.assertEqual(captured[0]["contents"], "task: search result | query: ใครชอบชา")
+        self.assertEqual(captured[1]["contents"], "title: none | text: Alice ชอบชา")
+        self.assertEqual(captured[0]["config"].output_dimensionality, 2)
 
     def test_default_text_models_use_gemini_38_live_for_both_stages(self):
         import tempfile
@@ -121,8 +137,9 @@ class GeminiRequestTests(unittest.TestCase):
     def test_key_pool_is_stage_specific(self):
         with patch.object(gemini.config, "gemini_keys", ["shared"]):
             with patch.object(gemini.config, "gemini1_keys", ["one", "two"]):
-                self.assertEqual(gemini._keys("gemini1"), ["one", "two"])
-                self.assertEqual(gemini._keys("gemini2"), ["shared"])
+                with patch.object(gemini.config, "gemini2_keys", []):
+                    self.assertEqual(gemini._keys("gemini1"), ["one", "two"])
+                    self.assertEqual(gemini._keys("gemini2"), ["shared"])
 
     def test_character_reply_forwards_media_and_memory_tool_context(self):
         server_content = SimpleNamespace(
@@ -133,37 +150,71 @@ class GeminiRequestTests(unittest.TestCase):
         live = FakeLive([SimpleNamespace(server_content=server_content)])
         fake_client = SimpleNamespace(aio=SimpleNamespace(live=live))
         media = [{"type": "image", "data": "aGVsbG8=", "mime_type": "image/png"}]
-        tool_steps = thought_signatures.fake_tool_call_result("search_character_memory", {}, {"memories": []})
-        with patch.object(gemini, "_live_client", return_value=fake_client):
+        with (
+            patch.object(gemini, "_live_client", return_value=fake_client),
+            patch.object(gemini, "_model_input_limit", return_value=131072),
+            patch.object(gemini, "live_token_budget", SlidingWindowTokenBudget(limit=1_000_000)),
+        ):
             result = asyncio.run(gemini.generate_character_reply(
-                "character prompt", "context", media, tool_steps,
+                "character prompt", "context\nMemory: Alice likes tea", media,
                 {"user_id": "42", "user_name": "Alice", "turn_id": "t1"},
             ))
         self.assertEqual(result["reply"], "Hello")
         sent = live.sessions[0].sent[0]["turns"]
         self.assertEqual(sent.parts[1].inline_data.mime_type, "image/png")
-        self.assertIn("ผลจาก search_character_memory", sent.parts[2].text)
+        self.assertIn("Alice likes tea", sent.parts[0].text)
 
-    def test_speaker_scheduler_can_choose_silence_or_one_secondary_actor(self):
-        captured = {}
-        async def fake_generate(stage, prompt, system, **kwargs):
-            captured.update({"stage": stage, "prompt": prompt, "system": system, **kwargs})
-            return '{"speakers":["nova"]}'
-        history = [{"role": "model", "user_name": "Isla", "text": "เรื่องนั้นน่าสนใจ"}]
+
+
+    def test_invalid_character_json_is_never_returned_as_user_reply(self):
+        async def fake_generate(*args, **kwargs):
+            return '```json\n{"reply":"", "summary":"bad" "next_speaker_id":"bocchi"}\n```'
         with patch.object(gemini, "generate_text", side_effect=fake_generate):
-            result = asyncio.run(gemini.choose_character_speakers(
-                "วันนี้อากาศดี", "Alice",
-                [{"id": "isla", "name": "Isla", "aliases": ["Isla"]},
-                 {"id": "nova", "name": "Nova", "aliases": ["Nova"]}],
-                recent_history=history,
-            ))
-        self.assertEqual(result, ["nova"])
-        self.assertEqual(captured["stage"], "gemini2")
-        self.assertIn("เงียบ", captured["prompt"])
-        self.assertIn("ไม่จำเป็นต้องมี Isla", captured["prompt"])
-        self.assertIn("ตัวละครเสริมสองตัวพร้อมกัน", captured["prompt"])
-        self.assertIn("Isla: เรื่องนั้นน่าสนใจ", captured["prompt"])
-        self.assertEqual(captured["schema"]["required"], ["speakers"])
+            with self.assertRaisesRegex(ValueError, "raw output was not sent"):
+                asyncio.run(gemini.generate_character_reply("prompt", "context"))
+
+    def test_expression_image_catalogs_are_isolated_per_character(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "isla").mkdir()
+            (root / "isla" / "isla_face.jpg").write_bytes(b"isla")
+            (root / "rem").mkdir()
+            (root / "rem" / "rem_smile.png").write_bytes(b"rem")
+            (root / "bocchi").mkdir()
+            (root / "bocchi" / "bocchi_nervous.webp").write_bytes(b"bocchi")
+            with patch.object(gemini.config, "images_dir", root):
+                self.assertEqual(gemini._image_names("isla"), ["isla_face.jpg"])
+                self.assertEqual(gemini._image_names("rem"), ["rem_smile.png"])
+                self.assertEqual(gemini._image_names("bocchi"), ["bocchi_nervous.webp"])
+                self.assertEqual(gemini._normalize_image("isla_face.jpg", "rem"), "")
+                self.assertEqual(gemini._normalize_image("rem_smile.png", "rem"), "rem_smile.png")
+                self.assertIn("rem_smile.png", gemini._image_catalog_prompt("rem"))
+                self.assertNotIn("isla_face.jpg", gemini._image_catalog_prompt("rem"))
+
+    def test_shared_character_reply_parses_emotion_color_and_expression_image(self):
+        async def fake_generate(stage, prompt, system, **kwargs):
+            self.assertEqual(stage, "gemini1")
+            required = kwargs["schema"]["required"]
+            self.assertIn("mood", required)
+            self.assertIn("color", required)
+            self.assertIn("select_image", required)
+            return ('{"reply":"ยินดีที่ได้คุย","summary":"ทักทาย","memory":"",'
+                    '"relationship":"เริ่มสนิทกัน","character_relationships":[],"next_speaker_id":"",'
+                    '"mood":"มีความสุข","color":"#12ABEF","select_image":"smile.png",'
+                    '"add_facts":[{"text":"Alice ชอบชา","owner_user_id":"123",'
+                    '"confirmed_by_owner":true}],"add_nicknames":["คนรักชา"]}')
+        with patch.object(gemini, "generate_text", side_effect=fake_generate), \
+             patch.object(gemini, "_image_names", return_value=["smile.png"]):
+            result = asyncio.run(gemini.generate_character_reply("prompt", "context"))
+        self.assertEqual(result["reply"], "ยินดีที่ได้คุย")
+        self.assertEqual(result["mood"], "มีความสุข")
+        self.assertEqual(result["color"], 0x12ABEF)
+        self.assertEqual(result["image"], "smile.png")
+        self.assertEqual(result["facts"], [{"text": "Alice ชอบชา", "owner_user_id": "123",
+                                          "confirmed_by_owner": True, "replaces_fact": ""}])
+        self.assertEqual(result["nicknames"], ["คนรักชา"])
 
     def test_reply_parser_reads_directional_character_relationships(self):
         parsed = gemini.parse_reply(
@@ -173,28 +224,6 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertEqual(parsed["relationships"], [
             {"target_character_id": "nova", "relationship": "ไว้ใจ Nova"},
         ])
-
-    def test_analyze_turn_uses_user_id_and_partner_in_prompt(self):
-        captured = {}
-        async def fake_generate(stage, prompt, system, **kwargs):
-            captured.update({"stage": stage, "prompt": prompt, "system": system, **kwargs})
-            return '{"affinity":0,"is_flirt":false,"select_image":"none"}'
-        with patch.object(gemini, "generate_text", side_effect=fake_generate):
-            result = asyncio.run(gemini.analyze_turn(
-                "turn", "Alice", "stranger", 0, 0, user_id="123",
-                debug_context={"user_id": "123"},
-            ))
-        self.assertEqual(captured["stage"], "gemini2")
-        self.assertIn("Alice", captured["system"])
-        self.assertIn("is_flirt", captured["schema"]["required"])
-        self.assertEqual(result["affinity"], 0)
-
-    def test_state_schema_requires_relationship_signals_by_bond(self):
-        self.assertIn("is_flirt", gemini._state_schema("stranger")["required"])
-        self.assertIn("approve_lover", gemini._state_schema("crush")["required"])
-        self.assertIn("approve_soulmate", gemini._state_schema("lover")["required"])
-        self.assertNotIn("is_flirt", gemini._state_schema("family")["required"])
-
 
 if __name__ == "__main__":
     unittest.main()

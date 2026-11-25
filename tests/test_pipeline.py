@@ -13,20 +13,19 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.temp.name) / "pipeline.db")
+        self.generate = AsyncMock(return_value={
+            "reply": "สวัสดี", "summary": "ทักทาย", "memory": "",
+            "relationship": "เราเริ่มคุ้นเคยและคุยกันได้อย่างสบายใจ",
+            "relationships": [], "next_speaker_id": "rem",
+            "mood": "ดีใจ", "color": 0x123456, "image": "smile.png", "rps": None,
+        })
         self.patches = [
             patch.object(pipeline, "store", self.store),
             patch.object(pipeline, "embed", new=AsyncMock(return_value=[0.25, 0.75])),
             patch.object(pipeline, "search_memories_by_vector", return_value=[]),
             patch.object(pipeline, "recall_episodes", new=AsyncMock(return_value=[])),
-            patch.object(pipeline, "generate_isla_reply", new=AsyncMock(return_value={
-                "text": "สวัสดี", "summary": "", "mood": "ดีใจ",
-                "color": 0x123456, "rps": None,
-            })),
-            patch.object(pipeline, "analyze_turn", new=AsyncMock(return_value={
-                "affinity": 10, "is_flirt": False, "approvals": {},
-                "image": "", "facts": [], "nicknames": [], "memory": "",
-                "warnings": [],
-            })),
+            patch.object(pipeline, "generate_character_reply", new=self.generate),
+            patch.object(pipeline, "_spawn", side_effect=lambda coroutine: coroutine.close()),
         ]
         for item in self.patches:
             item.start()
@@ -37,10 +36,70 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.close()
         self.temp.cleanup()
 
-    async def test_group_turn_updates_only_last_speaker(self):
+    async def test_speaker_selection_uses_model_and_never_defaults_to_isla(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
+        ]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_text", new=AsyncMock(return_value='{"selected_character_ids":["bocchi","rem"],"reason":"หัวข้อเหมาะกับทั้งคู่"}')) as selector:
+            selected = await pipeline.select_characters({
+                "text": "วันนี้เป็นยังไง", "session_key": "group:99", "user_id": "alice", "user": "Alice",
+            })
+        self.assertEqual([item.id for item in selected], ["bocchi", "rem"])
+        selector.assert_awaited_once()
+
+    async def test_explicit_character_address_bypasses_selector(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
+        ]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_text", new=AsyncMock()) as selector:
+            selected = await pipeline.select_characters({"text": "Rem ช่วยตอบหน่อย"})
+        self.assertEqual([item.id for item in selected], ["rem"])
+        selector.assert_not_awaited()
+
+    async def test_selector_can_choose_silence_and_invalid_output_does_not_fall_back_to_isla(self):
+        chars = [Character("isla", "Isla", ("Isla",), Path("isla.md"))]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_text", new=AsyncMock(return_value='{"selected_character_ids":[],"reason":"ไม่มีใครอยากพูด"}')):
+            self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "generate_text", new=AsyncMock(return_value="not json")):
+            self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
+
+    async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({
-            "user_id": "bob", "user": "Bob",
-            "text": "Alice: สวัสดี\nBob: ขอถามหน่อย",
+            "user_id": "alice", "user": "Alice", "text": "Hi Isla",
+            "timestamp": utc_now(), "session_key": "group:99",
+        }, SimpleNamespace(parts=[], summary="", file_names=[]))
+        self.assertEqual(result["text"], "สวัสดี")
+        self.assertEqual(result["mood"], "ดีใจ")
+        self.assertEqual(result["color"], 0x123456)
+        self.assertEqual(result["image"], "smile.png")
+        self.assertEqual(result["next_speaker_id"], "rem")
+        self.assertEqual(pipeline.generate_character_reply.await_count, 1)
+        prompt, context = self.generate.await_args.args[:2]
+        self.assertIn("ไม่มีคะแนน XP", prompt)
+        self.assertIn("mood", prompt)
+        self.assertIn("select_image", prompt)
+        self.assertIn("current_time", context)
+        self.assertIn("เวลาของข้อความต้นทาง", context)
+        self.assertEqual(pipeline.search_memories_by_vector.call_args.args[1],
+                         "group:99:character:isla")
+        self.assertEqual(pipeline.search_memories_by_vector.call_args.kwargs["user_id"], "alice")
+        saved = self.store.get_history(10, "group:99")[-1]
+        self.assertEqual(saved["character_id"], "isla")
+        self.assertEqual(self.store.get_character_relationship("isla", "alice"),
+                         "เราเริ่มคุ้นเคยและคุยกันได้อย่างสบายใจ")
+        self.assertNotIn("xp", self.store.get_character_relationship("isla", "alice").lower())
+
+    async def test_group_turn_does_not_merge_distinct_user_profiles(self):
+        result = await pipeline.process_message({
+            "user_id": "bob", "user": "Bob", "text": "Alice: สวัสดี\nBob: ขอถามหน่อย",
             "timestamp": utc_now(), "session_key": "group:99",
             "speakers": [
                 {"user_id": "alice", "user": "Alice"},
@@ -48,77 +107,92 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             ],
         }, SimpleNamespace(parts=[], summary="", file_names=[]))
         self.assertEqual(result["text"], "สวัสดี")
-        self.assertEqual(self.store.get_profile("bob")["xp"], 10)
-        self.assertEqual(self.store.get_profile("alice")["xp"], 0)
+        self.assertEqual(self.store.get_character_relationship("isla", "alice"),
+                         "ยังไม่เคยสร้างความสัมพันธ์")
+        self.assertEqual(self.store.get_character_relationship("isla", "bob"),
+                         "เราเริ่มคุ้นเคยและคุยกันได้อย่างสบายใจ")
         messages = self.store.get_history(10, "group:99")
         self.assertEqual([row["role"] for row in messages], ["user", "model"])
+        self.assertEqual(result["session_key"], "group:99")
 
-    async def test_isla_prompt_allows_silence_but_requires_direct_mentions(self):
-        await pipeline.process_message({
-            "user_id": "alice", "user": "Alice", "text": "Hi Isla",
-            "timestamp": utc_now(), "session_key": "group:99",
-        }, SimpleNamespace(parts=[], summary="", file_names=[]))
-        system_context = pipeline.generate_isla_reply.await_args.kwargs["system_context"]
-        self.assertIn("สามารถเงียบได้ตามปกติ", system_context)
-        self.assertIn("เรียกชื่อ Isla โดยตรง ต้องตอบ", system_context)
-
-    async def test_isla_memory_is_character_scoped(self):
-        await pipeline.process_message({
-            "user_id": "alice", "user": "Alice", "text": "Hi",
-            "timestamp": utc_now(), "session_key": "group:99",
-        }, SimpleNamespace(parts=[], summary="", file_names=[]))
-        self.assertEqual(pipeline.search_memories_by_vector.call_args.args[1],
-                         "group:99:character:isla")
-        self.assertEqual(pipeline.recall_episodes.await_args.args[1],
-                         "group:99:character:isla")
-        model = self.store.get_history(10, "group:99")[-1]
-        self.assertEqual(model["character_id"], "isla")
-
-    async def test_secondary_character_has_private_memory_and_is_saved_as_actor(self):
+    async def test_all_characters_share_same_metadata_schema_and_memory_namespace(self):
         character = Character("nova", "Nova", ("Nova",), Path("nova.md"))
-        self.store.save_message("model", "ฉันเป็นห่วง Alice", utc_now(), "group:99",
-                                None, "Isla", None, "Isla เป็นห่วง Alice", "isla")
-        generate = AsyncMock(return_value={
-            "reply": "ฉันเห็นด้วยกับ Isla", "summary": "Nova เห็นด้วยกับ Isla",
-            "memory": "", "relationship": "สนิทกับ Alice",
-            "relationships": [{"target_character_id": "isla", "relationship": "Nova trusts Isla"}],
-        })
         with patch.object(pipeline, "load_characters", return_value=[
             Character("isla", "Isla", ("Isla",), Path("isla.md")), character,
-        ]), patch.object(pipeline, "load_character_prompt", return_value="Nova prompt"), \
-             patch.object(pipeline, "_spawn", side_effect=lambda coroutine: coroutine.close()), \
-             patch.object(pipeline, "generate_character_reply", new=generate):
+        ]), patch.object(pipeline, "load_character_prompt", return_value="Nova prompt"):
             result = await pipeline.process_character_reply({
                 "user_id": "alice", "user": "Alice", "text": "Nova, คิดยังไง",
                 "timestamp": utc_now(), "session_key": "group:99",
             }, character, SimpleNamespace(parts=[], summary="", file_names=[]))
-        self.assertEqual(result["text"], "ฉันเห็นด้วยกับ Isla")
-        self.assertIn("Isla: ฉันเป็นห่วง Alice", generate.await_args.args[1])
+        self.assertEqual(result["text"], "สวัสดี")
+        self.assertEqual(result["mood"], "ดีใจ")
+        self.assertEqual(result["color"], 0x123456)
+        self.assertEqual(result["image"], "smile.png")
+        self.assertIn("ความสัมพันธ์", self.generate.await_args.args[0])
+        self.assertIn("ไม่มีคะแนน XP", self.generate.await_args.args[0])
         self.assertEqual(pipeline.search_memories_by_vector.call_args.args[1],
                          "group:99:character:nova")
         saved = self.store.get_history(10, "group:99")[-1]
         self.assertEqual(saved["character_id"], "nova")
-        self.assertEqual(self.store.get_character_relationship("nova", "alice"), "สนิทกับ Alice")
-        self.assertEqual(self.store.get_character_pair_relationship("nova", "isla"), "Nova trusts Isla")
 
-    async def test_secondary_character_without_timestamp_does_not_duplicate_current_input(self):
+    async def test_character_to_character_turn_updates_directional_pair_not_human_relationship(self):
         character = Character("nova", "Nova", ("Nova",), Path("nova.md"))
-        generate = AsyncMock(return_value={
-            "reply": "ฉันอยู่นี่", "summary": "", "memory": "",
-            "relationship": "", "relationships": [],
-        })
+        self.generate.return_value = {
+            "reply": "ฉันเห็นด้วย", "summary": "คุยกับ Isla", "memory": "",
+            "relationship": "Nova เริ่มไว้วางใจ Isla มากขึ้น", "relationships": [],
+            "next_speaker_id": "", "mood": "สงบ", "color": 0x00AA88,
+            "image": "", "rps": None,
+        }
         with patch.object(pipeline, "load_characters", return_value=[
             Character("isla", "Isla", ("Isla",), Path("isla.md")), character,
-        ]), patch.object(pipeline, "load_character_prompt", return_value="Nova prompt"), \
-             patch.object(pipeline, "_spawn", side_effect=lambda coroutine: coroutine.close()), \
-             patch.object(pipeline, "generate_character_reply", new=generate):
+        ]), patch.object(pipeline, "load_character_prompt", return_value="Nova prompt"):
             await pipeline.process_character_reply({
-                "user_id": "alice", "user": "Alice", "text": "Hi",
+                "user_id": "alice", "user": "Alice", "text": "ฉันเห็นด้วย",
+                "timestamp": utc_now(), "session_key": "group:99",
+                "character_turn": True, "trigger_character": "Isla",
+                "trigger_character_id": "isla",
+            }, character, SimpleNamespace(parts=[], summary="", file_names=[]), input_saved=True)
+        self.assertEqual(self.store.get_character_relationship("nova", "alice"),
+                         "ยังไม่เคยสร้างความสัมพันธ์")
+        self.assertEqual(self.store.get_character_pair_relationship("nova", "isla"),
+                         "Nova เริ่มไว้วางใจ Isla มากขึ้น")
+        pipeline.embed.assert_not_awaited()
+
+    async def test_user_facts_are_available_without_exposing_legacy_relationship_scores(self):
+        self.store.upsert_profile("alice", user_name="Alice", nickname=["ชาเขียว"],
+                                  facts=[{"text": "Alice ชอบชา", "timestamp": utc_now(), "status": "confirmed"}])
+        character = Character("nova", "Nova", ("Nova",), Path("nova.md"))
+        with patch.object(pipeline, "load_characters", return_value=[
+            Character("isla", "Isla", ("Isla",), Path("isla.md")), character,
+        ]), patch.object(pipeline, "load_character_prompt", return_value="Nova prompt"):
+            await pipeline.process_character_reply({
+                "user_id": "alice", "user": "Alice", "text": "สวัสดี",
                 "session_key": "group:99",
             }, character, SimpleNamespace(parts=[], summary="", file_names=[]))
-        context = generate.await_args.args[1]
-        self.assertEqual(context.count("ข้อความจาก Alice: Hi"), 1)
-        self.assertNotIn("Alice: Hi\nAlice: Hi", context)
+        context = self.generate.await_args.args[1]
+        prompt = self.generate.await_args.args[0]
+        self.assertIn("ชาเขียว", context)
+        self.assertIn("Alice ชอบชา", context)
+        self.assertIn("ไม่มีคะแนน XP", prompt)
+        self.assertNotIn("flirt_count", prompt)
+
+
+    async def test_user_facts_and_accepted_nicknames_are_preserved_without_relationship_scores(self):
+        self.generate.return_value = {
+            "reply": "สวัสดี", "summary": "", "memory": "", "relationship": "",
+            "relationships": [], "next_speaker_id": "", "mood": "สงบ",
+            "color": 0x123456, "image": "", "rps": None,
+            "facts": [{"text": "Alice ชอบชาเขียว", "owner_user_id": "alice",
+                       "confirmed_by_owner": True, "replaces_fact": ""}],
+            "nicknames": ["คนรักชา"],
+        }
+        await pipeline.process_message({
+            "user_id": "alice", "user": "Alice", "text": "ฉันชอบชาเขียว",
+            "timestamp": utc_now(), "session_key": "group:99",
+        }, SimpleNamespace(parts=[], summary="", file_names=[]))
+        profile = self.store.get_profile("alice")
+        self.assertEqual(profile["facts"][0]["text"], "Alice ชอบชาเขียว")
+        self.assertEqual(profile["nickname"], ["คนรักชา"])
 
     async def test_private_turn_persists_in_private_session(self):
         result = await pipeline.process_message({

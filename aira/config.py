@@ -47,7 +47,6 @@ class Config:
     gemini1_prompt: Path = field(default_factory=lambda: _resolve_path("prompts/isla.md"))
     gemini2_prompt: Path = field(default_factory=lambda: _resolve_path("prompts/isla-state.md"))
     key_state_file: Path = field(default_factory=lambda: _resolve_path(".aira/gemini-key-state.json"))
-    thought_state_file: Path = field(default_factory=lambda: _resolve_path(".aira/gemini-thought-signatures.json"))
     memory_max_results: int = field(default_factory=lambda: int(_setting("memoryMaxResults", 8)))
     memory_min_similarity: float = field(default_factory=lambda: float(_setting("memoryMinSimilarity", 0.6)))
     memory_dedupe_similarity: float = field(default_factory=lambda: float(_setting("memoryDedupeSimilarity", 0.92)))
