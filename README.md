@@ -30,7 +30,7 @@ Set these environment variables in the panel:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `DISCORD` | Yes | Discord bot token |
+| `DISCORD` | No (legacy) | Optional migration source. Without it, enter the bot token in the server Console on first start; Aira saves it in `.aira/discord.token`. |
 | `DISCORD_OWNER_ID` | Recommended | Discord owner user ID. The bot also checks the application owner returned by Discord. |
 | `GEMINI_API_KEY` | No | Optional shared comma-separated Gemini API key pool. Can also be configured after startup through the owner-only Discord Control Panel. |
 | `GEMINI1_API_KEYS`, `GEMINI2_API_KEYS`, `GEMINI_EMBEDDING2_API_KEYS` | No | Optional stage-specific key pools; fall back to `GEMINI_API_KEY`. |
@@ -46,7 +46,7 @@ The startup command installs the pinned Python requirements and runs the bot in 
 
 **Discord setup:** invite the application with the `bot` and `applications.commands` OAuth scopes. Grant View Channels, Send Messages, Read Message History, Embed Links and Attach Files in the response channel. Enable the privileged **Message Content Intent** in the Discord Developer Portal.
 
-After the first successful login, Aira posts its Control Panel in a server text channel. Only the Discord application owner (or `DISCORD_OWNER_ID`) can change settings. Add a Gemini key in the panel before asking Aira to respond if `GEMINI_API_KEY` was not supplied at deployment.
+On first start, paste the Discord bot token into the server Console when prompted. Aira verifies it with Discord and stores it at `.aira/discord.token`; later starts read the saved token automatically. Keep the server Console history private because panel behavior determines whether pasted input is echoed or retained. After login, Aira posts its Control Panel in a server text channel. Only the Discord application owner (or `DISCORD_OWNER_ID`) can change settings. Add a Gemini key in the panel before asking Aira to respond if `GEMINI_API_KEY` was not supplied at deployment.
 
 ### Persistent data
 
@@ -63,11 +63,11 @@ python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 cp .env.example .env
-# Set DISCORD in .env, then:
+# Start and paste the Discord bot token into the console when prompted:
 python main.py
 ```
 
-The bot runs in the foreground. The `DISCORD` environment variable is required. Gemini credentials can be supplied through `GEMINI_API_KEY` or added through the Discord Control Panel. On startup, Aira performs a bounded DNS/HTTPS warm-up before connecting to Discord.
+The bot runs in the foreground. On first launch, enter the Discord bot token in the console; it is validated and saved under `.aira/` for subsequent launches. The legacy `DISCORD` environment variable is also supported and migrated when present. Gemini credentials can be supplied through `GEMINI_API_KEY` or added through the Discord Control Panel. On startup, Aira performs a bounded DNS/HTTPS warm-up before connecting to Discord.
 
 ## Discord commands
 
