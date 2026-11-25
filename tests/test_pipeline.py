@@ -262,16 +262,6 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual([item.id for item in selected], [item.id for item in chars])
 
-    async def test_later_speakers_are_told_who_already_answered_in_this_turn(self):
-        await pipeline.process_message({
-            "user_id": "alice", "user": "Alice", "text": "Hi Isla",
-            "timestamp": utc_now(), "session_key": "group:echo",
-            "answered_this_turn": ["rem", "bocchi"],
-        }, SimpleNamespace(parts=[], summary="", file_names=[]))
-        prompt, context = self.generate.await_args.args[:2]
-        self.assertIn("ในเทิร์นนี้ Rem, Hitori Gotoh เพิ่งตอบไปแล้ว", context)
-        self.assertIn("ห้ามลอกหรือเลียนโครงประโยคของตัวละครอื่น", prompt)
-
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({
             "user_id": "alice", "user": "Alice", "text": "Hi Isla",

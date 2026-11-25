@@ -218,6 +218,54 @@ class DiscordTests(unittest.TestCase):
             asyncio.run(bot.close())
 
 
+    def test_later_speakers_answer_the_previous_character_not_the_user_again(self):
+        async def run_test():
+            from aira.characters import Character
+            chars = [
+                Character("isla", "Isla", ("Isla",), Path("isla.md")),
+                Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            ]
+            seen = []
+
+            async def fake_reply(message, character, prepared_media=None, input_saved=False, superseded=None):
+                seen.append({"character": character.id, "text": message["text"],
+                             "character_turn": bool(message.get("character_turn")),
+                             "trigger": message.get("trigger_character_id")})
+                return {"character": character, "text": f"{character.id} พูดว่า...", "mood": "",
+                        "color": None, "image": "", "rps": None, "character_turn": True,
+                        "next_speaker_id": ""}
+
+            bot = AiraBot()
+            channel = MagicMock(spec=discord.TextChannel)
+            channel.send = AsyncMock()
+            try:
+                with patch("aira.discord_app.select_characters", new=AsyncMock(return_value=chars)), \
+                     patch("aira.discord_app.process_character_reply", new=fake_reply), \
+                     patch("aira.discord_app.store.save_message"), \
+                     patch("aira.discord_app.store.get_response_channel_id", return_value="9", create=True), \
+                     patch.object(bot, "_send_character_output", new=AsyncMock()), \
+                     patch("aira.discord_app.prepare_attachments", new=AsyncMock(
+                         return_value=SimpleNamespace(parts=[], summary="", file_names=[]))), \
+                     patch("aira.discord_app.get_response_channel_id", return_value="9"), \
+                     patch.object(bot, "get_channel", return_value=channel):
+                    await bot._process_batch([{
+                        "user_id": "1", "user": "Yuuta", "text": "ทุกคนคิดยังไงบ้าง",
+                        "timestamp": "2026-11-25T17:00:00+00:00", "channel_id": "9",
+                        "message_id": "555", "session_key": "group:9", "attachments": [],
+                        "embeds": [], "raw_content": "ทุกคนคิดยังไงบ้าง", "file_name": None,
+                    }])
+            finally:
+                await bot.close()
+            self.assertEqual([item["character"] for item in seen], ["isla", "rem"])
+            self.assertEqual(seen[0]["text"], "ทุกคนคิดยังไงบ้าง")
+            self.assertFalse(seen[0]["character_turn"])
+            # The second speaker answers Isla's line, not the user's message again.
+            self.assertEqual(seen[1]["text"], "isla พูดว่า...")
+            self.assertTrue(seen[1]["character_turn"])
+            self.assertEqual(seen[1]["trigger"], "isla")
+
+        asyncio.run(run_test())
+
     def test_autonomous_worker_resumes_the_next_speaker_and_finishes_naturally(self):
         async def run_test():
             import time
