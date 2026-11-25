@@ -15,6 +15,7 @@ LOG="${AIRA_LOG:-/root/aira-live.log}"
 BRANCH="${AIRA_BRANCH:-main}"
 HEALTH_URL="http://127.0.0.1:8091/health"
 PATTERN='^\.venv/bin/python -u main\.py$'
+OFFSET_FILE="${AIRA_LOG:-/root/aira-live.log}.offset"
 DRAIN_SECONDS="${AIRA_DRAIN_SECONDS:-60}"
 
 cd "$APP_DIR"
@@ -30,6 +31,7 @@ start() {
     echo "already running (pid $pid)"
     return 0
   fi
+  wc -l < "$LOG" > "$OFFSET_FILE" 2>/dev/null || echo 0 > "$OFFSET_FILE"
   setsid nohup .venv/bin/python -u main.py >> "$LOG" 2>&1 < /dev/null &
   sleep 2
   pid="$(app_pid)"
@@ -85,7 +87,10 @@ status() {
   else
     echo "health     no response from $HEALTH_URL"
   fi
-  echo "errors     $(tail -n 400 "$LOG" 2>/dev/null | grep -c ERROR || true) in the last 400 log lines"
+  local offset errors
+  offset="$(cat "$OFFSET_FILE" 2>/dev/null || echo 0)"
+  errors="$(tail -n +$((offset + 1)) "$LOG" 2>/dev/null | grep -c ERROR || true)"
+  echo "errors     $errors since this run started"
 }
 
 deploy() {
