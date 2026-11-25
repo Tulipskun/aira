@@ -540,10 +540,11 @@ class AiraBot(commands.Bot):
                     send_kwargs["avatar_url"] = character.avatar_url
                 if isinstance(channel, discord.Thread):
                     send_kwargs["thread"] = channel
+                send_kwargs["embed"] = embed
                 if character.id == "isla":
-                    send_kwargs.update(embed=embed, files=files, view=view)
-                else:
-                    send_kwargs["embed"] = embed
+                    send_kwargs["files"] = files
+                    if view is not None:
+                        send_kwargs["view"] = view
                 sent = await webhook.send(**send_kwargs)
                 if sent is None:
                     raise RuntimeError(f"Discord did not return the sent message for {character.id}")
