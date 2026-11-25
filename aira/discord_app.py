@@ -251,14 +251,19 @@ class PanelView(discord.ui.View):
         # Defer before permission checks and disk I/O, then edit the original panel.
         await interaction.response.defer()
         try:
-            channel = select.values[0]
+            selected = select.values[0]
             guild = interaction.guild
             bot_member = guild.me if guild else None
+            # ChannelSelect returns AppCommandChannel, not a full GuildChannel.
+            # Resolve it from cache or fetch it before checking the bot's own perms.
+            channel = selected.resolve()
+            if channel is None:
+                channel = await selected.fetch()
             permissions = channel.permissions_for(bot_member) if bot_member else None
             if not permissions or not permissions.view_channel or not permissions.send_messages:
                 await interaction.followup.send("บอทไม่มีสิทธิ์ดูหรือส่งข้อความในห้องนี้", ephemeral=True)
                 return
-            set_response_channel_id(str(channel.id))
+            set_response_channel_id(str(selected.id))
             await interaction.edit_original_response(embed=self.bot_ref.panel_embed(), view=self)
         except (discord.HTTPException, OSError, ValueError):
             log.exception("Failed to save selected response channel")

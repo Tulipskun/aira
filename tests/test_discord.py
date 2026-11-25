@@ -24,6 +24,7 @@ class ChannelSelectInteractionTests(unittest.IsolatedAsyncioTestCase):
             id=987654,
             permissions_for=lambda member: permissions,
         )
+        selected = SimpleNamespace(id=987654, resolve=lambda: channel)
         response = SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock())
         followup = SimpleNamespace(send=AsyncMock())
         interaction = SimpleNamespace(
@@ -33,7 +34,7 @@ class ChannelSelectInteractionTests(unittest.IsolatedAsyncioTestCase):
             followup=followup,
             edit_original_response=AsyncMock(),
         )
-        return interaction, SimpleNamespace(values=[channel])
+        return interaction, SimpleNamespace(values=[selected])
 
     async def test_channel_select_defers_before_saving_and_updates_panel(self):
         permissions = SimpleNamespace(view_channel=True, send_messages=True)
@@ -45,6 +46,32 @@ class ChannelSelectInteractionTests(unittest.IsolatedAsyncioTestCase):
         save.assert_called_once_with('987654')
         interaction.edit_original_response.assert_awaited_once()
         interaction.followup.send.assert_not_awaited()
+
+    async def test_channel_select_resolves_app_command_channel_before_permission_check(self):
+        permissions = SimpleNamespace(view_channel=True, send_messages=True)
+        real_channel = SimpleNamespace(id=987654, permissions_for=lambda member: permissions)
+        # This mirrors discord.py AppCommandChannel: it has resolve()/fetch(),
+        # but deliberately does not expose permissions_for().
+        selected = SimpleNamespace(id=987654, resolve=lambda: real_channel)
+        interaction, _ = self.make_interaction(permissions)
+        self.select._values = [selected]
+        with patch('aira.discord_app.set_response_channel_id') as save:
+            await self.select.callback(interaction)
+        interaction.response.defer.assert_awaited_once_with()
+        save.assert_called_once_with('987654')
+        interaction.edit_original_response.assert_awaited_once()
+
+    async def test_channel_select_fetches_channel_when_not_cached(self):
+        permissions = SimpleNamespace(view_channel=True, send_messages=True)
+        real_channel = SimpleNamespace(id=987654, permissions_for=lambda member: permissions)
+        selected = SimpleNamespace(resolve=lambda: None, fetch=AsyncMock(return_value=real_channel), id=987654)
+        interaction, _ = self.make_interaction(permissions)
+        self.select._values = [selected]
+        with patch('aira.discord_app.set_response_channel_id') as save:
+            await self.select.callback(interaction)
+        selected.fetch.assert_awaited_once()
+        save.assert_called_once_with('987654')
+        interaction.edit_original_response.assert_awaited_once()
 
     async def test_channel_select_defers_and_reports_missing_permissions(self):
         permissions = SimpleNamespace(view_channel=True, send_messages=False)
