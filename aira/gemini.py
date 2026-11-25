@@ -393,13 +393,9 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
     # Aira call already seeds its own authoritative transcript and memories.
     # Reusing a prior handle while resending that transcript would duplicate
     # conversation state and can corrupt character continuity.
-    # JSON turns must never be read back from speech: an audio answer is transcribed as
-    # natural prose, so braces, quotes and digits get rewritten and the JSON arrives
-    # broken. Structured turns therefore ask for TEXT and keep the exact model output.
-    text_only = response_schema is not None
     live_config = types.LiveConnectConfig(
-        response_modalities=[types.Modality.TEXT] if text_only else [types.Modality.AUDIO],
-        output_audio_transcription=None if text_only else types.AudioTranscriptionConfig(),
+        response_modalities=[types.Modality.AUDIO],
+        output_audio_transcription=types.AudioTranscriptionConfig(),
         system_instruction=system_instruction,
         context_window_compression=types.ContextWindowCompressionConfig(
             trigger_tokens=100_000,
@@ -411,8 +407,7 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
         attempt += 1
         debug_meta = {
             "stage": stage, "model": chosen_model, "api": "live", "api_version": "v1beta",
-            "response_modalities": ["TEXT"] if text_only else ["AUDIO"],
-            "output_audio_transcription": not text_only,
+            "response_modalities": ["AUDIO"], "output_audio_transcription": True,
             "attempt": attempt, "userId": (debug_context or {}).get("user_id"),
             "userName": (debug_context or {}).get("user_name"),
             "turnId": (debug_context or {}).get("turn_id"),
