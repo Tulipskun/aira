@@ -132,3 +132,55 @@ def get_discord_token(
         save_token(token, token_path)
         notify("Discord token verified and saved for future starts.")
         return token
+
+
+OWNER_ID_PATH = ROOT / ".aira" / "owner.id"
+
+
+def get_discord_owner_id(owner_path: Path = OWNER_ID_PATH, environ: Mapping[str, str] | None = None,
+                         prompt: Callable[[str], str] | None = None,
+                         notify: Callable[[str], None] = print) -> str:
+    """Load the owner ID or ask for it once in the server console."""
+    env = os.environ if environ is None else environ
+    try:
+        saved = owner_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        saved = ""
+    except OSError:
+        raise RuntimeError("Cannot read .aira/owner.id") from None
+    value = saved or str(env.get("DISCORD_OWNER_ID", "")).strip()
+    if not value:
+        reader = prompt or input
+        while True:
+            try:
+                value = reader("Discord Owner User ID: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                raise RuntimeError("No Discord owner ID was entered; startup cancelled") from None
+            if value.isdigit() and 17 <= len(value) <= 20:
+                break
+            notify("Enter a valid Discord user ID (17–20 digits).")
+    if not value.isdigit() or not 17 <= len(value) <= 20:
+        raise RuntimeError("Saved Discord owner ID is invalid; correct .aira/owner.id")
+    if not saved:
+        parent = owner_path.parent
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(parent, 0o700)
+        fd, temporary_name = tempfile.mkstemp(prefix=".owner-id-", dir=parent)
+        temporary_path = Path(temporary_name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(value + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, owner_path)
+            os.chmod(owner_path, 0o600)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            temporary_path.unlink(missing_ok=True)
+            raise
+        notify("Discord owner ID saved for future starts.")
+    return value
