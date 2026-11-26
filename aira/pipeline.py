@@ -376,6 +376,9 @@ async def process_character_reply(message: dict, character: Character, prepared_
             context_lines.append(f"สถานะห้อง: ไม่มีเรื่องค้าง · ช่วงเวลาของวัน: {reason}")
         elif reason != "resume":
             context_lines.append("สถานะห้อง: ไม่มีเรื่องค้าง · ห้องเงียบมานานแล้ว")
+        situation = " ".join(str(message.get("idle_event") or "").split())
+        if situation:
+            context_lines.append(f"สถานการณ์ที่เพิ่งเกิดขึ้นในห้อง: {situation}")
         who = str(message.get("user") or "")
         context_lines.append(
             f"ห้องเงียบมา {ambient_minutes:.0f} นาทีแล้ว ไม่มีใครพิมพ์ต่อ"

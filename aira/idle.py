@@ -19,6 +19,32 @@ FRESH_MAX_MINUTES = 90.0
 ANCHOR_MIN_QUIET_MINUTES = 12.0
 # Beats in the day when people naturally bring something up.
 DAY_ANCHORS = (("morning", 7, 10), ("noon", 11, 14), ("evening", 17, 21))
+# Small, concrete happenings the code hands to the opener. Without one the model
+# has nothing to talk about but its own job description, which reads as a canned
+# line; with one it has a situation to react to and can invent around it.
+EVENTS_BY_PERIOD = {
+    "morning": ("แดดเช้าส่องเข้ามาในห้อง", "ได้กลิ่นกาแฟจากห้องข้าง ๆ",
+                "มีนกมาเกาะหน้าต่างแล้วร้องเสียงดัง", "ฝนตกปรอย ๆ ตั้งแต่เช้า"),
+    "noon": ("เที่ยงแล้วแต่ยังไม่มีใครกินข้าว", "มีกล่องข้าววางอยู่บนโต๊ะโดยไม่มีชื่อ",
+             "แดดเที่ยงแรงจนต้องปิดม่าน", "ได้ยินเสียงรถเข็นอาหารผ่านไป"),
+    "evening": ("พระอาทิตย์กำลังตกและห้องเปลี่ยนเป็นสีส้ม", "ได้ยินเสียงเพลงจากห้องข้าง ๆ",
+                "ฝนเริ่มตกตอนเย็นพอดี", "มีคนเปิดไฟดวงหนึ่งที่มุมห้อง"),
+    "night": ("ดึกแล้วแต่ยังมีไฟเปิดอยู่ดวงเดียว", "ได้ยินเสียงลมกระแทกหน้าต่าง",
+              "มีดาวสว่างผิดปกติคืนนี้", "ห้องเงียบจนได้ยินเสียงนาฬิกา"),
+    "any": ("มีแมวเดินผ่านหน้าประตูห้อง", "แก้วน้ำถูกวางผิดที่จนเกือบหก",
+            "มีกลิ่นขนมปังลอยมาจากที่ไหนสักแห่ง", "โทรศัพท์สั่นหนึ่งครั้งแล้วเงียบไป",
+            "มีร่มวางพิงอยู่ที่ประตูโดยไม่มีใครรู้ว่าใครเอามา"),
+}
+
+
+def random_event(now: datetime, rng: random.Random | None = None) -> str:
+    """A small situation the cast can react to when nothing is pending."""
+    generator = rng or random
+    anchor = day_anchor(now) or ("night" if now.hour >= 21 or now.hour < 7 else "any")
+    choices = EVENTS_BY_PERIOD.get(anchor) or EVENTS_BY_PERIOD["any"]
+    if generator.random() < 0.4:
+        choices = EVENTS_BY_PERIOD["any"]
+    return generator.choice(choices)
 QUIET_START_HOUR = 2
 QUIET_END_HOUR = 9
 QUIET_MULTIPLIER = 3.0

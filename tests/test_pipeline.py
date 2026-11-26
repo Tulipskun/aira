@@ -257,6 +257,19 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                                 None, "Rem", None, None, "rem")
         self.assertEqual(pipeline.open_thread(session), "เดี๋ยวเรมกลับมาคุยต่อนะคะ")
 
+    async def test_a_fresh_topic_reaches_the_character_as_a_situation(self):
+        character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
+        message = {"user_id": "1", "user": "Yuuta", "text": "", "session_key": "group:quiet2",
+                   "timestamp": utc_now(), "ambient": True, "idle_minutes": 90.0,
+                   "idle_reason": "evening", "idle_event": "มีแมวเดินผ่านหน้าประตูห้อง"}
+        with patch.object(pipeline, "load_characters", return_value=[character]), \
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
+             patch.object(pipeline, "history_budget_tokens", return_value=100000):
+            await pipeline.process_character_reply(message, character, input_saved=True)
+        context = self.generate.await_args.args[1]
+        self.assertIn("สถานการณ์ที่เพิ่งเกิดขึ้นในห้อง: มีแมวเดินผ่านหน้าประตูห้อง", context)
+        self.assertIn("ไม่มีเรื่องค้าง", context)
+
     async def test_a_character_that_repeats_itself_stays_silent(self):
         session = "group:echo"
         self.store.save_message("model", "ฉันอยู่ตรงนี้ มีธุระอะไรกับหน่วย AST หรือเปล่าคะ",

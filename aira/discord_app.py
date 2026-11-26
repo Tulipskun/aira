@@ -20,7 +20,9 @@ from .characters import load_characters, save_character
 from .config import ROOT, config, load_settings, save_settings
 from .media import prepare_attachments
 from .liveness import Liveness
-from .idle import ANCHOR_MIN_QUIET_MINUTES, day_anchor, idle_target_minutes, should_start
+from .idle import (
+    ANCHOR_MIN_QUIET_MINUTES, day_anchor, idle_target_minutes, random_event, should_start,
+)
 from .pipeline import (
     _save_incoming_message, decide_next_speaker, idle_candidate_order, open_thread,
     process_character_reply,
@@ -554,10 +556,11 @@ class AiraBot(commands.Bot):
                     log.info("Idle chat skipped: no TPM room left for another turn")
                     target_minutes = idle_target_minutes(now, bool(thread))
                     continue
-                log.info("Idle chat attempt: quiet=%.0fmin reason=%s thread=%s",
-                         quiet, reason or "event", bool(thread))
+                event = "" if thread else random_event(now)
+                log.info("Idle chat attempt: quiet=%.0fmin reason=%s thread=%s event=%s",
+                         quiet, reason or "event", bool(thread), event or "-")
                 started = await self._start_idle_turn(channel_id, session_key, quiet, thread,
-                                                      reason)
+                                                      reason, event)
                 self.idle_starts.append(time.time())
                 target_minutes = idle_target_minutes(now, False)
                 log.info("Idle chat round finished: channel=%s started=%s quiet=%.0fmin",
@@ -569,7 +572,7 @@ class AiraBot(commands.Bot):
                 target_minutes = idle_target_minutes(datetime.now(ZoneInfo(config.timezone)))
 
     async def _start_idle_turn(self, channel_id: str, session_key: str, quiet_minutes: float,
-                               thread: str = "", reason: str = "") -> bool:
+                               thread: str = "", reason: str = "", event: str = "") -> bool:
         channel = self.get_channel(int(channel_id)) if channel_id.isdigit() else None
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             return False
@@ -589,6 +592,7 @@ class AiraBot(commands.Bot):
             "idle_minutes": quiet_minutes,
             "open_thread": thread,
             "idle_reason": reason,
+            "idle_event": event,
         }
         response = None
         character = None

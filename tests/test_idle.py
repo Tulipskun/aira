@@ -48,6 +48,13 @@ class IdlePacingTests(unittest.TestCase):
         self.assertFalse(idle.should_start(now, 2, 10, 0, True, random.Random(1)))
         self.assertTrue(idle.should_start(now, 11, 10, 0, True, random.Random(1)))
 
+    def test_a_fresh_topic_gets_a_concrete_situation_to_react_to(self):
+        now = datetime(2026, 2, 1, 19, 0)
+        for seed in range(30):
+            event = idle.random_event(now, random.Random(seed))
+            self.assertTrue(event)
+            self.assertIsInstance(event, str)
+
     def test_the_room_stays_quiet_when_it_has_been_dead_for_hours(self):
         now = datetime(2026, 2, 1, 20, 0)
         self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10, 0, True,
