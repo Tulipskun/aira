@@ -212,6 +212,10 @@ class SlidingWindowTokenBudget:
 # sets the per-turn context budget (a sixth of the window).
 AI_TURN_INTERVAL_SECONDS = 10.0
 TURNS_PER_WINDOW = 6
+# How much of the room the cast reads back: a token window, so a picture in the
+# room costs as much as a picture and fewer messages fit around it.
+HISTORY_WINDOW_TOKENS = 9_500
+IMAGE_TOKENS = 258
 
 _LIMIT = int(os.environ.get("AIRA_GEMINI_TPM_LIMIT", "65000"))
 live_token_budget = SlidingWindowTokenBudget(

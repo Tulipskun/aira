@@ -22,7 +22,7 @@ from .memory import (
     is_boilerplate, recall_episodes, search_memories_by_vector,
 )
 from .store import store, utc_now
-from .token_budget import estimate_tokens
+from .token_budget import HISTORY_WINDOW_TOKENS, IMAGE_TOKENS, estimate_tokens
 
 log = logging.getLogger("aira.pipeline")
 _background: set[asyncio.Task] = set()
@@ -131,9 +131,37 @@ def _row_label(row: dict, names: dict[str, str]) -> str:
     return str(row.get("user_name") or "ผู้ใช้")
 
 
-def room_history(session_key: str) -> list[dict]:
-    """Every message in the room: the cast reads what a member reads."""
-    return store.get_history(store.count_messages(session_key=session_key) + 1, session_key)
+def message_cost(row: dict) -> int:
+    """What one message costs the model: its words, its attachments, its picture."""
+    text = " ".join(str(row.get("text") or "").split())
+    speaker = row.get("character_id") or row.get("user_name") or ""
+    cost = estimate_tokens(f"{speaker}: {text}")
+    media = " ".join(str(row.get("media_summary") or "").split())
+    if media:
+        cost += estimate_tokens(media)
+        # each attached picture is looked at, so it costs like a picture
+        cost += IMAGE_TOKENS * max(1, media.count("รูป") + media.count("image"))
+    if row.get("file_name"):
+        cost += IMAGE_TOKENS
+    return cost
+
+
+def room_history(session_key: str, token_budget: int = HISTORY_WINDOW_TOKENS) -> list[dict]:
+    """The room as a member sees it, back to a token window rather than a count.
+
+    The window is measured in tokens, so a picture or an attachment in the room
+    pushes fewer messages into view, and a message is never cut in half.
+    """
+    rows = store.get_history(store.count_messages(session_key=session_key) + 1, session_key)
+    kept: list[dict] = []
+    total = 0
+    for row in reversed(rows):
+        cost = message_cost(row)
+        if kept and total + cost > token_budget:
+            break
+        kept.append(row)
+        total += cost
+    return list(reversed(kept))
 
 
 def _transcript_with_replies(rows: list[dict], names: dict[str, str]) -> tuple[list[str], int, str]:

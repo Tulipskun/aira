@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from aira import pipeline
+from aira.token_budget import HISTORY_WINDOW_TOKENS
 from aira.characters import Character
 from aira.store import Store, utc_now
 
@@ -273,6 +274,28 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.save_message("user", "ไปไหนกันดี", utc_now(), session, "1", "Yuuta")
         with patch.object(pipeline.gemini, "decide_open_thread", side_effect=RuntimeError("down")):
             self.assertEqual(await pipeline.open_thread(session), "")
+
+    def test_the_room_is_read_back_to_a_token_window(self):
+        session = "group:window"
+        for index in range(200):
+            self.store.save_message("user", f"ข้อความยาวพอสมควรหมายเลข {index} " * 3, utc_now(),
+                                    session, "1", "Yuuta")
+        window = pipeline.room_history(session)
+        total = sum(pipeline.message_cost(row) for row in window)
+        self.assertLessEqual(total, HISTORY_WINDOW_TOKENS)
+        self.assertGreater(len(window), 1)
+        self.assertEqual(window[-1]["text"].strip(), ("ข้อความยาวพอสมควรหมายเลข 199 " * 3).strip())
+
+    def test_a_picture_in_the_room_shortens_the_window(self):
+        session = "group:window-media"
+        for index in range(80):
+            self.store.save_message("user", f"ข้อความ {index}", utc_now(), session, "1", "Yuuta")
+        plain = len(pipeline.room_history(session))
+        for index in range(20):
+            self.store.save_message("user", "ดูรูปนี้สิ", utc_now(), session, "1", "Yuuta",
+                                    media_summary="แนบรูป 2 รูป: ภาพทุ่งดอกไม้, ภาพพระอาทิตย์ตก")
+        with_media = len(pipeline.room_history(session))
+        self.assertLess(with_media, plain + 20)
 
     async def test_a_greeting_opening_carries_the_moment_not_a_script(self):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
