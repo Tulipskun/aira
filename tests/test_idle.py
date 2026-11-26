@@ -46,7 +46,7 @@ class IdlePacingTests(unittest.TestCase):
     def test_a_quiet_room_only_restarts_after_its_gap(self):
         now = datetime(2026, 2, 1, 20, 0)
         self.assertFalse(idle.should_start(now, 2, 10, 0, True, random.Random(1)))
-        self.assertTrue(idle.should_start(now, 11, 10, 0, True, random.Random(1)))
+        self.assertTrue(idle.should_start(now, 11, 10, 0, True))
 
     def test_the_day_is_only_labelled_never_scripted(self):
         # The code names the part of the day; what to say is the model's decision.
