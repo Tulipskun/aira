@@ -212,10 +212,8 @@ class SlidingWindowTokenBudget:
 # sets the per-turn context budget (a sixth of the window).
 AI_TURN_INTERVAL_SECONDS = 10.0
 TURNS_PER_WINDOW = 6
-# How much of the room the cast reads back: a token window, so a picture in the
-# room costs as much as a picture and fewer messages fit around it. Sized so one
-# turn stays inside a sixth of the 65,000 token allowance, which is six turns a
-# minute at the ten second beat.
+# Kept for measuring: the room itself is read in full, so this is only the window
+# someone may ask room_history() for when size has to be estimated.
 HISTORY_WINDOW_TOKENS = 3_900
 IMAGE_TOKENS = 258
 

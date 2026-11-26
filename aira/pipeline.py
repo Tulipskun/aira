@@ -22,7 +22,7 @@ from .memory import (
     is_boilerplate, recall_episodes, search_memories_by_vector,
 )
 from .store import store, utc_now
-from .token_budget import HISTORY_WINDOW_TOKENS, IMAGE_TOKENS, estimate_tokens
+from .token_budget import IMAGE_TOKENS, estimate_tokens
 
 log = logging.getLogger("aira.pipeline")
 _background: set[asyncio.Task] = set()
@@ -149,13 +149,15 @@ def message_cost(row: dict) -> int:
     return cost
 
 
-def room_history(session_key: str, token_budget: int = HISTORY_WINDOW_TOKENS) -> list[dict]:
-    """The room as a member sees it, back to a token window rather than a count.
+def room_history(session_key: str, token_budget: int | None = None) -> list[dict]:
+    """Every message in the room, in order. Nothing is left out.
 
-    The window is measured in tokens, so a picture or an attachment in the room
-    pushes fewer messages into view, and a message is never cut in half.
+    A token budget can be passed for measuring, but by default the whole room is
+    read: the cast sees the same messages a member scrolling back would see.
     """
     rows = store.get_history(store.count_messages(session_key=session_key) + 1, session_key)
+    if token_budget is None:
+        return rows
     kept: list[dict] = []
     total = 0
     for row in reversed(rows):

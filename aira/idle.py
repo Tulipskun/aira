@@ -13,8 +13,8 @@ from datetime import datetime
 
 # A thread left hanging is answered at once, without any wait; a room with
 # nothing pending waits this long before someone opens a new topic.
-FRESH_MIN_MINUTES = 15.0
-FRESH_MAX_MINUTES = 45.0
+FRESH_MIN_MINUTES = 10.0
+FRESH_MAX_MINUTES = 30.0
 ANCHOR_MIN_QUIET_MINUTES = 12.0
 QUIET_START_HOUR = 2
 QUIET_END_HOUR = 9
