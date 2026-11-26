@@ -152,6 +152,13 @@ class Store:
         if "last_message_id" not in self._columns("idle_state"):
             self.db.execute(
                 "ALTER TABLE idle_state ADD COLUMN last_message_id INTEGER NOT NULL DEFAULT 0")
+        # Topics the cast already opened, so the next one is not the same again.
+        self.db.execute("""CREATE TABLE IF NOT EXISTS idle_topics(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_key TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""")
         self.db.execute("""CREATE TABLE IF NOT EXISTS idle_anchor_state(
             session_key TEXT NOT NULL, anchor TEXT NOT NULL, day TEXT NOT NULL,
             PRIMARY KEY(session_key, anchor, day)
@@ -417,6 +424,21 @@ class Store:
                 del cached[:-self._history_cache_rows]
             self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
+
+    def recent_idle_topics(self, session_key: str, limit: int = 10) -> list[str]:
+        rows = self.db.execute(
+            """SELECT topic FROM idle_topics WHERE session_key=?
+               ORDER BY id DESC LIMIT ?""", (session_key, int(limit))).fetchall()
+        return [str(row["topic"]) for row in rows]
+
+    def add_idle_topic(self, session_key: str, topic: str) -> None:
+        self.db.execute(
+            "INSERT INTO idle_topics(session_key,topic,created_at) VALUES(?,?,?)",
+            (session_key, topic, utc_now()))
+        self.db.execute(
+            """DELETE FROM idle_topics WHERE session_key=? AND id NOT IN (
+                   SELECT id FROM idle_topics WHERE session_key=? ORDER BY id DESC LIMIT 50)""",
+            (session_key, session_key))
 
     def idle_wait(self, session_key: str) -> dict | None:
         row = self.db.execute(

@@ -659,7 +659,10 @@ class AiraBot(commands.Bot):
         if reason == "spontaneous":
             # A separate request invents the happening; the cast only reacts to it.
             try:
-                message["idle_event"] = await gemini.generate_event(_room_transcript(session_key))
+                message["idle_event"] = await gemini.generate_event(
+                    _room_transcript(session_key),
+                    store.recent_idle_topics(session_key),
+                )
             except Exception:
                 log.exception("Could not invent an event; opening without one")
         response = None
@@ -674,6 +677,8 @@ class AiraBot(commands.Bot):
             log.info("Idle opening stayed silent: character=%s", candidate.id)
         if response is None or character is None:
             return False
+        if reason == "spontaneous" and message.get("idle_event"):
+            store.add_idle_topic(session_key, str(message["idle_event"]))
         if reason == "day_greeting":
             store.mark_idle_anchor(session_key, day_anchor(datetime.now(
                 ZoneInfo(config.timezone))) or "day", datetime.now(
