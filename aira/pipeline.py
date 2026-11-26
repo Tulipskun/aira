@@ -195,8 +195,15 @@ def open_thread(session_key: str) -> str:
     if last.get("role") == "user":
         # Somebody spoke and nobody answered yet.
         return text
-    if COMMITMENT_TEXT.search(text) or text.endswith("?"):
+    if COMMITMENT_TEXT.search(text):
+        # A promise the room has not kept yet.
         return text
+    previous = rows[-2] if len(rows) > 1 else None
+    if text.endswith("?") and previous is not None and previous.get("role") == "user":
+        # The room asked the human something and is still waiting for the answer.
+        return text
+    # A question one character asked another is ordinary conversation: the room
+    # answers it itself, so it is not a matter hanging over the room.
     return ""
 
 

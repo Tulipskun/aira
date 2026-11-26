@@ -251,6 +251,21 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.save_message("model", "ไปสวนกันไหมคะ", utc_now(), session, None, "Rem", None, None, "rem")
         self.assertEqual(pipeline.open_thread(session), "")
 
+    def test_a_question_asked_between_characters_is_not_a_pending_matter(self):
+        session = "group:bantar"
+        self.store.save_message("model", "วันนี้ฝึกซ้อมกันหนักมากเลยนะคะ", utc_now(), session,
+                                None, "Rem", None, None, "rem")
+        self.store.save_message("model", "คุณโอริกามิจะซ้อมต่อไหมคะ?", utc_now(), session,
+                                None, "Isla", None, None, "isla")
+        self.assertEqual(pipeline.open_thread(session), "")
+
+    def test_a_question_asked_back_to_the_human_is_still_waiting(self):
+        session = "group:awaiting"
+        self.store.save_message("user", "วันนี้เหนื่อยจัง", utc_now(), session, "1", "Yuuta")
+        self.store.save_message("model", "แล้วคุณยูตะจะพักผ่อนบ้างไหมคะ?", utc_now(), session,
+                                None, "Isla", None, None, "isla")
+        self.assertEqual(pipeline.open_thread(session), "แล้วคุณยูตะจะพักผ่อนบ้างไหมคะ?")
+
     def test_a_promise_keeps_the_thread_open(self):
         session = "group:promise"
         self.store.save_message("model", "เดี๋ยวเรมกลับมาคุยต่อนะคะ", utc_now(), session,
