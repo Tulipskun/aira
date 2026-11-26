@@ -119,20 +119,20 @@ class SlidingWindowTokenBudget:
         return max(1, int(sum(measured) / len(measured)))
 
     def requests_per_window(self) -> int:
-        """How many requests the TPM allowance pays for in one window."""
-        return max(1, self.capacity // self.average_request_tokens())
+        """Requests one window pays for at the automated beat."""
+        return max(1, int(self.window_seconds // AI_TURN_INTERVAL_SECONDS))
 
     def remaining_turns(self) -> int:
         """Completed requests the remaining window budget can still pay for."""
         return self.available_tokens() // self.average_request_tokens()
 
     def target_request_tokens(self) -> int:
-        """Request size we aim for so the window always funds several turns."""
-        return max(1, int(self.capacity * PER_REQUEST_RATIO))
+        """Context budget that keeps every turn inside one beat of the allowance."""
+        return max(1, self.capacity // self.requests_per_window())
 
     def turn_interval_seconds(self) -> float:
-        """Minimum spacing between automated turns implied by the allowance."""
-        return self.window_seconds / self.requests_per_window()
+        """Fixed beat between automated turns."""
+        return AI_TURN_INTERVAL_SECONDS
 
     def snapshot(self) -> dict:
         now = time.time()
@@ -197,9 +197,10 @@ class SlidingWindowTokenBudget:
         return max(0, min(usable, self.available_tokens()))
 
 
-# One turn may spend at most this share of the window, so a full minute always
-# funds several exchanges instead of one giant request eating the allowance.
-PER_REQUEST_RATIO = 0.25
+# The cast speaks on a fixed beat instead of a variable one. What adapts is the
+# context budget: one turn may spend at most window/beat of the allowance, so a
+# turn can never eat the minute that the next five turns need.
+AI_TURN_INTERVAL_SECONDS = 10.0
 
 _LIMIT = int(os.environ.get("AIRA_GEMINI_TPM_LIMIT", "65000"))
 live_token_budget = SlidingWindowTokenBudget(
