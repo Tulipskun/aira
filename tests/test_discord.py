@@ -210,6 +210,10 @@ class DiscordTests(unittest.TestCase):
             import time
             import aira.discord_app as app
             from aira.store import Store
+
+            class Paced(Exception):
+                pass
+
             with tempfile.TemporaryDirectory() as directory:
                 test_store = Store(Path(directory) / "tpm-chain.db")
                 bot = AiraBot()
@@ -224,10 +228,13 @@ class DiscordTests(unittest.TestCase):
                                  "text": "Isla ตอบ", "next_speaker_id": "rem"},
                     "pending_send": None,
                 })
+
                 class FakeChannel:
                     pass
+
                 generated = AsyncMock()
-                slept = AsyncMock()
+                # Sleep means "the worker waited": stop the loop there to observe it.
+                paced = AsyncMock(side_effect=Paced)
                 try:
                     bot.last_ai_turn_at["9"] = time.time()
                     with patch.object(app, "store", test_store), \
@@ -237,12 +244,14 @@ class DiscordTests(unittest.TestCase):
                          patch.object(app.discord, "Thread", FakeChannel), \
                          patch.object(app.live_token_budget, "turn_interval_seconds",
                                       return_value=15.0), \
-                         patch.object(app.asyncio, "sleep", new=slept):
-                        await bot._run_autonomous_continuation("group:9")
-                    # The automated turn waits for its slot instead of firing instantly.
-                    slept.assert_awaited()
+                         patch.object(app.asyncio, "sleep", new=paced):
+                        with self.assertRaises(Paced):
+                            await bot._run_autonomous_continuation("group:9")
+                    paced.assert_awaited()
                     generated.assert_not_awaited()
+                    # Pacing keeps the exchange, it does not cancel it.
                     self.assertEqual(test_store.autonomous_continuation_count(), 1)
+
                     state = test_store.get_autonomous_continuation("group:9")
                     state["waited"] = app.MAX_CHAIN_WAIT_SECONDS
                     test_store.save_autonomous_continuation("group:9", "9", state)
@@ -253,7 +262,9 @@ class DiscordTests(unittest.TestCase):
                          patch.object(app.discord, "TextChannel", FakeChannel), \
                          patch.object(app.discord, "Thread", FakeChannel), \
                          patch.object(app.live_token_budget, "remaining_turns", return_value=0), \
-                         patch.object(app.asyncio, "sleep", new=slept):
+                         patch.object(app.live_token_budget, "turn_interval_seconds",
+                                      return_value=0.0), \
+                         patch.object(app.asyncio, "sleep", new=AsyncMock()):
                         await bot._run_autonomous_continuation("group:9")
                     generated.assert_not_awaited()
                     self.assertEqual(test_store.autonomous_continuation_count(), 0)
