@@ -257,18 +257,35 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                                 None, "Rem", None, None, "rem")
         self.assertEqual(pipeline.open_thread(session), "เดี๋ยวเรมกลับมาคุยต่อนะคะ")
 
-    async def test_a_fresh_topic_reaches_the_character_as_a_situation(self):
+    async def test_a_greeting_opening_carries_the_moment_not_a_script(self):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
         message = {"user_id": "1", "user": "Yuuta", "text": "", "session_key": "group:quiet2",
                    "timestamp": utc_now(), "ambient": True, "idle_minutes": 90.0,
-                   "idle_reason": "evening", "idle_event": "มีแมวเดินผ่านหน้าประตูห้อง"}
+                   "idle_reason": "day_greeting", "part_of_day": "morning"}
         with patch.object(pipeline, "load_characters", return_value=[character]), \
              patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
              patch.object(pipeline, "history_budget_tokens", return_value=100000):
             await pipeline.process_character_reply(message, character, input_saved=True)
         context = self.generate.await_args.args[1]
-        self.assertIn("สถานการณ์ที่เพิ่งเกิดขึ้นในห้อง: มีแมวเดินผ่านหน้าประตูห้อง", context)
-        self.assertIn("ไม่มีเรื่องค้าง", context)
+        self.assertIn("สถานะห้อง: ไม่มีเรื่องค้าง · ช่วงเวลาของวัน: morning", context)
+        self.assertIn("โอกาส: คุณเป็นคนแรกที่เปิดปากในห้องช่วงนี้", context)
+        # Nothing is scripted for the character: no prewritten situation reaches her.
+        self.assertNotIn("สถานการณ์", context)
+
+    async def test_a_spontaneous_opening_is_fed_one_of_its_own_memories(self):
+        character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
+        message = {"user_id": "1", "user": "Yuuta", "text": "", "session_key": "group:quiet3",
+                   "timestamp": utc_now(), "ambient": True, "idle_minutes": 90.0,
+                   "idle_reason": "spontaneous", "part_of_day": "evening"}
+        with patch.object(pipeline, "load_characters", return_value=[character]), \
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
+             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
+             patch.object(pipeline, "sample_memory",
+                          return_value="เคยสัญญากับคุณยูตะว่าจะไปดูดาวด้วยกัน"):
+            await pipeline.process_character_reply(message, character, input_saved=True)
+        context = self.generate.await_args.args[1]
+        self.assertIn("เรื่องหนึ่งจากความทรงจำของคุณเอง: เคยสัญญากับคุณยูตะว่าจะไปดูดาวด้วยกัน",
+                      context)
 
     async def test_a_character_that_repeats_itself_stays_silent(self):
         session = "group:echo"
