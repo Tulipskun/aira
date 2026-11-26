@@ -34,9 +34,11 @@ class CharacterTests(unittest.TestCase):
                       load_character_prompt(characters["origami"]))
 
     def test_the_avatar_comes_from_a_frame_that_exists(self):
+        from aira.characters import character_images
+        frame = character_images("rem")[0]
         character = _validate({"id": "rem", "name": "Rem", "promptFile": "prompts/rem.md",
-                               "avatarFile": "rem_calm_06.jpg"}, "rem.json")
-        self.assertTrue(character.avatar_url.endswith("/rem/rem_calm_06.jpg"))
+                               "avatarFile": frame}, "rem.json")
+        self.assertTrue(character.avatar_url.endswith(f"/rem/{frame}"))
         self.assertTrue(character.enabled)
         stale = _validate({"id": "rem", "name": "Rem", "promptFile": "prompts/rem.md",
                            "avatarFile": "rem_gone_99999.jpg"}, "rem.json")
