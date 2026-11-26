@@ -244,6 +244,26 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual({item.id for item in selected}, {item.id for item in chars})
 
+    async def test_a_character_turn_treats_the_other_character_like_a_user(self):
+        session = "group:duo"
+        self.store.save_message("model", "รีบนอนเถอะค่ะ", utc_now(), session, None, "Rem",
+                                None, None, "rem")
+        character = Character("isla", "Isla", ("Isla",), Path("isla.md"))
+        message = {"user_id": "1", "user": "Yuuta", "text": "รีบนอนเถอะค่ะ",
+                   "session_key": session, "timestamp": utc_now(), "character_turn": True,
+                   "trigger_character": "Rem", "trigger_character_id": "rem"}
+        with patch.object(pipeline, "load_characters", return_value=[character]), \
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
+             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
+             patch.object(pipeline, "embed", new=AsyncMock(return_value=[0.1])) as embedded:
+            await pipeline.process_character_reply(message, character, input_saved=True)
+        context = self.generate.await_args.args[1]
+        # The line from the other character arrives as a message with an identity.
+        self.assertIn("ผู้ส่งข้อความ: Rem [character_id: rem]", context)
+        self.assertIn("ข้อความจาก Rem: รีบนอนเถอะค่ะ", context)
+        # And the character brings its own memories to it, like for a user message.
+        embedded.assert_awaited()
+
     async def test_an_ambient_turn_starts_the_chat_and_still_recalls_memories(self):
         session = "group:quiet"
         self.store.save_message("user", "ไว้คุยกันใหม่นะ", utc_now(), session, "1", "Yuuta")

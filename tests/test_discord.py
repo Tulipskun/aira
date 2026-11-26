@@ -205,17 +205,20 @@ class DiscordTests(unittest.TestCase):
                 await bot.close()
         asyncio.run(run_test())
 
-    def test_character_replies_follow_each_other_without_an_artificial_wait(self):
+    def test_character_replies_wait_for_their_ten_second_beat(self):
         async def run_test():
             import time
             import aira.discord_app as app
             from aira.store import Store
 
+            class Beat(Exception):
+                pass
+
             class FakeChannel:
                 pass
 
             with tempfile.TemporaryDirectory() as directory:
-                test_store = Store(Path(directory) / "chat-chain.db")
+                test_store = Store(Path(directory) / "chat-beat.db")
                 bot = AiraBot()
                 test_store.save_autonomous_continuation("group:9", "9", {
                     "created_at": time.time(), "batch_id": "batch-1", "hops": 1,
@@ -233,23 +236,36 @@ class DiscordTests(unittest.TestCase):
                     "image": "", "rps": None, "next_speaker_id": "",
                 })
                 send = AsyncMock()
-                slept = AsyncMock()
+                observed = AsyncMock(side_effect=Beat)
                 try:
+                    bot.last_ai_turn_at["9"] = time.time()
                     with patch.object(app, "store", test_store), \
                          patch.object(app, "process_character_reply", new=generated), \
                          patch.object(bot, "get_channel", return_value=FakeChannel()), \
                          patch.object(app.discord, "TextChannel", FakeChannel), \
                          patch.object(app.discord, "Thread", FakeChannel), \
+                         patch.object(app.live_token_budget, "turn_interval_seconds", return_value=10.0), \
+                         patch.object(app.asyncio, "sleep", new=observed):
+                        with self.assertRaises(Beat):
+                            await bot._run_autonomous_continuation("group:9")
+                    observed.assert_awaited()
+                    generated.assert_not_awaited()
+                    self.assertEqual(test_store.autonomous_continuation_count(), 1)
+
+                    bot.last_ai_turn_at.clear()
+                    with patch.object(app, "store", test_store), \
+                         patch.object(app, "process_character_reply", new=generated), \
+                         patch.object(bot, "get_channel", return_value=FakeChannel()), \
+                         patch.object(app.discord, "TextChannel", FakeChannel), \
+                         patch.object(app.discord, "Thread", FakeChannel), \
+                         patch.object(app.live_token_budget, "turn_interval_seconds", return_value=0.0), \
                          patch.object(app.live_token_budget, "remaining_turns", return_value=6), \
                          patch.object(bot, "_send_character_output", new=send), \
-                         patch.object(bot, "_resolve_next_speaker",
-                                      new=AsyncMock(return_value=None)), \
-                         patch.object(app.asyncio, "sleep", new=slept):
+                         patch.object(bot, "_resolve_next_speaker", new=AsyncMock(return_value=None)), \
+                         patch.object(app.asyncio, "sleep", new=AsyncMock()):
                         await bot._run_autonomous_continuation("group:9")
-                    # The next character answers straight away, like a person would.
                     generated.assert_awaited_once()
                     send.assert_awaited_once()
-                    slept.assert_not_awaited()
                     self.assertEqual(test_store.autonomous_continuation_count(), 0)
                 finally:
                     await bot.close()

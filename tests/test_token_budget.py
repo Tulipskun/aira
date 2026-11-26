@@ -68,7 +68,8 @@ class TokenBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_fixed_beat_sets_the_context_budget(self):
         budget = SlidingWindowTokenBudget(limit=1000, window_seconds=60, safety_ratio=1.0,
                                           default_request_tokens=250)
-        # Six turns a window, so a turn gets a sixth of the window.
+        # Ten second beat: six turns a window, so a turn gets a sixth of the window.
+        self.assertEqual(budget.turn_interval_seconds(), 10.0)
         self.assertEqual(budget.requests_per_window(), 6)
         self.assertEqual(budget.target_request_tokens(), 166)
         self.assertEqual(budget.history_budget(reserve_tokens=50), 116)

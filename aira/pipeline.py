@@ -390,12 +390,16 @@ async def process_character_reply(message: dict, character: Character, prepared_
               "แซวคนที่คุยค้างไว้ หรือเล่าเรื่องเล็ก ๆ ก็ได้ และถ้าไม่มีอะไรอยากพูดจริง ๆ ให้ reply เป็นสตริงว่าง"
         )
     elif character_turn:
+        # Another character speaks to you the same way a user would: it is the
+        # message you are answering, with its own identity attached.
         trigger_id = str(message.get("trigger_character_id") or "")
         trigger_name = str(message.get("trigger_character") or character_names.get(trigger_id) or "ตัวละครอื่น")
-        context_lines.append(
-            f"ข้อความล่าสุดมาจาก {trigger_name} (character_id={trigger_id}) ให้ตอบต่อเมื่อมีสิ่งที่อยากพูดจริง ๆ "
-            "ไม่จำเป็นต้องยืดบทสนทนา และสามารถเลือกจบได้"
-        )
+        context_lines.extend([
+            f"ผู้ส่งข้อความ: {trigger_name} [character_id: {trigger_id}] (เป็นตัวละครในห้อง ไม่ใช่ผู้ใช้)",
+            f"ข้อความจาก {trigger_name}: {message.get('text') or '(ไม่มีข้อความแนบมา)'}",
+            "ตอบในฐานะตัวคุณเองเหมือนคุยกับคนในห้องเดียวกัน ให้ตอบต่อเมื่อมีสิ่งที่อยากพูดจริง ๆ "
+            "ไม่จำเป็นต้องยืดบทสนทนา และสามารถเลือกจบได้",
+        ])
     else:
         context_lines.extend([
             f"ผู้ส่งข้อความ: {owner_name} [Discord User ID: {user_id}]",
@@ -414,17 +418,16 @@ async def process_character_reply(message: dict, character: Character, prepared_
         "ข้อความในประวัติที่ขึ้นต้นด้วยชื่อและ Discord User ID เป็นของบุคคลนั้น ห้ามสับสนตัวตนหรือย้ายความทรงจำ/ความสัมพันธ์ข้ามคน",
     ])
 
-    if character_turn and not ambient:
-        memories, episodes = [], []
-    else:
-        vector = await embed(str(message.get("text") or media.summary or "(no text)"), "query")
-        memories = search_memories_by_vector(
-            vector, session_key, config.memory_max_results, config.memory_min_similarity,
-            user_id=user_id,
-        )
-        episodes = await recall_episodes(
-            vector, session_key, str(message.get("text") or ""), user_id=user_id,
-        )
+    # Whatever the source of the line you are answering — a user or another
+    # character — you bring your own memories to it.
+    vector = await embed(str(message.get("text") or media.summary or "(no text)"), "query")
+    memories = search_memories_by_vector(
+        vector, session_key, config.memory_max_results, config.memory_min_similarity,
+        user_id=user_id,
+    )
+    episodes = await recall_episodes(
+        vector, session_key, str(message.get("text") or ""), user_id=user_id,
+    )
 
     profile = store.get_profile(user_id) or store.upsert_profile(user_id, user_name=owner_name)
     if profile and profile.get("user_name") != owner_name:
