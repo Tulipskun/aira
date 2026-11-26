@@ -244,6 +244,27 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual({item.id for item in selected}, {item.id for item in chars})
 
+    async def test_an_ambient_turn_starts_the_chat_and_still_recalls_memories(self):
+        session = "group:quiet"
+        self.store.save_message("user", "ไว้คุยกันใหม่นะ", utc_now(), session, "1", "Yuuta")
+        character = Character("isla", "Isla", ("Isla",), Path("isla.md"))
+        message = {"user_id": "1", "user": "Yuuta", "text": "ไว้คุยกันใหม่นะ",
+                   "session_key": session, "timestamp": utc_now(),
+                   "ambient": True, "idle_minutes": 24.0}
+        with patch.object(pipeline, "load_characters", return_value=[character]), \
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
+             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
+             patch.object(pipeline, "embed", new=AsyncMock(return_value=[0.1])) as embedded:
+            await pipeline.process_character_reply(message, character, input_saved=True)
+        context = self.generate.await_args.args[1]
+        self.assertIn("ห้องเงียบมา 24 นาที", context)
+        self.assertIn("คุณกำลังเป็นคนเริ่มบทสนทนาเอง", context)
+        # An opener needs its own memories, unlike a character answering another character.
+        embedded.assert_awaited()
+        # The quiet room adds no fake user message to the transcript.
+        rows = self.store.get_history(10, session)
+        self.assertEqual(len(rows), 1)
+
     async def test_transcript_shows_which_message_each_reply_answers(self):
         chars = [
             Character("isla", "Isla", ("Isla",), Path("isla.md")),

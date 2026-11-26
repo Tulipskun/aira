@@ -6,6 +6,8 @@ import logging
 import mimetypes
 import time
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,17 +20,30 @@ from .characters import load_characters, save_character
 from .config import ROOT, config, load_settings, save_settings
 from .media import prepare_attachments
 from .liveness import Liveness
+from .idle import idle_target_minutes, should_start
 from .pipeline import (
-    _save_incoming_message, decide_next_speaker, process_character_reply, select_characters,
-    shutdown_pipeline,
+    _save_incoming_message, choose_idle_speaker, decide_next_speaker, process_character_reply,
+    select_characters, shutdown_pipeline,
 )
 from .scheduler import MessageScheduler
-from .store import store, utc_now
+from .store import group_session_key, store, utc_now
 from .token_budget import live_token_budget
 
 log = logging.getLogger("aira.discord")
 # A paced exchange may wait for the window to refill, but not forever.
 MAX_CHAIN_WAIT_SECONDS = 120.0
+IDLE_POLL_SECONDS = 20.0
+
+
+def _quiet_minutes(timestamp: str) -> float | None:
+    """Minutes since the stored message timestamp, or None when unreadable."""
+    try:
+        moment = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=ZoneInfo("UTC"))
+    return (datetime.now(ZoneInfo("UTC")) - moment).total_seconds() / 60
 DISCORD_CONFIG = ROOT / ".aira" / "discord-config.json"
 RPS_CHOICES = {"rock": ("ค้อน", "✊🏻"), "paper": ("กระดาษ", "🖐🏻"), "scissors": ("กรรไกร", "✌🏻")}
 RPS_GAMES: dict[str, dict] = {}
@@ -145,6 +160,8 @@ class ModelModal(discord.ui.Modal, title="Gemini Model Settings"):
     gemini2 = discord.ui.TextInput(label="Gemini 2 Live model", max_length=100)
     decision = discord.ui.TextInput(label="Speaker decision model", max_length=100)
     embedding = discord.ui.TextInput(label="Embedding model", max_length=100)
+    idle_chat = discord.ui.TextInput(label="ให้ AI เริ่มคุยเองตอนห้องเงียบ (true/false)",
+                                     required=False, max_length=5)
 
     def __init__(self):
         super().__init__()
@@ -153,18 +170,28 @@ class ModelModal(discord.ui.Modal, title="Gemini Model Settings"):
         self.gemini2.default = config.gemini2_model
         self.decision.default = config.decision_model
         self.embedding.default = settings.get("embeddingModel", config.embedding_model)
+        self.idle_chat.default = "true" if config.idle_chat else "false"
 
     async def on_submit(self, interaction: discord.Interaction):
         settings = load_settings()
+        idle_value = str(self.idle_chat.value or "").strip().lower()
+        if idle_value not in {"", "true", "false"}:
+            await interaction.response.send_message("ค่า idle chat ต้องเป็น true หรือ false",
+                                                    ephemeral=True)
+            return
         settings.update({"gemini1Model": str(self.gemini1.value).strip(),
                          "gemini2Model": str(self.gemini2.value).strip(),
                          "decisionModel": str(self.decision.value).strip(),
                          "embeddingModel": str(self.embedding.value).strip()})
+        if idle_value:
+            settings["idleChat"] = idle_value == "true"
         save_settings(settings)
         config.gemini1_model = settings["gemini1Model"]
         config.gemini2_model = settings["gemini2Model"]
         config.decision_model = settings["decisionModel"]
         config.embedding_model = settings["embeddingModel"]
+        if idle_value:
+            config.idle_chat = settings["idleChat"]
         await interaction.response.send_message("บันทึก Model แล้ว มีผลกับคำขอถัดไป", ephemeral=True)
 
 
@@ -274,6 +301,8 @@ class AiraBot(commands.Bot):
         self.in_flight = 0
         # Automated turns are paced by the TPM allowance; user turns are not.
         self.last_ai_turn_at: dict[str, float] = {}
+        self.idle_task: asyncio.Task | None = None
+        self.idle_starts: list[float] = []
         self.autonomous_tasks: dict[str, asyncio.Task] = {}
         self.started_at = time.time()
         self.health_server = None
@@ -303,6 +332,7 @@ class AiraBot(commands.Bot):
             f"**Gemini 1:** {config.gemini1_model}",
             f"**Gemini 2:** {config.gemini2_model}",
             f"**Decision:** {config.decision_model}",
+            f"**AI เริ่มคุยเอง:** {'เปิด (เมื่อห้องเงียบ)' if config.idle_chat else 'ปิด'}",
             "",
             "**ตัวละคร:** " + ", ".join(x.name for x in load_characters()),
             "",
@@ -340,6 +370,12 @@ class AiraBot(commands.Bot):
         self.liveness.start()
         for session_key, _channel_id, _payload in store.list_autonomous_continuations():
             self._schedule_autonomous_continuation(session_key)
+        channel_id = get_response_channel_id()
+        if config.idle_chat and channel_id and self.idle_task is None:
+            self.idle_task = asyncio.create_task(
+                self._run_idle_loop(channel_id), name="aira-idle-chat",
+            )
+            log.info("Idle chat loop started: channel=%s", channel_id)
 
     async def start_health_server(self):
         from aiohttp import web
@@ -468,6 +504,96 @@ class AiraBot(commands.Bot):
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             return
         await self._process_batch(messages)
+
+    async def _run_idle_loop(self, channel_id: str) -> None:
+        """Let the cast restart a quiet room the way a group of friends would."""
+        session_key = group_session_key(channel_id)
+        target_minutes = idle_target_minutes(datetime.now(ZoneInfo(config.timezone)))
+        while not self._closed:
+            await asyncio.sleep(IDLE_POLL_SECONDS)
+            try:
+                if not config.idle_chat or self.in_flight:
+                    continue
+                if self.scheduler.has_pending_session(session_key):
+                    continue
+                rows = store.get_history(1, session_key)
+                if not rows:
+                    continue
+                last = rows[-1]
+                quiet = _quiet_minutes(str(last.get("timestamp") or ""))
+                if quiet is None or quiet < target_minutes:
+                    continue
+                now = datetime.now(ZoneInfo(config.timezone))
+                starts = [moment for moment in self.idle_starts if moment > time.time() - 3600]
+                self.idle_starts = starts
+                if not should_start(now, quiet, target_minutes, len(starts)):
+                    # Someone had nothing to say: wait another natural gap.
+                    target_minutes = idle_target_minutes(now)
+                    continue
+                if live_token_budget.remaining_turns() < 1:
+                    log.info("Idle chat skipped: no TPM room left for another turn")
+                    target_minutes = idle_target_minutes(now)
+                    continue
+                started = await self._start_idle_turn(channel_id, session_key, quiet)
+                self.idle_starts.append(time.time())
+                target_minutes = idle_target_minutes(now)
+                log.info("Idle chat round finished: channel=%s started=%s quiet=%.0fmin",
+                         channel_id, started, quiet)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Idle chat loop failed; continuing")
+                target_minutes = idle_target_minutes(datetime.now(ZoneInfo(config.timezone)))
+
+    async def _start_idle_turn(self, channel_id: str, session_key: str, quiet_minutes: float) -> bool:
+        channel = self.get_channel(int(channel_id)) if channel_id.isdigit() else None
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return False
+        speakers = await choose_idle_speaker(session_key, quiet_minutes)
+        if not speakers:
+            return False
+        character = speakers[0]
+        rows = store.get_history(1, session_key)
+        last = rows[-1] if rows else {}
+        user_id = str(last.get("user_id") or config.owner_id or "")
+        message = {
+            "user_id": user_id,
+            "user": str(last.get("user_name") or ""),
+            "text": str(last.get("text") or ""),
+            "timestamp": utc_now(),
+            "session_key": session_key,
+            "speakers": [],
+            "ambient": True,
+            "idle_minutes": quiet_minutes,
+        }
+        response = await process_character_reply(message, character, None, input_saved=True)
+        if not response.get("text"):
+            log.info("Idle speaker chose silence: character=%s", character.id)
+            return False
+        sent = await self._send_character_output(
+            channel, response,
+            {"user_id": user_id, "user": message["user"], "channel_id": channel_id,
+             "message_id": str(last.get("discord_message_id") or ""), "session_key": session_key},
+            "idle",
+        )
+        spoken = {**response, "discord_message_id": str(sent.id)}
+        next_character = await self._resolve_next_speaker(spoken, session_key)
+        if next_character is not None:
+            store.save_autonomous_continuation(session_key, channel_id, {
+                "created_at": time.time(), "batch_id": "idle", "hops": 1,
+                "incoming": {"user_id": user_id, "user": message["user"], "text": message["text"],
+                             "timestamp": message["timestamp"], "session_key": session_key,
+                             "speakers": []},
+                "last": {"user_id": user_id, "user": message["user"], "channel_id": channel_id,
+                         "message_id": str(last.get("discord_message_id") or ""),
+                         "session_key": session_key},
+                "previous": {"character_id": character.id, "character_name": character.name,
+                             "text": response["text"], "next_speaker_id": next_character.id,
+                             "discord_message_id": spoken["discord_message_id"]},
+                "pending_send": None,
+            })
+            self._schedule_autonomous_continuation(session_key)
+        return True
 
     async def _resolve_next_speaker(self, output: dict, session_key: str):
         """Follow the character's own choice first, then let the decision model decide."""
@@ -841,6 +967,10 @@ class AiraBot(commands.Bot):
             return
         self._closed = True
         await self.scheduler.close()
+        if self.idle_task is not None and not self.idle_task.done():
+            self.idle_task.cancel()
+            await asyncio.gather(self.idle_task, return_exceptions=True)
+            self.idle_task = None
         tasks = list(self.autonomous_tasks.values())
         for task in tasks:
             task.cancel()

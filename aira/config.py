@@ -54,6 +54,7 @@ class Config:
     episode_max_results: int = field(default_factory=lambda: int(_setting("episodeMaxResults", 5)))
     episode_min_similarity: float = field(default_factory=lambda: float(_setting("episodeMinSimilarity", 0.55)))
     episode_gap_minutes: int = field(default_factory=lambda: int(_setting("episodeGapMinutes", 30)))
+    idle_chat: bool = field(default_factory=lambda: bool(_setting("idleChat", True)))
     debug_payload: bool = field(default_factory=lambda: bool(_setting("debugPayload", False)))
     debug_payload_file: Path = field(default_factory=lambda: _resolve_path(".aira/logs/gemini-payload.json"))
     def validate(self) -> None:

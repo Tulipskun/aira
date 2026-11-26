@@ -182,6 +182,48 @@ def _conversation_focus(rows: list[dict], names: dict[str, str]) -> str:
     return "ลำดับการคุยล่าสุด: " + " | ".join(exchanges[-4:]) if exchanges else ""
 
 
+async def choose_idle_speaker(session_key: str, idle_minutes: float) -> list[Character]:
+    """Ask the cast whether anyone wants to restart a quiet room on their own."""
+    characters = load_characters()
+    if not characters:
+        return []
+    names = {item.id: item.name for item in characters}
+    history = store.get_history_by_budget(
+        session_key, history_budget_tokens("reply"), estimate_tokens, max_messages=24,
+    )
+    lines, _, _ = _transcript_with_replies(history[-16:], names)
+    roster = ", ".join(f"{item.id} ({item.name})" for item in characters)
+    shared_input = "\n".join([
+        f"ห้องแชท Discord มีตัวละคร {len(characters)} ตัว: {roster}",
+        f"ห้องเงียบมา {idle_minutes:.0f} นาที ไม่มีใครพิมพ์ต่อ",
+        "ประวัติห้อง (ล่าสุดอยู่ท้าย):",
+        "\n".join(lines) or "(ยังไม่มีประวัติ)",
+        "หลักการ: ให้มีคนเริ่มพูดเองก็ต่อเมื่อมีเรื่องที่อยากพูดจริง ๆ เช่น ทักทาย ชวนคุยต่อจากเรื่องเดิม "
+        "แซวคนที่คุยค้างไว้ เล่าเรื่องเล็ก ๆ ที่เพิ่งเกิดขึ้น หรือถามไถ่กันเอง "
+        "ถ้าประโยคสุดท้ายจบลงอย่างสมบูรณ์และไม่มีอะไรน่าสนใจ ให้เงียบไว้",
+    ])
+    questions = {
+        item.id: f"ตัวละคร {item.name} ({item.id}) อยากเริ่มพูดขึ้นมาเองตอนนี้หรือไม่"
+        for item in characters
+    }
+    try:
+        scores = await decide_speakers(shared_input, questions)
+    except Exception:
+        log.exception("Idle decision failed; the room stays quiet")
+        return []
+    ranked = sorted(((item, scores.get(item.id, 0.0)) for item in characters),
+                    key=lambda pair: -pair[1])
+    chosen = [item for item, score in ranked if score >= SPEAKER_THRESHOLD]
+    if not chosen:
+        log.info("Idle decision kept the room quiet: scores=%s",
+                 {item.id: round(score, 2) for item, score in ranked})
+        return []
+    # One voice starts the conversation; the chain decides who answers it.
+    log.info("Idle decision picked %s: scores=%s",
+             chosen[0].id, {item.id: round(score, 2) for item, score in ranked})
+    return chosen[:1]
+
+
 def _silence_breaker(characters: list[Character], text: str, rows: list[dict], trailing: int,
                      last_speaker: str) -> list[Character]:
     """Keep a conversation alive when the selector leaves two messages unanswered."""
@@ -300,6 +342,9 @@ async def process_character_reply(message: dict, character: Character, prepared_
     user_id = str(message["user_id"])
     owner_name = str(message.get("user") or user_id)
     character_turn = bool(message.get("character_turn"))
+    # An ambient turn is the cast restarting a quiet room on its own.
+    ambient = bool(message.get("ambient"))
+    ambient_minutes = float(message.get("idle_minutes") or 0.0)
     trigger_message_id = str(message.get("discord_message_id") or "") or None
 
     media = prepared_media
@@ -336,7 +381,15 @@ async def process_character_reply(message: dict, character: Character, prepared_
         f"คุณคือ {character.name}. ตอบเป็นตัวละครนี้ตามบุคลิกใน system prompt",
         f"ผู้ใช้ต้นทางของห้องนี้: {owner_name} [Discord User ID: {user_id}]",
     ]
-    if character_turn:
+    if ambient:
+        who = str(message.get("user") or "")
+        context_lines.append(
+            f"ห้องเงียบมา {ambient_minutes:.0f} นาทีแล้ว ไม่มีใครพิมพ์ต่อ"
+            + (f" คนสุดท้ายที่คุยด้วยคือ {who}" if who else "")
+            + " คุณกำลังเป็นคนเริ่มบทสนทนาเองตามธรรมชาติ จะทัก ชวนคุยต่อจากเรื่องเดิม "
+              "แซวคนที่คุยค้างไว้ หรือเล่าเรื่องเล็ก ๆ ก็ได้ และถ้าไม่มีอะไรอยากพูดจริง ๆ ให้ reply เป็นสตริงว่าง"
+        )
+    elif character_turn:
         trigger_id = str(message.get("trigger_character_id") or "")
         trigger_name = str(message.get("trigger_character") or character_names.get(trigger_id) or "ตัวละครอื่น")
         context_lines.append(
@@ -361,7 +414,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
         "ข้อความในประวัติที่ขึ้นต้นด้วยชื่อและ Discord User ID เป็นของบุคคลนั้น ห้ามสับสนตัวตนหรือย้ายความทรงจำ/ความสัมพันธ์ข้ามคน",
     ])
 
-    if character_turn:
+    if character_turn and not ambient:
         memories, episodes = [], []
     else:
         vector = await embed(str(message.get("text") or media.summary or "(no text)"), "query")
@@ -382,7 +435,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
         f"- [{thai_timestamp(item.get('timestamp'))}] {item['text']}"
         for item in facts if item.get("status") != "historical"
     ]
-    if character_turn:
+    if character_turn and not ambient:
         target_id = str(message.get("trigger_character_id") or "")
         relationship = store.get_character_pair_relationship(character.id, target_id) if target_id else ""
         relationship_label = f"มุมมองของ {character.name} ต่อตัวละคร {message.get('trigger_character') or target_id}"
@@ -475,14 +528,14 @@ async def process_character_reply(message: dict, character: Character, prepared_
             result.get("summary") or None, character.id, reply_to_message_id=trigger_message_id,
         )
     if result.get("relationship"):
-        if character_turn:
+        if character_turn and not ambient:
             target_id = str(message.get("trigger_character_id") or "")
             if target_id and target_id != character.id:
                 store.save_character_pair_relationship(character.id, target_id, result["relationship"])
         else:
             store.save_character_relationship(character.id, user_id, result["relationship"])
     _save_character_relationship_updates(character.id, result.get("relationships") or [])
-    if not character_turn:
+    if not character_turn and not ambient:
         profile_result = store.apply_character_profile_updates(
             user_id, owner_name, character.id, result.get("facts", []),
             result.get("nicknames", []), timestamp, base_session,
@@ -490,7 +543,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
         log.info("Character profile update: character=%s user=%s facts=%s nicknames=%s duplicate=%s",
                  character.id, user_id, profile_result["facts_added"],
                  profile_result["nicknames_added"], profile_result["duplicate"])
-    if result.get("memory") and not character_turn:
+    if result.get("memory") and not character_turn and not ambient:
         _spawn(ingest_memory_background(result["memory"], user_id, timestamp, session_key))
     if result.get("summary"):
         _spawn(persist_episode_background(session_key, base_session, character.id))
