@@ -300,20 +300,10 @@ def normalize_color(value) -> int | None:
 
 
 def _image_catalog_prompt(character_id: str | None = None) -> str:
-    directory = _character_image_dir(character_id)
-    manifest = directory / "manifest.json"
-    try:
-        data = json.loads(manifest.read_text("utf-8"))
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
-    entries = []
-    for name in _image_names(character_id):
-        raw = data.get(name)
-        usage = raw.strip() if isinstance(raw, str) else ""
-        usage = re.sub(r"//group\s*=\s*([^\s/]+)", "", usage).strip()
-        entries.append(f"- {name}: {usage}" if usage else f"- {name} (ไม่มีคำอธิบาย)")
+    # The file names carry the expression (isla_pout_cheek, rem_calm_06), so the list
+    # is sent as names only: the descriptions cost over a thousand tokens every turn
+    # and the model picks just as well from the name.
+    entries = [f"- {name}" for name in _image_names(character_id)]
     return "\n".join(entries) if entries else "(ไม่มีรูปภาพให้ใช้ — ส่ง none เสมอ)"
 
 
