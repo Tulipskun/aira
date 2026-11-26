@@ -590,8 +590,7 @@ class AiraBot(commands.Bot):
                 if (not reason and anchor and quiet and quiet >= ANCHOR_MIN_QUIET_MINUTES
                         and not store.idle_anchor_done(session_key, anchor, day)):
                     reason = "day_greeting"
-                if not reason and len(starts) < 4 and should_start(
-                        now, quiet or 0.0, 0.0, len(starts)):
+                if not reason and should_start(now, quiet or 0.0, 0.0, len(starts)):
                     reason = "spontaneous"
                 if not reason:
                     wait = idle_target_minutes(now)

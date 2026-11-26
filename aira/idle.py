@@ -53,24 +53,11 @@ def idle_target_minutes(now: datetime, rng: random.Random | None = None) -> floa
     return target
 
 
-def start_probability(now: datetime) -> float:
-    """How likely someone picks the room up once its silence target is reached."""
-    if now.hour < QUIET_START_HOUR:
-        return 0.2
-    if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR:
-        return 0.2
-    if now.hour >= 23:
-        return 0.3
-    return 0.5
-
-
 def should_start(now: datetime, quiet_minutes: float, target_minutes: float,
-                 starts_last_hour: int, rng: random.Random | None = None) -> bool:
-    """Decide whether this is a natural moment to start a conversation."""
+                 starts_last_hour: int) -> bool:
+    """Whether the wait is over. Chance decides the wait, never whether to speak."""
     if quiet_minutes < target_minutes:
         return False
     if quiet_minutes > DEAD_ROOM_MINUTES:
         return False
-    if starts_last_hour >= MAX_STARTS_PER_HOUR:
-        return False
-    return (rng or random).random() < start_probability(now)
+    return starts_last_hour < MAX_STARTS_PER_HOUR

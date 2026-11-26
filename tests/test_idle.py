@@ -23,15 +23,22 @@ class IdlePacingTests(unittest.TestCase):
         self.assertEqual(idle.day_anchor(datetime(2026, 2, 1, 19, 0)), "evening")
         self.assertIsNone(idle.day_anchor(datetime(2026, 2, 1, 4, 0)))
 
+    def test_once_the_wait_is_over_the_room_speaks(self):
+        # The dice pick the wait, never whether anyone speaks at the end of it.
+        for hour in (3, 9, 13, 20, 23):
+            now = datetime(2026, 2, 1, hour, 0)
+            for seed in range(5):
+                wait = idle.idle_target_minutes(now, random.Random(seed))
+                self.assertTrue(idle.should_start(now, wait + 0.5, wait, 0,
+                                                  random.Random(seed)))
+
     def test_the_room_stays_quiet_when_it_has_been_dead_for_hours(self):
         now = datetime(2026, 2, 1, 20, 0)
-        self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10, 0,
-                                           random.Random(1)))
+        self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10, 0))
 
     def test_an_hourly_cap_stops_the_cast_talking_to_itself(self):
         now = datetime(2026, 2, 1, 20, 0)
-        self.assertFalse(idle.should_start(now, 30, 10, idle.MAX_STARTS_PER_HOUR,
-                                           random.Random(1)))
+        self.assertFalse(idle.should_start(now, 30, 10, idle.MAX_STARTS_PER_HOUR))
 
 
 if __name__ == "__main__":
