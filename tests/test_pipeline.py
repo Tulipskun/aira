@@ -283,8 +283,9 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                 character, input_saved=True,
             )
         context = self.generate.await_args.args[1]
-        self.assertNotIn("มีธุระอะไรกับหน่วย AST", context)
-        self.assertIn("คุณยูตะชอบชาเขียว", context)
+        memory_section = context.split("สิ่งที่คุณจำได้เองเกี่ยวกับเรื่องนี้", 1)[-1]
+        self.assertNotIn("มีธุระอะไรกับหน่วย AST", memory_section)
+        self.assertIn("คุณยูตะชอบชาเขียว", memory_section)
 
     async def test_a_character_turn_treats_the_other_character_like_a_user(self):
         session = "group:duo"

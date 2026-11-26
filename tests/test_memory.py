@@ -205,7 +205,8 @@ class MemoryTests(unittest.TestCase):
                 "Alice likes tea", "1", "2026-11-25T00:00:00Z", "user:1"))
             asyncio.run(memory.ingest_memory_background(
                 "Alice likes tea", "1", "2026-11-25T00:00:00Z", "user:1"))
-        self.assertEqual(embed_mock.await_count, 2)
+        # The second ingest is recognised as a repeat before it is even embedded.
+        self.assertEqual(embed_mock.await_count, 1)
         self.assertEqual(memory.count_memories({"session_key": "user:1"}), 1)
 
     def test_background_episode_persistence(self):

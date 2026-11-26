@@ -120,7 +120,7 @@ def search_memories_by_vector(vector: list[float], session_key: str, limit: int 
         score = _cosine_similarity(vector, stored)
         if min_similarity is not None and score < min_similarity:
             continue
-        if not worth_remembering(item["text"]):
+        if is_boilerplate(item["text"]):
             continue
         metadata = json.loads(item.get("metadata_json") or "{}")
         rows.append({"id": item["id"], "text": item["text"], "metadata": metadata,
@@ -171,13 +171,17 @@ def _restates_dialogue(text: str) -> bool:
     return False
 
 
+def is_boilerplate(text: str) -> bool:
+    """A line that only describes the character's availability, or reports the dialogue."""
+    compact = re.sub(r"\s+", " ", str(text or "").strip())
+    return bool(SELF_PRESENCE.search(compact)) or _restates_dialogue(compact)
+
+
 def worth_remembering(text: str, existing: list[str] | None = None) -> bool:
     compact = re.sub(r"\s+", " ", str(text or "").strip())
     if len(_normalize(compact)) < 12:
         return False
-    if SELF_PRESENCE.search(compact):
-        return False
-    if _restates_dialogue(compact):
+    if is_boilerplate(compact):
         return False
     for other in existing or []:
         if overlap_ratio(compact, other) >= 0.8:
@@ -366,7 +370,7 @@ async def recall_episodes(vector: list[float], session_key: str, query_text: str
             continue
         if temporal.get("date") and row["date"] != temporal["date"]: continue
         if temporal.get("period") and row["period"] != temporal["period"]: continue
-        if not worth_remembering(row["text"]):
+        if is_boilerplate(row["text"]):
             continue
         try: stored = json.loads(row["embedding_json"])
         except (ValueError, TypeError): continue
