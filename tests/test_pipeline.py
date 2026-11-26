@@ -300,16 +300,13 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_topic_the_room_is_already_on_is_not_fresh(self):
         room = ["วันนี้ชาอุ่น ๆ อร่อยมากเลยนะคะ", "ไว้เรมชงให้อีกนะคะ"]
 
-        async def near(text, task="query"):
-            return [1.0, 0.0, 0.0]
+        async def embed(text, task="query"):
+            # tea words land on one axis, everything else on another
+            return [1.0, 0.0, 0.0] if "ชา" in text else [0.0, 1.0, 0.0]
 
-        async def far(text, task="query"):
-            return [0.0, 1.0, 0.0]
-
-        with patch.object(pipeline, "embed", near):
+        with patch.object(pipeline, "embed", embed):
             self.assertFalse(await pipeline.topic_is_fresh(
                 "ชาอุ่น ๆ กำลังจะชงให้ทุกคน", room))
-        with patch.object(pipeline, "embed", far):
             self.assertTrue(await pipeline.topic_is_fresh(
                 "หนังที่เพิ่งเข้าฉายสัปดาห์นี้", room))
 
