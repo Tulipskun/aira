@@ -27,6 +27,8 @@ from .store import store, utc_now
 from .token_budget import live_token_budget
 
 log = logging.getLogger("aira.discord")
+# A paced exchange may wait for the window to refill, but not forever.
+MAX_CHAIN_WAIT_SECONDS = 120.0
 DISCORD_CONFIG = ROOT / ".aira" / "discord-config.json"
 RPS_CHOICES = {"rock": ("ค้อน", "✊🏻"), "paper": ("กระดาษ", "🖐🏻"), "scissors": ("กรรไกร", "✌🏻")}
 RPS_GAMES: dict[str, dict] = {}
@@ -270,6 +272,8 @@ class AiraBot(commands.Bot):
         self.scheduler = MessageScheduler(self._flush, debounce_ms=320, max_wait_ms=1500)
         self.tree.add_command(app_commands.Command(name="aira", description="เปิดแผงควบคุมผู้ดูแล Aira", callback=self.open_admin_panel))
         self.in_flight = 0
+        # Automated turns are paced by the TPM allowance; user turns are not.
+        self.last_ai_turn_at: dict[str, float] = {}
         self.autonomous_tasks: dict[str, asyncio.Task] = {}
         self.started_at = time.time()
         self.health_server = None
@@ -553,14 +557,33 @@ class AiraBot(commands.Bot):
                 previous_id = str(previous.get("character_id") or "")
                 next_id = str(previous.get("next_speaker_id") or "").strip()
                 hops = int(state.get("hops") or 0)
+                interval = live_token_budget.turn_interval_seconds()
+                last_spoken = self.last_ai_turn_at.get(channel_id, 0.0)
+                pace = max(0.0, last_spoken + interval - time.time())
+                if pace > 0:
+                    log.info("AI exchange paced: session=%s wait=%.1fs interval=%.1fs "
+                             "requestsPerWindow=%s avgTurnTokens=%s",
+                             session_key, pace, interval, live_token_budget.requests_per_window(),
+                             live_token_budget.average_request_tokens())
+                    await asyncio.sleep(min(pace, 20.0))
+                    continue
                 if live_token_budget.remaining_turns() < 1:
-                    log.info("Autonomous exchange stopped by the TPM allowance: session=%s hops=%s "
-                             "available=%s avgTurnTokens=%s requestsPerWindow=%s",
+                    waited = float(state.get("waited") or 0.0)
+                    if waited >= MAX_CHAIN_WAIT_SECONDS:
+                        log.info("Autonomous exchange gave up waiting for TPM room: session=%s "
+                                 "hops=%s waited=%.0fs available=%s avgTurnTokens=%s",
+                                 session_key, hops, waited, live_token_budget.available_tokens(),
+                                 live_token_budget.average_request_tokens())
+                        store.delete_autonomous_continuation(session_key)
+                        return
+                    state["waited"] = waited + 5.0
+                    store.save_autonomous_continuation(session_key, channel_id, state)
+                    log.info("Autonomous exchange waits for TPM room: session=%s hops=%s "
+                             "available=%s avgTurnTokens=%s",
                              session_key, hops, live_token_budget.available_tokens(),
-                             live_token_budget.average_request_tokens(),
-                             live_token_budget.requests_per_window())
-                    store.delete_autonomous_continuation(session_key)
-                    return
+                             live_token_budget.average_request_tokens())
+                    await asyncio.sleep(5.0)
+                    continue
                 characters = load_characters()
                 next_character = next((item for item in characters
                                         if item.id == next_id and item.id != previous_id), None)
@@ -668,6 +691,7 @@ class AiraBot(commands.Bot):
             raise RuntimeError(f"Discord did not return the sent message for {character.id}")
         if output.get("message_row_id"):
             store.set_discord_message_id(int(output["message_row_id"]), str(sent.id))
+        self.last_ai_turn_at[str(channel.id)] = time.time()
         log.info("Discord webhook send succeeded: message=%s channel=%s character=%s sent_message=%s "
                  "webhook_avatar=%s webhook=%s",
                  batch_id, last["channel_id"], character.id, sent.id,
@@ -768,13 +792,6 @@ class AiraBot(commands.Bot):
             # character the reply points at, so a two-way exchange can keep going.
             if previous_spoken is not None:
                 next_character = await self._resolve_next_speaker(previous_spoken, incoming["session_key"])
-                if next_character is not None and live_token_budget.remaining_turns() < 1:
-                    log.info("Chain stops after this card: TPM allowance spent "
-                             "(available=%s avgTurnTokens=%s requestsPerWindow=%s)",
-                             live_token_budget.available_tokens(),
-                             live_token_budget.average_request_tokens(),
-                             live_token_budget.requests_per_window())
-                    next_character = None
                 if next_character is not None:
                     payload = {
                         "created_at": time.time(), "batch_id": batch_id, "hops": 1,

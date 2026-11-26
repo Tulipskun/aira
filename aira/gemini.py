@@ -379,13 +379,16 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
     # Aira call already seeds its own authoritative transcript and memories.
     # Reusing a prior handle while resending that transcript would duplicate
     # conversation state and can corrupt character continuity.
+    # Compression starts when a session outgrows one TPM window, so a long-lived
+    # session can never carry more context than one minute of budget pays for.
+    compression_trigger = min(live_token_budget.capacity, 100_000)
     live_config = types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         output_audio_transcription=types.AudioTranscriptionConfig(),
         system_instruction=system_instruction,
         context_window_compression=types.ContextWindowCompressionConfig(
-            trigger_tokens=100_000,
-            sliding_window=types.SlidingWindow(target_tokens=80_000),
+            trigger_tokens=compression_trigger,
+            sliding_window=types.SlidingWindow(target_tokens=int(compression_trigger * 0.8)),
         ),
     )
     while key_attempts < max_keys:
@@ -405,7 +408,7 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
         # TPM is input-token throughput. Do not reserve output/thinking tokens here.
         estimate = estimate_live_request_tokens(system_instruction, content_parts, output_reserve=0)
         input_limit = await _model_input_limit(client, chosen_model)
-        context_budget = max(1, int(input_limit * 0.90))
+        context_budget = min(max(1, int(input_limit * 0.90)), live_token_budget.capacity)
         if estimate > context_budget:
             raise ValueError(
                 f"Gemini input estimate ({estimate}) exceeds the safe context budget "

@@ -67,6 +67,18 @@ class TokenBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(budget.average_request_tokens(), 500)
         self.assertEqual(budget.remaining_turns(), 0)
 
+    async def test_request_share_and_automated_pace_come_from_the_allowance(self):
+        budget = SlidingWindowTokenBudget(limit=1000, window_seconds=60, safety_ratio=1.0,
+                                          default_request_tokens=250)
+        # A quarter of the window per turn keeps four exchanges affordable.
+        self.assertEqual(budget.target_request_tokens(), 250)
+        self.assertEqual(budget.turn_interval_seconds(), 15.0)
+        self.assertEqual(budget.history_budget(reserve_tokens=50), 200)
+        await_measure = await budget.reserve(250, "turn")
+        await budget.settle(await_measure, 500)
+        # A heavier turn doubles the interval instead of a fixed message count.
+        self.assertEqual(budget.turn_interval_seconds(), 30.0)
+
     async def test_tpm_ledger_survives_recreation(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "budget.json"

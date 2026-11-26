@@ -126,6 +126,14 @@ class SlidingWindowTokenBudget:
         """Completed requests the remaining window budget can still pay for."""
         return self.available_tokens() // self.average_request_tokens()
 
+    def target_request_tokens(self) -> int:
+        """Request size we aim for so the window always funds several turns."""
+        return max(1, int(self.capacity * PER_REQUEST_RATIO))
+
+    def turn_interval_seconds(self) -> float:
+        """Minimum spacing between automated turns implied by the allowance."""
+        return self.window_seconds / self.requests_per_window()
+
     def snapshot(self) -> dict:
         now = time.time()
         used = self._used(now)
@@ -183,11 +191,15 @@ class SlidingWindowTokenBudget:
                     pass
             self._save_state()
 
-    def history_budget(self, cap: int, fraction: float, reserve_tokens: int = 6_000) -> int:
-        available = self.available_tokens()
-        usable = max(0, available - max(0, reserve_tokens))
-        return max(0, min(int(cap), int(usable * max(0.0, min(1.0, fraction)))))
+    def history_budget(self, reserve_tokens: int = 6_000) -> int:
+        """History size that still leaves the prompt inside one turn's share."""
+        usable = max(0, self.target_request_tokens() - max(0, int(reserve_tokens)))
+        return max(0, min(usable, self.available_tokens()))
 
+
+# One turn may spend at most this share of the window, so a full minute always
+# funds several exchanges instead of one giant request eating the allowance.
+PER_REQUEST_RATIO = 0.25
 
 _LIMIT = int(os.environ.get("AIRA_GEMINI_TPM_LIMIT", "65000"))
 live_token_budget = SlidingWindowTokenBudget(
@@ -197,11 +209,12 @@ live_token_budget = SlidingWindowTokenBudget(
 
 
 def history_budget_tokens(kind: str = "reply") -> int:
+    """Same ledger, same arithmetic: the prompt fits one turn's share of the window."""
     if kind == "selector":
-        return live_token_budget.history_budget(cap=2_400, fraction=0.09, reserve_tokens=5_000)
+        return live_token_budget.history_budget(reserve_tokens=8_000)
     if kind == "conversation":
-        return live_token_budget.history_budget(cap=1_600, fraction=0.06, reserve_tokens=5_000)
-    return live_token_budget.history_budget(cap=9_000, fraction=0.20, reserve_tokens=6_000)
+        return live_token_budget.history_budget(reserve_tokens=9_000)
+    return live_token_budget.history_budget(reserve_tokens=6_000)
 
 
 def usage_metrics(metadata) -> dict[str, int | None]:

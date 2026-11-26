@@ -205,7 +205,7 @@ class DiscordTests(unittest.TestCase):
                 await bot.close()
         asyncio.run(run_test())
 
-    def test_exchange_ends_when_the_tpm_window_cannot_pay_for_another_turn(self):
+    def test_exchange_pauses_for_the_pace_then_gives_up_after_the_wait_cap(self):
         async def run_test():
             import time
             import aira.discord_app as app
@@ -227,13 +227,33 @@ class DiscordTests(unittest.TestCase):
                 class FakeChannel:
                     pass
                 generated = AsyncMock()
+                slept = AsyncMock()
                 try:
+                    bot.last_ai_turn_at["9"] = time.time()
                     with patch.object(app, "store", test_store), \
                          patch.object(app, "process_character_reply", new=generated), \
                          patch.object(bot, "get_channel", return_value=FakeChannel()), \
                          patch.object(app.discord, "TextChannel", FakeChannel), \
                          patch.object(app.discord, "Thread", FakeChannel), \
-                         patch.object(app.live_token_budget, "remaining_turns", return_value=0):
+                         patch.object(app.live_token_budget, "turn_interval_seconds",
+                                      return_value=15.0), \
+                         patch.object(app.asyncio, "sleep", new=slept):
+                        await bot._run_autonomous_continuation("group:9")
+                    # The automated turn waits for its slot instead of firing instantly.
+                    slept.assert_awaited()
+                    generated.assert_not_awaited()
+                    self.assertEqual(test_store.autonomous_continuation_count(), 1)
+                    state = test_store.get_autonomous_continuation("group:9")
+                    state["waited"] = app.MAX_CHAIN_WAIT_SECONDS
+                    test_store.save_autonomous_continuation("group:9", "9", state)
+                    bot.last_ai_turn_at.clear()
+                    with patch.object(app, "store", test_store), \
+                         patch.object(app, "process_character_reply", new=generated), \
+                         patch.object(bot, "get_channel", return_value=FakeChannel()), \
+                         patch.object(app.discord, "TextChannel", FakeChannel), \
+                         patch.object(app.discord, "Thread", FakeChannel), \
+                         patch.object(app.live_token_budget, "remaining_turns", return_value=0), \
+                         patch.object(app.asyncio, "sleep", new=slept):
                         await bot._run_autonomous_continuation("group:9")
                     generated.assert_not_awaited()
                     self.assertEqual(test_store.autonomous_continuation_count(), 0)
@@ -326,6 +346,7 @@ class DiscordTests(unittest.TestCase):
                     with patch.object(app, "store", test_store), \
                          patch.object(app, "process_character_reply", new=generated), \
                          patch.object(app.live_token_budget, "available_tokens", return_value=50000), \
+                         patch.object(app.live_token_budget, "turn_interval_seconds", return_value=0.0), \
                          patch.object(app.discord, "TextChannel", FakeChannel), \
                          patch.object(app.discord, "Thread", FakeChannel), \
                          patch.object(bot, "get_channel", return_value=fake_channel), \
