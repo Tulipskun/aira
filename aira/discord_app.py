@@ -594,8 +594,12 @@ class AiraBot(commands.Bot):
                         now, quiet or 0.0, 0.0, len(starts)):
                     reason = "spontaneous"
                 if not reason:
-                    deadline = now + timedelta(minutes=idle_target_minutes(now))
+                    wait = idle_target_minutes(now)
+                    deadline = now + timedelta(minutes=wait)
                     store.set_idle_wait(session_key, marker, deadline.isoformat())
+                    log.info("Idle chat skipped: quiet=%.0fmin part=%s next_try_in=%.0fmin "
+                             "starts_last_hour=%s", quiet or 0.0, part_of_day(now), wait,
+                             len(starts))
                     continue
                 if live_token_budget.remaining_turns() < 1:
                     log.info("Idle chat skipped: no TPM room left for another turn")
