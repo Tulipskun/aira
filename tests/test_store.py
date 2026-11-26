@@ -50,6 +50,20 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.db.delete_messages(session_key="group:cache", limit=1), 1)
         self.assertEqual([row["text"] for row in self.db.get_history(10, "group:cache")], ["keep"])
 
+    def test_a_placeholder_answer_never_becomes_a_relationship(self):
+        self.assertFalse(self.db.save_character_pair_relationship("isla", "rem", "ยังไม่เคยสร้างความสัมพันธ์"))
+        self.assertEqual(self.db.get_character_pair_relationship("isla", "rem"), "")
+        self.assertFalse(self.db.save_character_relationship("isla", "1", "เหมือนเดิม"))
+        self.assertEqual(self.db.get_character_relationship("isla", "1"), "ยังไม่เคยสร้างความสัมพันธ์")
+
+    def test_each_character_keeps_its_own_view_of_the_other(self):
+        self.assertTrue(self.db.save_character_pair_relationship("rem", "bocchi", "เอ็นดูที่เธอตื่นเต้นง่าย"))
+        self.assertTrue(self.db.save_character_pair_relationship("bocchi", "rem", "พี่เรมใจดีมาก"))
+        self.assertEqual(self.db.get_character_pair_relationship("rem", "bocchi"), "เอ็นดูที่เธอตื่นเต้นง่าย")
+        self.assertEqual(self.db.get_character_pair_relationship("bocchi", "rem"), "พี่เรมใจดีมาก")
+        self.assertEqual(self.db.get_character_pair_relationships("bocchi"), {"rem": "พี่เรมใจดีมาก"})
+        self.assertEqual(self.db.get_character_pair_relationship("isla", "rem"), "")
+
     def test_character_messages_and_directed_character_relationships_are_persisted(self):
         timestamp = utc_now()
         self.db.save_message(

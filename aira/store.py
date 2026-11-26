@@ -14,6 +14,22 @@ from .relationships import (
 )
 
 MAX_FACTS = 40
+# A character sometimes echoes the prompt's "no relationship yet" placeholder back
+# as its answer; storing it would later look like a real feeling.
+RELATIONSHIP_PLACEHOLDERS = {
+    "ยังไม่เคยสร้างความสัมพันธ์", "ยังไม่มีข้อมูลความสัมพันธ์", "ไม่มีการเปลี่ยนแปลง",
+    "ไม่เปลี่ยนแปลง", "เหมือนเดิม", "ไม่มี", "ไม่ระบุ", "ไม่มีอะไรเปลี่ยน",
+}
+
+
+def real_relationship(value: str | None) -> str:
+    """Return the text only when it says something about the relationship."""
+    text = str(value or "").strip()
+    if not text or len(text) > 1200:
+        return ""
+    if text.rstrip(" .!") in RELATIONSHIP_PLACEHOLDERS:
+        return ""
+    return text
 MAX_NICKNAMES = 8
 USER_PREFIX = "user:"
 GROUP_PREFIX = "group:"
@@ -550,39 +566,42 @@ class Store:
                               (character_id, user_id)).fetchone()
         return row["relationship"] if row else "ยังไม่เคยสร้างความสัมพันธ์"
 
-    def save_character_relationship(self, character_id: str, user_id: str, relationship: str) -> None:
-        relationship = relationship.strip()
-        if not relationship or len(relationship) > 1200:
-            return
+    def save_character_relationship(self, character_id: str, user_id: str, relationship: str) -> bool:
+        relationship = real_relationship(relationship)
+        if not relationship:
+            return False
         self.db.execute("""INSERT INTO character_relationships(character_id,user_id,relationship,updated_at)
             VALUES(?,?,?,?) ON CONFLICT(character_id,user_id) DO UPDATE SET
             relationship=excluded.relationship,updated_at=excluded.updated_at""",
             (character_id, user_id, relationship, utc_now()))
+        return True
 
     def get_character_pair_relationship(self, character_id: str, target_character_id: str) -> str:
         row = self.db.execute(
             "SELECT relationship FROM character_pair_relationships WHERE character_id=? AND target_character_id=?",
             (character_id, target_character_id),
         ).fetchone()
-        return row["relationship"] if row else ""
+        return real_relationship(row["relationship"]) if row else ""
 
     def get_character_pair_relationships(self, character_id: str) -> dict[str, str]:
         rows = self.db.execute(
             "SELECT target_character_id,relationship FROM character_pair_relationships WHERE character_id=?",
             (character_id,),
         ).fetchall()
-        return {row["target_character_id"]: row["relationship"] for row in rows}
+        return {row["target_character_id"]: real_relationship(row["relationship"])
+                for row in rows if real_relationship(row["relationship"])}
 
     def save_character_pair_relationship(self, character_id: str, target_character_id: str,
-                                         relationship: str) -> None:
-        relationship = relationship.strip()
-        if character_id == target_character_id or not relationship or len(relationship) > 1200:
-            return
+                                         relationship: str) -> bool:
+        relationship = real_relationship(relationship)
+        if character_id == target_character_id or not relationship:
+            return False
         self.db.execute("""INSERT INTO character_pair_relationships(
             character_id,target_character_id,relationship,updated_at) VALUES(?,?,?,?)
             ON CONFLICT(character_id,target_character_id) DO UPDATE SET
             relationship=excluded.relationship,updated_at=excluded.updated_at""",
             (character_id, target_character_id, relationship, utc_now()))
+        return True
 
     def apply_turn_state(self, change: dict, facts: list[dict], nicknames: list[str],
                          timestamp: str, session_key: str) -> dict:
