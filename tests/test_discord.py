@@ -375,7 +375,6 @@ class DiscordTests(unittest.TestCase):
                     with patch.object(app, "store", test_store), \
                          patch.object(app, "process_character_reply", new=generated), \
                          patch.object(app.live_token_budget, "available_tokens", return_value=50000), \
-                         patch.object(app.live_token_budget, "turn_interval_seconds", return_value=0.0), \
                          patch.object(app.discord, "TextChannel", FakeChannel), \
                          patch.object(app.discord, "Thread", FakeChannel), \
                          patch.object(bot, "get_channel", return_value=fake_channel), \
