@@ -29,8 +29,7 @@ class IdlePacingTests(unittest.TestCase):
             now = datetime(2026, 2, 1, hour, 0)
             for seed in range(5):
                 wait = idle.idle_target_minutes(now, random.Random(seed))
-                self.assertTrue(idle.should_start(now, wait + 0.5, wait, 0,
-                                                  random.Random(seed)))
+                self.assertTrue(idle.should_start(now, wait + 0.5, wait, 0))
 
     def test_the_room_stays_quiet_when_it_has_been_dead_for_hours(self):
         now = datetime(2026, 2, 1, 20, 0)
