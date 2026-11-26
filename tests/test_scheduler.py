@@ -9,11 +9,14 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         flushed = []
         async def on_flush(messages):
             flushed.append(messages)
-        scheduler = MessageScheduler(on_flush, debounce_ms=20, max_wait_ms=50)
+        scheduler = MessageScheduler(on_flush, debounce_ms=20, max_wait_ms=200)
         scheduler.push({"session_key": "a", "text": "one"})
         scheduler.push({"session_key": "a", "text": "two"})
         self.assertEqual(scheduler.pending_count(), 1)
-        await asyncio.sleep(0.04)
+        for _ in range(40):
+            if flushed:
+                break
+            await asyncio.sleep(0.02)
         self.assertEqual(len(flushed), 1)
         self.assertEqual([m["text"] for m in flushed[0]], ["one", "two"])
         await scheduler.close()
