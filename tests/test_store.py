@@ -50,6 +50,13 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.db.delete_messages(session_key="group:cache", limit=1), 1)
         self.assertEqual([row["text"] for row in self.db.get_history(10, "group:cache")], ["keep"])
 
+    def test_the_idle_wait_survives_a_restart(self):
+        self.assertIsNone(self.db.idle_next_open("group:9"))
+        self.db.set_idle_next_open("group:9", "2026-11-26T10:30:00+07:00")
+        self.assertEqual(self.db.idle_next_open("group:9"), "2026-11-26T10:30:00+07:00")
+        self.db.set_idle_next_open("group:9", "2026-11-26T11:00:00+07:00")
+        self.assertEqual(self.db.idle_next_open("group:9"), "2026-11-26T11:00:00+07:00")
+
     def test_a_day_beat_only_happens_once(self):
         self.assertFalse(self.db.idle_anchor_done("group:9", "morning", "2026-11-26"))
         self.db.mark_idle_anchor("group:9", "morning", "2026-11-26")

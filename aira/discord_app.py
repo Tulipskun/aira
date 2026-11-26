@@ -6,7 +6,7 @@ import logging
 import mimetypes
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from types import SimpleNamespace
@@ -508,11 +508,22 @@ class AiraBot(commands.Bot):
             return
         await self._process_batch(messages)
 
+    def _idle_deadline(self, session_key: str, now: datetime) -> datetime:
+        """When the room may speak again, remembered across restarts."""
+        saved = store.idle_next_open(session_key)
+        if saved:
+            try:
+                return datetime.fromisoformat(saved)
+            except ValueError:
+                log.warning("Ignoring unreadable idle deadline: %s", saved)
+        deadline = now + timedelta(minutes=idle_target_minutes(now, False))
+        store.set_idle_next_open(session_key, deadline.isoformat())
+        return deadline
+
     async def _run_idle_loop(self, channel_id: str) -> None:
         """Let the cast restart a quiet room the way a group of friends would."""
         session_key = group_session_key(channel_id)
-        target_for_thread = False
-        target_minutes = idle_target_minutes(datetime.now(ZoneInfo(config.timezone)), False)
+        last_seen = 0
         while not self._closed:
             await asyncio.sleep(IDLE_POLL_SECONDS)
             try:
@@ -526,13 +537,18 @@ class AiraBot(commands.Bot):
                 last = rows[-1]
                 quiet = _quiet_minutes(str(last.get("timestamp") or ""))
                 now = datetime.now(ZoneInfo(config.timezone))
-                current_thread = bool(await open_thread(session_key))
-                if current_thread != target_for_thread:
-                    # The room changed character (something got left open), so the
-                    # wait it was resting on no longer applies.
-                    target_for_thread = current_thread
-                    target_minutes = idle_target_minutes(now, current_thread)
-                if quiet is None or quiet < target_minutes:
+                deadline = self._idle_deadline(session_key, now)
+                marker = int(last["id"])
+                if marker != last_seen:
+                    # A new line arrived, so this is the only moment the model has to
+                    # judge whether the room is waiting on somebody.
+                    last_seen = marker
+                    if await open_thread(session_key):
+                        # Something is hanging: finish it soon instead of after the wait.
+                        deadline = min(deadline, now + timedelta(
+                            minutes=idle_target_minutes(now, True)))
+                        store.set_idle_next_open(session_key, deadline.isoformat())
+                if now < deadline:
                     continue
                 thread = await open_thread(session_key)
                 starts = [moment for moment in self.idle_starts if moment > time.time() - 3600]
@@ -540,41 +556,37 @@ class AiraBot(commands.Bot):
                 reason = "resume" if thread else ""
                 anchor = day_anchor(now)
                 day = now.date().isoformat()
-                if (not reason and anchor and quiet >= ANCHOR_MIN_QUIET_MINUTES
+                if (not reason and anchor and quiet and quiet >= ANCHOR_MIN_QUIET_MINUTES
                         and not store.idle_anchor_done(session_key, anchor, day)):
-                    # A moment of the day people naturally greet each other in.
                     reason = "day_greeting"
-                if not reason and should_start(now, quiet, target_minutes, len(starts),
-                                               bool(thread)):
-                    # A spontaneous opening, decided by chance rather than by the clock.
+                if not reason and len(starts) < 4 and should_start(
+                        now, quiet or 0.0, 0.0, len(starts), bool(thread)):
                     reason = "spontaneous"
                 if not reason:
-                    # Nothing worth saying yet: measure the next gap from this silence.
-                    target_minutes = idle_target_minutes(now, bool(thread))
-                    continue
-                if len(starts) >= 4:
-                    target_minutes = idle_target_minutes(now, bool(thread))
+                    deadline = now + timedelta(minutes=idle_target_minutes(now, bool(thread)))
+                    store.set_idle_next_open(session_key, deadline.isoformat())
                     continue
                 if live_token_budget.remaining_turns() < 1:
                     log.info("Idle chat skipped: no TPM room left for another turn")
-                    target_minutes = idle_target_minutes(now, bool(thread))
+                    deadline = now + timedelta(minutes=idle_target_minutes(now, bool(thread)))
+                    store.set_idle_next_open(session_key, deadline.isoformat())
                     continue
                 log.info("Idle chat attempt: quiet=%.0fmin reason=%s thread=%s part=%s",
-                         quiet, reason, bool(thread), part_of_day(now))
-                started = await self._start_idle_turn(channel_id, session_key, quiet, thread,
-                                                      reason)
+                         quiet or 0.0, reason, bool(thread), part_of_day(now))
+                started = await self._start_idle_turn(channel_id, session_key, quiet or 0.0,
+                                                      thread, reason)
                 if started:
                     self.idle_starts.append(time.time())
-                    target_minutes = idle_target_minutes(now, False)
+                    deadline = now + timedelta(minutes=idle_target_minutes(now, False))
+                    store.set_idle_next_open(session_key, deadline.isoformat())
                 # A silent opening is not a start: the moment stays open and the next
                 # poll hands it to someone else instead of resting for another hour.
                 log.info("Idle chat round finished: channel=%s started=%s quiet=%.0fmin",
-                         channel_id, started, quiet)
+                         channel_id, started, quiet or 0.0)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("Idle chat loop failed; continuing")
-                target_minutes = idle_target_minutes(datetime.now(ZoneInfo(config.timezone)))
 
     async def _start_idle_turn(self, channel_id: str, session_key: str, quiet_minutes: float,
                                thread: str = "", reason: str = "") -> bool:

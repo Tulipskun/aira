@@ -140,6 +140,12 @@ class Store:
             CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodic_memories(session_key);
             CREATE INDEX IF NOT EXISTS idx_episodes_date ON episodic_memories(date, period);
         """)
+        # The wait before the room may start talking again lives in the database so a
+        # restart resumes the same silence instead of starting a fresh one.
+        self.db.execute("""CREATE TABLE IF NOT EXISTS idle_state(
+            session_key TEXT PRIMARY KEY,
+            next_open_at TEXT NOT NULL
+        )""")
         self.db.execute("""CREATE TABLE IF NOT EXISTS idle_anchor_state(
             session_key TEXT NOT NULL, anchor TEXT NOT NULL, day TEXT NOT NULL,
             PRIMARY KEY(session_key, anchor, day)
@@ -405,6 +411,17 @@ class Store:
                 del cached[:-self._history_cache_rows]
             self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
+
+    def idle_next_open(self, session_key: str) -> str | None:
+        row = self.db.execute(
+            "SELECT next_open_at FROM idle_state WHERE session_key=?", (session_key,)).fetchone()
+        return str(row["next_open_at"]) if row else None
+
+    def set_idle_next_open(self, session_key: str, when: str) -> None:
+        self.db.execute(
+            """INSERT INTO idle_state(session_key,next_open_at) VALUES(?,?)
+               ON CONFLICT(session_key) DO UPDATE SET next_open_at=excluded.next_open_at""",
+            (session_key, when))
 
     def idle_anchor_done(self, session_key: str, anchor: str, day: str) -> bool:
         """Has this moment of the day already produced a conversation?"""
