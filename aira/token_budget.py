@@ -217,7 +217,10 @@ TURNS_PER_WINDOW = 6
 HISTORY_WINDOW_TOKENS = 9_500
 IMAGE_TOKENS = 258
 
-_LIMIT = int(os.environ.get("AIRA_GEMINI_TPM_LIMIT", "65000"))
+# Six turns a minute at the ten second beat, measured against what one turn of the
+# room actually costs today (~18k tokens including a 9,500 token history window):
+# 130,000 x 0.85 leaves room for six. AIRA_GEMINI_TPM_LIMIT overrides it.
+_LIMIT = int(os.environ.get("AIRA_GEMINI_TPM_LIMIT", "130000"))
 live_token_budget = SlidingWindowTokenBudget(
     _LIMIT, window_seconds=60, safety_ratio=0.85,
     state_path=Path(__file__).resolve().parent.parent / ".aira" / "gemini-tpm.json",
