@@ -393,27 +393,16 @@ async def decide_open_thread(transcript: str, candidates: dict[str, str]) -> str
 
 EVENT_INSTRUCTION = (
     "คุณเป็นผู้ช่วยเบื้องหลังของห้องแชทนี้ หน้าที่คือหาเรื่องใหม่ให้ห้องได้คุยกัน "
-    "เขียนเป็นประโยคภาษาไทยสั้น ๆ 1 ประโยค\n"
-    "ข้อกำหนด:\n"
-    "- ต้องเป็นเรื่องใหม่ ไม่ซ้ำกับเรื่องที่ห้องกำลังคุยอยู่ และไม่ซ้ำกับรายการที่ห้ามใช้\n"
-    "- เป็นเรื่องราวทั่วไปในชีวิตคน: ข่าวในเมือง ภาพยนตร์ ซีรีส์ เพลง หนังสือ เกม กีฬา "
-    "อาหารร้านใหม่ อากาศ ความฝัน สิ่งที่เพิ่งเรียนรู้ คำถามชวนคิด หรือเรื่องตลกที่เพิ่งเจอ\n"
-    "- ห้ามเป็นเรื่องงานประจำของตัวละครในห้อง (การชงชา ของว่าง การซ้อมกีตาร์ การเฝ้าระวัง) "
-    "และห้ามเป็นคำถามว่าใครหิว/ใครเหนื่อย/ใครอยากดื่มอะไร\n"
-    "- ห้ามแต่งบทพูดของตัวละคร ห้ามอธิบาย ห้ามใส่เครื่องหมายคำพูด\n"
+    "เขียนเป็นประโยคภาษาไทยสั้น ๆ 1 ประโยค ที่ตัวละครในห้องจะหยิบไปคุยต่อได้จริง "
+    "ห้ามแต่งบทพูดของตัวละคร ห้ามอธิบาย ห้ามใส่เครื่องหมายคำพูด "
     "ตอบกลับมาเป็นประโยคเดียวเท่านั้น"
 )
 
 
-async def generate_event(room_transcript: str, avoid: list[str] | None = None) -> str:
-    """One separate request that invents a fresh topic for the cast to pick up."""
-    banned = ""
-    if avoid:
-        banned = "\n\nห้ามใช้เรื่องเหล่านี้ซ้ำ (เพิ่งพูดไปแล้ว):\n" + "\n".join(
-            f"- {item}" for item in avoid[:10])
+async def generate_event(room_transcript: str) -> str:
+    """One separate request that invents a happening for the cast to pick up."""
     text = await _create_live_response(
-        "gemini1",
-        [{"type": "text", "text": (room_transcript or "(ห้องยังไม่มีบทสนทนา)") + banned}],
+        "gemini1", [{"type": "text", "text": room_transcript or "(ห้องยังไม่มีบทสนทนา)"}],
         EVENT_INSTRUCTION)
     return " ".join(text.split())[:200]
 

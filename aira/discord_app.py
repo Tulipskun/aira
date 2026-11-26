@@ -27,6 +27,7 @@ from .idle import (
 from .pipeline import (
     _save_incoming_message, decide_next_speaker, idle_candidate_order, open_thread,
     process_character_reply, room_history, select_characters, shutdown_pipeline,
+    topic_is_fresh,
 )
 from .scheduler import MessageScheduler
 from .store import group_session_key, store, utc_now
@@ -657,14 +658,24 @@ class AiraBot(commands.Bot):
             "part_of_day": part_of_day(datetime.now(ZoneInfo(config.timezone))),
         }
         if reason == "spontaneous":
-            # A separate request invents the happening; the cast only reacts to it.
-            try:
-                message["idle_event"] = await gemini.generate_event(
-                    _room_transcript(session_key),
-                    store.recent_idle_topics(session_key),
-                )
-            except Exception:
-                log.exception("Could not invent an event; opening without one")
+            # A separate request invents the topic. A topic the room is already
+            # talking about is thrown away, so the cast is never handed last
+            # night's subject again; if nothing fresh comes back, stay quiet.
+            spoken = [str(row.get("text") or "") for row in room_history(session_key)]
+            known = store.recent_idle_topics(session_key)
+            for attempt in range(3):
+                try:
+                    candidate = await gemini.generate_event(_room_transcript(session_key))
+                except Exception:
+                    log.exception("Could not invent a topic; opening without one")
+                    break
+                if await topic_is_fresh(candidate, spoken, known):
+                    message["idle_event"] = candidate
+                    break
+                log.info("Idle topic rejected as a repeat: %s", candidate[:80])
+            if not message.get("idle_event"):
+                log.info("Idle chat skipped: no fresh topic this round")
+                return False
         response = None
         character = None
         for candidate in idle_candidate_order(session_key)[:2]:

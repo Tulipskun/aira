@@ -297,6 +297,22 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         with_media = len(pipeline.room_history(session))
         self.assertLess(with_media, plain + 20)
 
+    async def test_a_topic_the_room_is_already_on_is_not_fresh(self):
+        room = ["วันนี้ชาอุ่น ๆ อร่อยมากเลยนะคะ", "ไว้เรมชงให้อีกนะคะ"]
+
+        async def near(text, task="query"):
+            return [1.0, 0.0, 0.0]
+
+        async def far(text, task="query"):
+            return [0.0, 1.0, 0.0]
+
+        with patch.object(pipeline, "embed", near):
+            self.assertFalse(await pipeline.topic_is_fresh(
+                "ชาอุ่น ๆ กำลังจะชงให้ทุกคน", room))
+        with patch.object(pipeline, "embed", far):
+            self.assertTrue(await pipeline.topic_is_fresh(
+                "หนังที่เพิ่งเข้าฉายสัปดาห์นี้", room))
+
     async def test_a_greeting_opening_carries_the_moment_not_a_script(self):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
         message = {"user_id": "1", "user": "Yuuta", "text": "", "session_key": "group:quiet2",
