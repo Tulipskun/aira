@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from aira import pipeline
-from aira.token_budget import HISTORY_WINDOW_TOKENS
 from aira.characters import Character
 from aira.store import Store, utc_now
 
