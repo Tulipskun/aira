@@ -18,20 +18,19 @@ class CharacterTests(unittest.TestCase):
         self.assertEqual(characters["rem"].name, "Rem")
         self.assertEqual(characters["bocchi"].name, "Hitori Gotoh")
         self.assertEqual(characters["origami"].name, "Origami Tobiichi")
-        self.assertIn("หน้าตาย", load_character_prompt(characters["origami"]))
-        # The avatar URL is built from a frame that is really on disk, so a rebuild
-        # of the image set cannot leave a dead URL behind.
-        for character in characters.values():
-            self.assertTrue(character.avatar_url.startswith("https://"))
-            self.assertIn(f"/{character.id}/", character.avatar_url)
-        rem_prompt = load_character_prompt(characters["rem"])
-        bocchi_prompt = load_character_prompt(characters["bocchi"])
-        self.assertIn("เด็ดเดี่ยว", rem_prompt)
-        self.assertIn("ขี้อาย", bocchi_prompt)
-        self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ", rem_prompt)
-        self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ", bocchi_prompt)
-        self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ",
-                      load_character_prompt(characters["origami"]))
+        prompts = {slug: load_character_prompt(characters[slug])
+                   for slug in ("isla", "rem", "bocchi", "origami")}
+        for slug, prompt in prompts.items():
+            self.assertGreater(len(prompt), 300, f"{slug} prompt is too thin")
+        # Each one has to be its own voice, not a copy with a different name.
+        self.assertEqual(len(set(prompts.values())), 4)
+        self.assertIn("เรม", prompts["rem"])
+        self.assertNotIn("แรม", prompts["rem"])
+        self.assertTrue("อ๊ะ" in prompts["bocchi"] or "あっ" in prompts["bocchi"])
+        # The prompts shape the voice; they must not become a biography to recite.
+        for slug, prompt in prompts.items():
+            self.assertNotIn("ไทม์ไลน์", prompt, slug)
+            self.assertNotIn("วันเกิด", prompt, slug)
 
     def test_the_avatar_comes_from_a_frame_that_exists(self):
         from aira.characters import character_images
