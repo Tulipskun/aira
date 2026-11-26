@@ -19,7 +19,10 @@ from .characters import load_characters, save_character
 from .config import ROOT, config, load_settings, save_settings
 from .media import prepare_attachments
 from .liveness import Liveness
-from .pipeline import process_character_reply, select_characters, shutdown_pipeline
+from .pipeline import (
+    CHAIN_MAX_HOPS, _save_incoming_message, decide_next_speaker, process_character_reply,
+    select_characters, shutdown_pipeline,
+)
 from .scheduler import MessageScheduler
 from .store import store, utc_now
 from .token_budget import live_token_budget
@@ -391,12 +394,16 @@ class AiraBot(commands.Bot):
             self.liveness.note("dropped")
             return
         session_key = store.session_key_for(str(message.author.id), str(message.channel.id))
+        reply_reference = getattr(message, "reference", None)
         scheduled = {
             "user_id": str(message.author.id), "user": message.author.display_name,
             "text": text, "raw_content": message.content, "timestamp": message.created_at.isoformat(),
             "file_name": attachments[0].filename if attachments else None,
             "attachments": attachments, "embeds": list(message.embeds),
             "channel_id": str(message.channel.id), "message_id": str(message.id),
+            "discord_message_id": str(message.id),
+            "reply_to_message_id": (str(reply_reference.message_id)
+                                    if getattr(reply_reference, "message_id", None) else None),
             "session_key": session_key,
         }
         self._cancel_autonomous_continuation(session_key)
@@ -460,6 +467,18 @@ class AiraBot(commands.Bot):
             return
         await self._process_batch(messages)
 
+    async def _resolve_next_speaker(self, output: dict, session_key: str):
+        """Follow the character's own choice first, then let the decision model decide."""
+        character = output["character"]
+        next_id = str(output.get("next_speaker_id") or "").strip()
+        if next_id and next_id != character.id:
+            chosen = next((item for item in load_characters() if item.id == next_id), None)
+            if chosen is not None:
+                log.info("Continuation requested by the character: from=%s to=%s",
+                         character.id, chosen.id)
+                return chosen
+        return await decide_next_speaker(character, str(output.get("text") or ""), session_key)
+
     def _autonomous_wait_seconds(self, channel_id: str) -> float:
         now = time.monotonic()
         history = self.autonomous_history.setdefault(channel_id, deque())
@@ -498,7 +517,8 @@ class AiraBot(commands.Bot):
                 "mood": str(state.get("mood") or ""), "color": state.get("color"),
                 "image": str(state.get("image") or ""), "rps": state.get("rps"),
                 "character_turn": bool(state.get("character_turn", True)),
-                "next_speaker_id": str(state.get("next_speaker_id") or "")}
+                "next_speaker_id": str(state.get("next_speaker_id") or ""),
+                "message_row_id": state.get("message_row_id")}
 
     async def _run_autonomous_continuation(self, session_key: str) -> None:
         try:
@@ -531,7 +551,7 @@ class AiraBot(commands.Bot):
                 pending_send = state.get("pending_send")
                 if pending_send:
                     try:
-                        await self._send_character_output(
+                        sent = await self._send_character_output(
                             channel, self._continuation_output(pending_send), last, batch_id, False,
                         )
                     except Exception:
@@ -539,12 +559,19 @@ class AiraBot(commands.Bot):
                         await asyncio.sleep(10.0)
                         continue
                     state["pending_send"] = None
+                    state["previous"]["discord_message_id"] = str(sent.id)
                     store.save_autonomous_continuation(session_key, channel_id, state)
                     continue
 
                 previous = state.get("previous") or {}
                 previous_id = str(previous.get("character_id") or "")
                 next_id = str(previous.get("next_speaker_id") or "").strip()
+                hops = int(state.get("hops") or 0)
+                if hops >= CHAIN_MAX_HOPS:
+                    log.info("Autonomous exchange reached the hop limit: session=%s hops=%s",
+                             session_key, hops)
+                    store.delete_autonomous_continuation(session_key)
+                    return
                 characters = load_characters()
                 next_character = next((item for item in characters
                                         if item.id == next_id and item.id != previous_id), None)
@@ -571,6 +598,7 @@ class AiraBot(commands.Bot):
                     "timestamp": utc_now(),
                     "trigger_character": str(previous.get("character_name") or previous_id),
                     "trigger_character_id": previous_id,
+                    "discord_message_id": previous.get("discord_message_id"),
                     "character_turn": True,
                 }
                 self._record_autonomous_turn(channel_id)
@@ -591,13 +619,16 @@ class AiraBot(commands.Bot):
                     store.delete_autonomous_continuation(session_key)
                     return
                 response["character_turn"] = True
+                resolved = await self._resolve_next_speaker(response, session_key)
                 saved_output = {
                     "character_id": next_character.id, "text": response["text"],
+                    "message_row_id": response.get("message_row_id"),
                     "mood": response.get("mood", ""), "color": response.get("color"),
                     "image": response.get("image", ""), "rps": response.get("rps"),
                     "character_turn": True,
-                    "next_speaker_id": response.get("next_speaker_id", ""),
+                    "next_speaker_id": resolved.id if resolved else "",
                 }
+                state["hops"] = hops + 1
                 state["previous"] = {
                     **saved_output, "character_name": next_character.name,
                 }
@@ -655,6 +686,8 @@ class AiraBot(commands.Bot):
         sent = await webhook.send(**send_kwargs)
         if sent is None:
             raise RuntimeError(f"Discord did not return the sent message for {character.id}")
+        if output.get("message_row_id"):
+            store.set_discord_message_id(int(output["message_row_id"]), str(sent.id))
         log.info("Discord webhook send succeeded: message=%s channel=%s character=%s sent_message=%s "
                  "webhook_avatar=%s webhook=%s",
                  batch_id, last["channel_id"], character.id, sent.id,
@@ -688,12 +721,16 @@ class AiraBot(commands.Bot):
                 "timestamp": messages[0]["timestamp"], "file_name": messages[0].get("file_name"),
                 "session_key": messages[0]["session_key"], "speakers": speakers,
                 "media_summary": prepared.summary,
+                "discord_message_id": str(last["message_id"]),
+                "reply_to_message_id": last.get("reply_to_message_id"),
             }
-            store.save_message(
-                "user", text or "(ไม่มีข้อความแนบมา)", incoming["timestamp"],
-                incoming["session_key"], incoming["user_id"], incoming["user"],
-                incoming["file_name"], None,
-            )
+            # Keep one row per Discord message so the transcript shows who said what and
+            # which message each one answers, instead of a single row owned by the last user.
+            for index, item in enumerate(messages):
+                _save_incoming_message({
+                    **item,
+                    "media_summary": prepared.summary if index == len(messages) - 1 else None,
+                })
             # A retry must not answer twice: if another message is already queued for this
             # room, its batch owns the next turn and the stale attempt is dropped.
             def superseded() -> bool:
@@ -712,8 +749,8 @@ class AiraBot(commands.Bot):
             for character in selected:
                 try:
                     log.info("Generating character reply: message=%s character=%s", batch_id, character.id)
-                    # The first speaker answers the user; everyone after that answers the line
-                    # just spoken, exactly like the autonomous turn worker does. Otherwise the
+                    # The first speaker answers the user; everyone after that answers the card
+                    # just posted, exactly like the autonomous turn worker does. Otherwise the
                     # whole cast re-answers the same message and paraphrases the same answer.
                     turn = incoming if previous_spoken is None else {
                         **incoming,
@@ -722,34 +759,33 @@ class AiraBot(commands.Bot):
                         "character_turn": True,
                         "trigger_character": previous_spoken["character"].name,
                         "trigger_character_id": previous_spoken["character"].id,
+                        "discord_message_id": previous_spoken.get("discord_message_id"),
                     }
                     response = await process_character_reply(
                         turn, character, prepared, input_saved=True, superseded=superseded,
                     )
-                    if response["text"]:
-                        previous_spoken = response
-                        outputs.append(response)
-                        log.info("Character reply generated: message=%s character=%s chars=%s",
-                                 batch_id, character.id, len(response["text"]))
-                    else:
+                    if not response["text"]:
                         log.info("Character chose silence: message=%s character=%s", batch_id, character.id)
+                        continue
+                    sent = await self._send_character_output(
+                        channel, response, last, batch_id,
+                        messages[0]["session_key"].startswith("user:"),
+                    )
+                    previous_spoken = {**response, "discord_message_id": str(sent.id)}
+                    outputs.append(previous_spoken)
+                    log.info("Character reply generated: message=%s character=%s chars=%s",
+                             batch_id, character.id, len(response["text"]))
                 except Exception:
                     failed.append(character.name)
                     log.exception("Character %s failed for %s", character.id, last["user_id"])
 
-            for output in outputs:
-                await self._send_character_output(
-                    channel, output, last, batch_id,
-                    messages[0]["session_key"].startswith("user:"),
-                )
-
-            # Persist the chosen next speaker and let a resumable worker continue it.
-            # Pauses for TPM / channel pacing no longer discard an unfinished conversation.
-            if outputs:
-                previous = outputs[-1]
-                if previous.get("next_speaker_id"):
+            # Hand the last card to the continuation worker: it answers with whichever
+            # character the reply points at, so a two-way exchange can keep going.
+            if previous_spoken is not None:
+                next_character = await self._resolve_next_speaker(previous_spoken, incoming["session_key"])
+                if next_character is not None:
                     payload = {
-                        "created_at": time.time(), "batch_id": batch_id,
+                        "created_at": time.time(), "batch_id": batch_id, "hops": 1,
                         "incoming": {
                             "user_id": incoming["user_id"], "user": incoming["user"],
                             "text": incoming["text"], "timestamp": incoming["timestamp"],
@@ -763,10 +799,11 @@ class AiraBot(commands.Bot):
                             "session_key": last["session_key"],
                         },
                         "previous": {
-                            "character_id": previous["character"].id,
-                            "character_name": previous["character"].name,
-                            "text": previous["text"],
-                            "next_speaker_id": previous["next_speaker_id"],
+                            "character_id": previous_spoken["character"].id,
+                            "character_name": previous_spoken["character"].name,
+                            "text": previous_spoken["text"],
+                            "next_speaker_id": next_character.id,
+                            "discord_message_id": previous_spoken.get("discord_message_id"),
                         },
                         "pending_send": None,
                     }

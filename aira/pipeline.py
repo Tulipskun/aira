@@ -33,14 +33,17 @@ def _spawn(coro) -> None:
     task.add_done_callback(_background.discard)
 
 
-def _save_incoming_message(message: dict) -> None:
+def _save_incoming_message(message: dict) -> int:
     user_id = str(message["user_id"])
     user_name = str(message.get("user") or user_id)
     text = str(message.get("text") or "(ไม่มีข้อความแนบมา)")
-    store.save_message(
+    return store.save_message(
         "user", text, str(message.get("timestamp") or utc_now()),
         str(message["session_key"]), user_id, user_name,
         message.get("file_name"), None,
+        discord_message_id=message.get("discord_message_id"),
+        reply_to_message_id=message.get("reply_to_message_id"),
+        media_summary=message.get("media_summary"),
     )
 
 
@@ -108,21 +111,45 @@ def _substantive_text(text: str) -> bool:
     return LAUGHTER_TEXT.fullmatch(compact) is None and NOISE_TEXT.fullmatch(compact) is None
 
 
+def _quote_index(rows: list[dict]) -> dict[str, dict]:
+    return {str(row["discord_message_id"]): row for row in rows if row.get("discord_message_id")}
+
+
+def _reply_note(row: dict, index: dict[str, dict], label_of) -> str:
+    """Render the Discord reply arrow so the model can see who answers whom."""
+    target = index.get(str(row.get("reply_to_message_id") or ""))
+    if target is None:
+        return ""
+    quoted = " ".join(str(target.get("text") or "").split())
+    return f' (ตอบกลับ {label_of(target)}: "{quoted[:80]}{"…" if len(quoted) > 80 else ""}")'
+
+
+def _row_label(row: dict, names: dict[str, str]) -> str:
+    if row.get("role") == "model":
+        return names.get(str(row.get("character_id") or "")) or str(row.get("user_name") or "ตัวละคร")
+    return str(row.get("user_name") or "ผู้ใช้")
+
+
 def _transcript_with_replies(rows: list[dict], names: dict[str, str]) -> tuple[list[str], int, str]:
     """Mark which user messages stayed unanswered and report the trailing silence run."""
+    def label_of(row: dict) -> str:
+        return _row_label(row, names)
+
+    index = _quote_index(rows)
     lines: list[str] = []
     last_speaker = ""
     answering = ""
-    for index, row in enumerate(rows):
+    for index_row, row in enumerate(rows):
+        reply_note = _reply_note(row, index, label_of)
         if row.get("role") == "model":
-            speaker = names.get(str(row.get("character_id") or "")) or str(row.get("user_name") or "ตัวละคร")
+            speaker = label_of(row)
             last_speaker = str(row.get("character_id") or last_speaker)
-            target = f" (ตอบ {answering})" if answering else ""
+            target = reply_note or (f" (ตอบ {answering})" if answering else "")
             lines.append(f"{speaker}{target}: {row.get('text') or ''}")
             continue
-        answering = str(row.get("user_name") or "ผู้ใช้")
-        lines.append(f"{row.get('user_name') or 'ผู้ใช้'}: {row.get('text') or ''}")
-        following = rows[index + 1] if index + 1 < len(rows) else None
+        answering = label_of(row)
+        lines.append(f"{answering}{reply_note}: {row.get('text') or ''}")
+        following = rows[index_row + 1] if index_row + 1 < len(rows) else None
         if following is None or following.get("role") == "user":
             lines.append("(ข้อความนี้ยังไม่มีตัวละครตอบ)")
     trailing = 0
@@ -179,6 +206,7 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
     history_lines, unanswered, last_speaker = _transcript_with_replies(history[-16:], names)
     focus = _conversation_focus(history[-16:], names)
     media_summary = getattr(prepared_media, "summary", "") or message.get("media_summary", "")
+    reply_target = _quote_index(history[-16:]).get(str(message.get("reply_to_message_id") or ""))
     roster = ", ".join(f"{item.id} ({item.name})" for item in characters)
     shared_input = "\n".join([
         f"ห้องแชท Discord มีคนจริงคุยกับตัวละคร {len(characters)} ตัว: {roster}",
@@ -193,6 +221,8 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         "\n".join(history_lines) or "(ยังไม่มีประวัติ)",
         focus,
         f"ไฟล์แนบ: {media_summary}" if media_summary else "",
+        ("ข้อความล่าสุดเป็นการตอบกลับข้อความของ " + _row_label(reply_target, names)
+         + " — คนนั้นคือคู่สนทนาที่ผู้ใช้กำลังคุยด้วย") if reply_target else "",
         ("ชื่อที่ตัวจับชื่อเห็นในข้อความนี้ (เบาะแสเท่านั้น ต้องตัดสินจากบริบท): "
          + ", ".join(item.id for item in mentioned)) if mentioned else "",
         f"จำนวนข้อความท้ายห้องที่ยังไม่มีตัวละครตอบ: {unanswered}",
@@ -226,6 +256,44 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
     return selected
 
 
+CHAIN_MAX_HOPS = 4
+
+
+async def decide_next_speaker(speaker: Character, spoken: str, session_key: str) -> Character | None:
+    """Ask the decision model whether another character should answer this line."""
+    characters = load_characters()
+    candidates = [item for item in characters if item.id != speaker.id]
+    if not candidates or not spoken.strip():
+        return None
+    names = {item.id: item.name for item in characters}
+    history = store.get_history_by_budget(
+        session_key, history_budget_tokens("reply"), estimate_tokens, max_messages=24,
+    )
+    lines, _, _ = _transcript_with_replies(history[-12:], names)
+    shared_input = "\n".join([
+        f"ห้องแชท Discord มีตัวละคร: {', '.join(f'{item.id} ({item.name})' for item in candidates)}",
+        f"บทสนทนาล่าสุด (ล่าสุดอยู่ท้าย):\n" + ("\n".join(lines) or "(ยังไม่มี)"),
+        f"ประโยคล่าสุดของ {speaker.name}: {spoken}",
+        "หลักการ: ให้ตอบก็ต่อเมื่อประโยคนี้หันไปหาตัวละครคนนั้นจริง (ถาม แซว ท้า ทัก หรือกำลังโต้กันอยู่) "
+        "ถ้าประโยคจบในตัวเองหรือไม่ต้องการคำตอบ ไม่ต้องมีใครตอบ",
+    ])
+    questions = {
+        item.id: f"ตัวละคร {item.name} ควรตอบกลับประโยคของ {speaker.name} ทันทีหรือไม่"
+        for item in candidates
+    }
+    try:
+        scores = await decide_speakers(shared_input, questions)
+    except Exception:
+        log.exception("Continuation decision failed; ending the exchange")
+        return None
+    best = max(candidates, key=lambda item: scores.get(item.id, 0.0))
+    score = scores.get(best.id, 0.0)
+    log.info("Continuation decision: from=%s scores=%s pick=%s score=%.2f",
+             speaker.id, {item.id: round(scores.get(item.id, 0.0), 2) for item in candidates},
+             best.id, score)
+    return best if score >= SPEAKER_THRESHOLD else None
+
+
 async def process_character_reply(message: dict, character: Character, prepared_media=None,
                                   input_saved: bool = False, superseded=None) -> dict:
     """Generate every character turn through one shared memory/relationship/metadata pipeline."""
@@ -235,6 +303,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
     user_id = str(message["user_id"])
     owner_name = str(message.get("user") or user_id)
     character_turn = bool(message.get("character_turn"))
+    trigger_message_id = str(message.get("discord_message_id") or "") or None
 
     media = prepared_media
     if media is None:
@@ -250,6 +319,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
         history = _history_before_message(history, message)
 
     character_names = {item.id: item.name for item in load_characters()}
+    history_index = _quote_index(history)
     history_lines = []
     for row in history:
         if row["role"] == "model":
@@ -258,7 +328,12 @@ async def process_character_reply(message: dict, character: Character, prepared_
             speaker = row.get("user_name") or "ผู้ใช้"
             if row.get("user_id"):
                 speaker += f" [Discord User ID: {row['user_id']}]"
-        history_lines.append(f"[{thai_timestamp(row.get('timestamp'))}] {speaker}: {row['text']}")
+        reply_note = _reply_note(row, history_index, lambda target: (
+            character_names.get(target.get("character_id"))
+            or target.get("user_name") or "ใครสักคน"))
+        attachment = f" [แนบ: {row['media_summary']}]" if row.get("media_summary") else ""
+        history_lines.append(
+            f"[{thai_timestamp(row.get('timestamp'))}] {speaker}{reply_note}: {row['text']}{attachment}")
 
     context_lines = [
         f"คุณคือ {character.name}. ตอบเป็นตัวละครนี้ตามบุคลิกใน system prompt",
@@ -396,9 +471,12 @@ async def process_character_reply(message: dict, character: Character, prepared_
     text = result["reply"]
     timestamp = str(message.get("timestamp") or utc_now())
     reply_timestamp = utc_now()
+    message_row_id = None
     if text:
-        store.save_message("model", text, reply_timestamp, base_session, None, character.name, None,
-                           result.get("summary") or None, character.id)
+        message_row_id = store.save_message(
+            "model", text, reply_timestamp, base_session, None, character.name, None,
+            result.get("summary") or None, character.id, reply_to_message_id=trigger_message_id,
+        )
     if result.get("relationship"):
         if character_turn:
             target_id = str(message.get("trigger_character_id") or "")
@@ -429,7 +507,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
         "image": result.get("image", ""), "rps": result.get("rps"),
         "timestamp": reply_timestamp, "character_turn": character_turn,
         "next_speaker_id": result.get("next_speaker_id", ""),
-        "session_key": base_session,
+        "session_key": base_session, "message_row_id": message_row_id,
     }
 
 

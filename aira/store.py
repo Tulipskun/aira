@@ -101,7 +101,9 @@ class Store:
             file_name TEXT, summary TEXT, session_key TEXT, character_id TEXT
         )""")
         message_cols = self._columns("messages")
-        for name, ddl in (("summary", "TEXT"), ("session_key", "TEXT"), ("character_id", "TEXT")):
+        for name, ddl in (("summary", "TEXT"), ("session_key", "TEXT"), ("character_id", "TEXT"),
+                          ("discord_message_id", "TEXT"), ("reply_to_message_id", "TEXT"),
+                          ("media_summary", "TEXT")):
             if name not in message_cols:
                 self.db.execute(f"ALTER TABLE messages ADD COLUMN {name} {ddl}")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)")
@@ -343,16 +345,20 @@ class Store:
     def save_message(self, role: str, text: str, timestamp: str, session_key: str,
                      user_id: str | None = None, user_name: str | None = None,
                      file_name: str | None = None, summary: str | None = None,
-                     character_id: str | None = None) -> int:
+                     character_id: str | None = None, discord_message_id: str | None = None,
+                     reply_to_message_id: str | None = None, media_summary: str | None = None) -> int:
         cursor = self.db.execute("""INSERT INTO messages
-            (role,user_id,user_name,text,timestamp,file_name,summary,session_key,character_id)
-            VALUES(?,?,?,?,?,?,?,?,?)""",
-            (role, user_id, user_name, text, timestamp, file_name, summary, session_key, character_id))
+            (role,user_id,user_name,text,timestamp,file_name,summary,session_key,character_id,
+             discord_message_id,reply_to_message_id,media_summary)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (role, user_id, user_name, text, timestamp, file_name, summary, session_key, character_id,
+             discord_message_id, reply_to_message_id, media_summary))
         row = {
             "id": int(cursor.lastrowid), "role": role, "user_id": user_id,
             "user_name": user_name, "text": text, "timestamp": timestamp,
             "file_name": file_name, "summary": summary, "session_key": session_key,
-            "character_id": character_id,
+            "character_id": character_id, "discord_message_id": discord_message_id,
+            "reply_to_message_id": reply_to_message_id, "media_summary": media_summary,
         }
         cached = self._history_cache.get(session_key)
         if cached is not None:
@@ -362,11 +368,22 @@ class Store:
             self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
 
+    def set_discord_message_id(self, row_id: int, discord_message_id: str) -> None:
+        """Attach the Discord id of a sent character card so replies to it can be linked."""
+        self.db.execute("UPDATE messages SET discord_message_id=? WHERE id=?",
+                        (str(discord_message_id), int(row_id)))
+        for cached in self._history_cache.values():
+            for row in cached:
+                if row.get("id") == int(row_id):
+                    row["discord_message_id"] = str(discord_message_id)
+                    return
+
     def get_history(self, limit: int, session_key: str) -> list[dict]:
         cached = self._history_cache.get(session_key)
         if cached is None:
             self._history_cache_misses += 1
-            rows = self.db.execute("""SELECT id,role,user_id,user_name,text,summary,timestamp,file_name,session_key,character_id
+            rows = self.db.execute("""SELECT id,role,user_id,user_name,text,summary,timestamp,file_name,
+                session_key,character_id,discord_message_id,reply_to_message_id,media_summary
                 FROM messages WHERE session_key=? ORDER BY id DESC LIMIT ?""",
                 (session_key, self._history_cache_rows)).fetchall()
             cached = [dict(row) for row in reversed(rows)]
@@ -389,7 +406,7 @@ class Store:
         selected = []
         used = 0
         for row in reversed(rows):
-            text = " ".join(str(row.get(key) or "") for key in ("text", "summary"))
+            text = " ".join(str(row.get(key) or "") for key in ("text", "summary", "media_summary"))
             cost = max(1, int(estimate_tokens(text)))
             if used + cost > budget:
                 break

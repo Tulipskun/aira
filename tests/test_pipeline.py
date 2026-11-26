@@ -244,6 +244,63 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual({item.id for item in selected}, {item.id for item in chars})
 
+    async def test_transcript_shows_which_message_each_reply_answers(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+        ]
+        names = {item.id: item.name for item in chars}
+        rows = [
+            {"role": "model", "character_id": "rem", "user_name": "Rem", "text": "กำลังชงชาค่ะ",
+             "discord_message_id": "card-1", "reply_to_message_id": "msg-1"},
+            {"role": "user", "user_name": "Yuuta", "user_id": "1", "text": "งั้นขอถ้วยนึง",
+             "discord_message_id": "msg-2", "reply_to_message_id": "card-1"},
+        ]
+        lines, trailing, last_speaker = pipeline._transcript_with_replies(rows, names)
+        self.assertIn('Yuuta (ตอบกลับ Rem: "กำลังชงชาค่ะ"): งั้นขอถ้วยนึง', lines)
+        self.assertEqual(trailing, 1)
+        self.assertEqual(last_speaker, "rem")
+
+    async def test_character_history_carries_the_reply_arrow(self):
+        session = "group:9"
+        card = self.store.save_message("model", "ชาอุ่น ๆ ค่ะ", utc_now(), session, None, "Rem",
+                                       None, None, "rem", discord_message_id="card-1")
+        self.assertIsNotNone(card)
+        self.store.save_message("user", "ขอบใจนะ", utc_now(), session, "1", "Yuuta", None, None,
+                                reply_to_message_id="card-1", media_summary="ภาพถ้วยชา")
+        message = {"user_id": "1", "user": "Yuuta", "text": "ขอบใจนะ", "session_key": session,
+                   "timestamp": utc_now()}
+        character = Character("isla", "Isla", ("Isla",), Path("isla.md"))
+        with patch.object(pipeline, "load_characters", return_value=[character]), \
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
+             patch.object(pipeline, "history_budget_tokens", return_value=100000):
+            await pipeline.process_character_reply(message, character)
+        context = self.generate.await_args.args[1]
+        self.assertIn('Yuuta [Discord User ID: 1] (ตอบกลับ Rem: "ชาอุ่น ๆ ค่ะ"): ขอบใจนะ', context)
+        self.assertIn("[แนบ: ภาพถ้วยชา]", context)
+
+    async def test_continuation_picks_the_character_the_line_points_at(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+        ]
+        speaker = chars[1]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "decide_speakers",
+                          new=AsyncMock(return_value={"isla": 0.88})) as decision:
+            chosen = await pipeline.decide_next_speaker(speaker, "ไอล่าว่าไงบ้าง", "group:9")
+        self.assertEqual(chosen.id, "isla")
+        self.assertNotIn("rem", decision.await_args.args[1])
+
+    async def test_continuation_ends_when_nobody_is_interested(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+        ]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(return_value={"isla": 0.2})):
+            self.assertIsNone(await pipeline.decide_next_speaker(chars[1], "พอแล้วค่ะ", "group:9"))
+
     async def test_isla_uses_the_shared_character_pipeline_and_relationship_model(self):
         result = await pipeline.process_message({
             "user_id": "alice", "user": "Alice", "text": "Hi Isla",
