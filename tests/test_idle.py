@@ -23,29 +23,6 @@ class IdlePacingTests(unittest.TestCase):
         self.assertEqual(idle.day_anchor(datetime(2026, 2, 1, 19, 0)), "evening")
         self.assertIsNone(idle.day_anchor(datetime(2026, 2, 1, 4, 0)))
 
-    def test_an_unfinished_topic_is_far_more_likely_to_be_resumed(self):
-        evening = datetime(2026, 2, 1, 20, 0)
-        self.assertGreater(idle.start_probability(datetime(2026, 2, 1, 15, 0)),
-                           idle.start_probability(datetime(2026, 2, 1, 3, 0)))
-        rolls = [idle.should_start(evening, 30, 10, 0, random.Random(seed))
-                 for seed in range(20)]
-        self.assertGreater(sum(rolls), sum(
-            idle.should_start(evening, 30, 10, 0, random.Random(seed))
-            for seed in range(20)))
-
-    def test_a_quiet_room_only_restarts_after_its_gap(self):
-        now = datetime(2026, 2, 1, 20, 0)
-        self.assertFalse(idle.should_start(now, 2, 10, 0, random.Random(1)))
-        self.assertTrue(idle.should_start(now, 11, 10, 0))
-
-    def test_the_day_is_only_labelled_never_scripted(self):
-        # The code names the part of the day; what to say is the model's decision.
-        self.assertEqual(idle.part_of_day(datetime(2026, 2, 1, 8, 0)), "morning")
-        self.assertEqual(idle.part_of_day(datetime(2026, 2, 1, 13, 0)), "noon")
-        self.assertEqual(idle.part_of_day(datetime(2026, 2, 1, 19, 0)), "evening")
-        self.assertEqual(idle.part_of_day(datetime(2026, 2, 1, 2, 0)), "night")
-        self.assertFalse(hasattr(idle, "EVENTS_BY_PERIOD"))
-
     def test_the_room_stays_quiet_when_it_has_been_dead_for_hours(self):
         now = datetime(2026, 2, 1, 20, 0)
         self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10, 0,

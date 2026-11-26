@@ -65,8 +65,10 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertTrue(request["config"].system_instruction.startswith("system"))
         self.assertIsNone(request["config"].generation_config)
         compression = request["config"].context_window_compression
-        self.assertEqual(compression.trigger_tokens, 100_000)
-        self.assertEqual(compression.sliding_window.target_tokens, 80_000)
+        # The whole room is sent, so compression only steps in at the model window.
+        self.assertGreaterEqual(compression.trigger_tokens, 100_000)
+        self.assertEqual(compression.sliding_window.target_tokens,
+                         int(compression.trigger_tokens * 0.9))
         self.assertIsNone(request["config"].session_resumption)
         self.assertIn('"type":"object"', request["config"].system_instruction)
         self.assertIn("JSON", request["config"].system_instruction)
