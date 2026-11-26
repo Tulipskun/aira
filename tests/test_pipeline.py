@@ -264,9 +264,11 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                    "idle_reason": "day_greeting", "part_of_day": "morning"}
         with patch.object(pipeline, "load_characters", return_value=[character]), \
              patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
-             patch.object(pipeline, "history_budget_tokens", return_value=100000):
+             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
+             patch.object(pipeline, "sample_memory") as sampled:
             await pipeline.process_character_reply(message, character, input_saved=True)
         context = self.generate.await_args.args[1]
+        sampled.assert_not_called()
         self.assertIn("สถานะห้อง: ไม่มีเรื่องค้าง · ช่วงเวลาของวัน: morning", context)
         self.assertIn("โอกาส: คุณเป็นคนแรกที่เปิดปากในห้องช่วงนี้", context)
         # Nothing is scripted for the character: no prewritten situation reaches her.
@@ -286,7 +288,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         context = self.generate.await_args.args[1]
         self.assertIn("เรื่องหนึ่งจากความทรงจำของคุณเอง: เคยสัญญากับคุณยูตะว่าจะไปดูดาวด้วยกัน",
                       context)
-        sampled.assert_not_awaited()
+        sampled.assert_called_once()
 
     async def test_a_character_that_repeats_itself_stays_silent(self):
         session = "group:echo"

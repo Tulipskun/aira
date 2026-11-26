@@ -471,7 +471,9 @@ async def process_character_reply(message: dict, character: Character, prepared_
         relationship_label = f"ความสัมพันธ์ระหว่าง {character.name} กับผู้ใช้ {owner_name} (Discord User ID: {user_id})"
         relationship_scope = "ความสัมพันธ์ระหว่างคุณกับผู้ใช้คนนี้"
 
-    if ambient and not str(message.get("open_thread") or ""):
+    if ambient and message.get("idle_reason") == "spontaneous":
+        # A greeting is just a greeting; a spontaneous opening needs real material,
+        # so it gets one of the character's own memories to build a topic from.
         material = sample_memory(character_session_key(base_session, character.id))
         if material:
             context_lines.append(f"เรื่องหนึ่งจากความทรงจำของคุณเอง: {material[:300]}")
