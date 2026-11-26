@@ -357,6 +357,40 @@ async def decide_speakers(shared_input: str, questions: dict[str, str]) -> dict[
             for key, answer in (getattr(response, "answers", None) or {}).items()}
 
 
+async def decide_open_thread(transcript: str, candidates: dict[str, str]) -> str:
+    """Let the decision model say which line the room still owes an answer to.
+
+    ``candidates`` maps an option id to the line itself; ``none`` is always an
+    option. Returns the id it picked (``none`` when nothing is pending).
+    """
+    client = _live_client("gemini1")  # the decision model is served on v1beta only
+    criteria = {f"m{index}": f"{speaker}: {text}"[:160]
+                for index, (speaker, text) in enumerate(candidates.items(), start=1)}
+    criteria["none"] = "ไม่มีเรื่องค้าง ทุกคนคุยจบแล้ว"
+    payload = {"hang": {
+        "type": "choice",
+        "criteria": criteria,
+        "instructions": (
+            "อ่านบทสนทนาล่าสุดของห้องใน input แล้วเลือกว่ามีเรื่องใดที่ยังค้างอยู่จริง "
+            "เรื่องค้างหมายถึง มีคำถามที่ยังไม่มีใครตอบ มีคำสัญญาที่ยังไม่ได้ทำ "
+            "หรือหัวข้อที่ถูกทิ้งไว้กลางทางแล้วไม่มีใครพูดต่อ "
+            "การถามตอบกันไปมาระหว่างสมาชิกตามปกติไม่นับว่าค้าง "
+            "ถ้าไม่มีเรื่องค้างจริงให้เลือก none เท่านั้น"
+        ),
+    }}
+    started = time.monotonic()
+    response = await client.aio.decisions.create(
+        model=f"models/{config.decision_model}", input=transcript, questions=payload,
+    )
+    answer = (getattr(response, "answers", None) or {}).get("hang")
+    chosen = str(getattr(answer, "choice", "none") or "none")
+    usage = getattr(response, "usage", None)
+    log.info("Gemini open-thread decision: pick=%s options=%s ms=%s tokens=%s", chosen,
+             len(criteria), int((time.monotonic() - started) * 1000),
+             getattr(usage, "total_tokens", "unreported"))
+    return chosen
+
+
 async def _create_live_response(stage: str, input_parts: list[dict], system_instruction: str,
                                 response_schema: dict | None = None,
                                 debug_context: dict | None = None,

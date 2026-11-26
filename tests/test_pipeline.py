@@ -244,33 +244,35 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual({item.id for item in selected}, {item.id for item in chars})
 
-    def test_an_unanswered_message_is_an_open_thread(self):
+    async def test_the_model_names_the_line_the_room_still_owes(self):
         session = "group:thread"
         self.store.save_message("user", "แล้วพรุ่งนี้ไปไหนกันดี", utc_now(), session, "1", "Yuuta")
-        self.assertEqual(pipeline.open_thread(session), "แล้วพรุ่งนี้ไปไหนกันดี")
-        self.store.save_message("model", "ไปสวนกันไหมคะ", utc_now(), session, None, "Rem", None, None, "rem")
-        self.assertEqual(pipeline.open_thread(session), "")
+        with patch.object(pipeline.gemini, "decide_open_thread", return_value="m1") as decided:
+            self.assertEqual(await pipeline.open_thread(session), "แล้วพรุ่งนี้ไปไหนกันดี")
+        self.assertTrue(decided.await_args.args[0].startswith("Yuuta: แล้วพรุ่งนี้ไปไหนกันดี"))
 
-    def test_a_question_asked_between_characters_is_not_a_pending_matter(self):
+    async def test_a_question_between_characters_is_settled_by_the_model(self):
         session = "group:bantar"
         self.store.save_message("model", "วันนี้ฝึกซ้อมกันหนักมากเลยนะคะ", utc_now(), session,
                                 None, "Rem", None, None, "rem")
         self.store.save_message("model", "คุณโอริกามิจะซ้อมต่อไหมคะ?", utc_now(), session,
                                 None, "Isla", None, None, "isla")
-        self.assertEqual(pipeline.open_thread(session), "")
+        with patch.object(pipeline.gemini, "decide_open_thread", return_value="none"):
+            self.assertEqual(await pipeline.open_thread(session), "")
 
-    def test_a_question_asked_back_to_the_human_is_still_waiting(self):
-        session = "group:awaiting"
-        self.store.save_message("user", "วันนี้เหนื่อยจัง", utc_now(), session, "1", "Yuuta")
-        self.store.save_message("model", "แล้วคุณยูตะจะพักผ่อนบ้างไหมคะ?", utc_now(), session,
-                                None, "Isla", None, None, "isla")
-        self.assertEqual(pipeline.open_thread(session), "แล้วคุณยูตะจะพักผ่อนบ้างไหมคะ?")
+    async def test_one_message_is_judged_once(self):
+        session = "group:once"
+        self.store.save_message("user", "ไปไหนกันดี", utc_now(), session, "1", "Yuuta")
+        with patch.object(pipeline.gemini, "decide_open_thread", return_value="none") as decided:
+            await pipeline.open_thread(session)
+            await pipeline.open_thread(session)
+        self.assertEqual(decided.await_count, 1)
 
-    def test_a_promise_keeps_the_thread_open(self):
-        session = "group:promise"
-        self.store.save_message("model", "เดี๋ยวเรมกลับมาคุยต่อนะคะ", utc_now(), session,
-                                None, "Rem", None, None, "rem")
-        self.assertEqual(pipeline.open_thread(session), "เดี๋ยวเรมกลับมาคุยต่อนะคะ")
+    async def test_a_failed_judgement_leaves_the_room_settled(self):
+        session = "group:broken"
+        self.store.save_message("user", "ไปไหนกันดี", utc_now(), session, "1", "Yuuta")
+        with patch.object(pipeline.gemini, "decide_open_thread", side_effect=RuntimeError("down")):
+            self.assertEqual(await pipeline.open_thread(session), "")
 
     async def test_a_greeting_opening_carries_the_moment_not_a_script(self):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))

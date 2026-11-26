@@ -526,7 +526,7 @@ class AiraBot(commands.Bot):
                 last = rows[-1]
                 quiet = _quiet_minutes(str(last.get("timestamp") or ""))
                 now = datetime.now(ZoneInfo(config.timezone))
-                current_thread = bool(open_thread(session_key))
+                current_thread = bool(await open_thread(session_key))
                 if current_thread != target_for_thread:
                     # The room changed character (something got left open), so the
                     # wait it was resting on no longer applies.
@@ -534,7 +534,7 @@ class AiraBot(commands.Bot):
                     target_minutes = idle_target_minutes(now, current_thread)
                 if quiet is None or quiet < target_minutes:
                     continue
-                thread = open_thread(session_key)
+                thread = await open_thread(session_key)
                 starts = [moment for moment in self.idle_starts if moment > time.time() - 3600]
                 self.idle_starts = starts
                 reason = "resume" if thread else ""

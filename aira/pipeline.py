@@ -12,6 +12,7 @@ from .characters import (
     load_character_prompt, resolve_character_speakers,
 )
 from .config import config
+from . import gemini
 from .gemini import (
     generate_character_reply, decide_speakers, SPEAKER_THRESHOLD, thai_timestamp,
     current_time_block, _image_catalog_prompt,
@@ -182,29 +183,42 @@ def _conversation_focus(rows: list[dict], names: dict[str, str]) -> str:
     return "ลำดับการคุยล่าสุด: " + " | ".join(exchanges[-4:]) if exchanges else ""
 
 
-COMMITMENT_TEXT = re.compile(r"เดี๋ยว|ไว้วันหลัง|ไว้ค่อย|จะกลับมา|รอสักครู่|แล้วค่อยคุย|ไว้เจอกัน")
+async def open_thread(session_key: str) -> str:
+    """What the room left hanging, decided by the model, not by punctuation.
 
-
-def open_thread(session_key: str) -> str:
-    """What the room left hanging, if anything — the only reason to come back soon."""
+    Which line still owes an answer is a judgement about meaning, so the decision
+    model makes it: the recent lines are offered as options with ``none``, and the
+    chosen line comes back. A character asking another character something is
+    ordinary conversation and comes back as ``none``.
+    """
     rows = store.get_history(12, session_key)
     if not rows:
         return ""
-    last = rows[-1]
-    text = " ".join(str(last.get("text") or "").split())
-    if last.get("role") == "user":
-        # Somebody spoke and nobody answered yet.
-        return text
-    if COMMITMENT_TEXT.search(text):
-        # A promise the room has not kept yet.
-        return text
-    previous = rows[-2] if len(rows) > 1 else None
-    if text.endswith("?") and previous is not None and previous.get("role") == "user":
-        # The room asked the human something and is still waiting for the answer.
-        return text
-    # A question one character asked another is ordinary conversation: the room
-    # answers it itself, so it is not a matter hanging over the room.
-    return ""
+    marker = int(rows[-1]["id"])
+    cached = _OPEN_THREAD_CACHE.get(session_key)
+    if cached and cached[0] == marker:
+        return cached[1]
+    spoken = [(str(row.get("character_id") or row.get("user_name") or row.get("role")), 
+               " ".join(str(row.get("text") or "").split())[:200])
+              for row in rows[-6:] if str(row.get("text") or "").strip()]
+    if not spoken:
+        return ""
+    transcript = "\n".join(f"{speaker}: {text}" for speaker, text in spoken)
+    try:
+        chosen = await gemini.decide_open_thread(transcript, dict(enumerate(spoken)))
+    except Exception:
+        log.exception("Open-thread decision failed; treating the room as settled")
+        return ""
+    text = ""
+    if chosen.startswith("m") and chosen[1:].isdigit():
+        index = int(chosen[1:]) - 1
+        if 0 <= index < len(spoken):
+            text = spoken[index][1]
+    _OPEN_THREAD_CACHE[session_key] = (marker, text)
+    return text
+
+
+_OPEN_THREAD_CACHE: dict[str, tuple[int, str]] = {}
 
 
 def sample_memory(character_session: str, avoid: str = "") -> str:
