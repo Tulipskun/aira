@@ -273,6 +273,46 @@ class DiscordTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_a_self_started_line_is_answered_once_by_another_character(self):
+        async def run_test():
+            import time
+            import aira.discord_app as app
+            from aira.characters import Character
+            from aira.store import Store
+
+            class FakeChannel:
+                pass
+
+            isla = Character("isla", "Isla", ("Isla",), Path("isla.md"))
+            rem = Character("rem", "Rem", ("Rem",), Path("rem.md"))
+            with tempfile.TemporaryDirectory() as directory:
+                test_store = Store(Path(directory) / "idle-open.db")
+                bot = AiraBot()
+                test_store.save_message("user", "ไว้คุยกันใหม่", "2026-01-01T00:00:00Z",
+                                        "group:9", "1", "Alice")
+                reply = {"character": isla, "text": "ไอล่าว่าใครว่างบ้างคะ", "mood": "", "color": None,
+                         "image": "", "rps": None, "next_speaker_id": "", "message_row_id": 1}
+                try:
+                    with patch.object(app, "store", test_store), \
+                         patch.object(app, "process_character_reply", new=AsyncMock(return_value=reply)), \
+                         patch.object(app, "idle_candidate_order", return_value=[isla, rem]), \
+                         patch.object(bot, "get_channel", return_value=FakeChannel()), \
+                         patch.object(app.discord, "TextChannel", FakeChannel), \
+                         patch.object(app.discord, "Thread", FakeChannel), \
+                         patch.object(bot, "_send_character_output",
+                                      new=AsyncMock(return_value=SimpleNamespace(id="111"))), \
+                         patch.object(bot, "_resolve_next_speaker", new=AsyncMock(return_value=None)):
+                        started = await bot._start_idle_turn("9", "group:9", 40.0)
+                    self.assertTrue(started)
+                    state = test_store.get_autonomous_continuation("group:9")
+                    self.assertIsNotNone(state)
+                    self.assertEqual(state["previous"]["next_speaker_id"], "rem")
+                finally:
+                    await bot.close()
+                    test_store.close()
+
+        asyncio.run(run_test())
+
     def test_a_user_message_cancels_the_character_exchange(self):
         async def run_test():
             import time
