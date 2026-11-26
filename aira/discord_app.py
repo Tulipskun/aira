@@ -38,6 +38,16 @@ MAX_CHAIN_WAIT_SECONDS = 120.0
 IDLE_POLL_SECONDS = 20.0
 
 
+CHARACTER_WEBHOOK_PREFIX = "Aira Character ("
+
+
+def _is_character_webhook(message: discord.Message) -> bool:
+    """True when the message came from one of this bot's own character webhooks."""
+    author = getattr(message, "author", None)
+    name = str(getattr(author, "name", "") or "")
+    return bool(getattr(message, "webhook_id", None)) and name.startswith(CHARACTER_WEBHOOK_PREFIX)
+
+
 def _message_time(timestamp: str) -> datetime | None:
     """The moment a message was sent, in the bot's own timezone."""
     if not timestamp:
@@ -423,9 +433,15 @@ class AiraBot(commands.Bot):
     async def on_message(self, message: discord.Message):
         self.liveness.note("seen")
         if message.author.bot:
-            self.liveness.note("dropped")
-            return
-        self.liveness.note("nonBot")
+            # Other bots and webhooks are part of the room and get read like anyone
+            # else; only this bot's own character webhooks are skipped, because their
+            # output is already stored when it is sent.
+            if _is_character_webhook(message):
+                self.liveness.note("ownWebhook")
+                return
+            self.liveness.note("otherBot")
+        else:
+            self.liveness.note("nonBot")
         text = message.clean_content.strip()
         if text.startswith("!"):
             self.liveness.note("command")

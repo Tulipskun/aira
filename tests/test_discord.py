@@ -11,6 +11,18 @@ from aira.discord_app import AiraBot, PanelView, build_footer, _rps_outcome
 from aira.characters import Character
 
 
+class WebhookMessageTests(unittest.TestCase):
+    def test_another_bot_is_part_of_the_room(self):
+        from types import SimpleNamespace
+        from aira.discord_app import _is_character_webhook
+        other = SimpleNamespace(webhook_id=42, author=SimpleNamespace(name="Mee6"))
+        ours = SimpleNamespace(webhook_id=43, author=SimpleNamespace(name="Aira Character (rem)"))
+        plain_user = SimpleNamespace(webhook_id=None, author=SimpleNamespace(name="Yuuta"))
+        self.assertFalse(_is_character_webhook(other))
+        self.assertTrue(_is_character_webhook(ours))
+        self.assertFalse(_is_character_webhook(plain_user))
+
+
 class ChannelSelectInteractionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.bot = AiraBot()
