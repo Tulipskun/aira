@@ -122,6 +122,24 @@ class Store:
                           ("media_summary", "TEXT")):
             if name not in message_cols:
                 self.db.execute(f"ALTER TABLE messages ADD COLUMN {name} {ddl}")
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS semantic_memories(
+                id TEXT PRIMARY KEY, text TEXT NOT NULL, embedding_json TEXT NOT NULL,
+                user_id TEXT, timestamp TEXT NOT NULL, session_key TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_semantic_session ON semantic_memories(session_key);
+            CREATE INDEX IF NOT EXISTS idx_semantic_user ON semantic_memories(user_id);
+            CREATE INDEX IF NOT EXISTS idx_semantic_timestamp ON semantic_memories(timestamp);
+            CREATE TABLE IF NOT EXISTS episodic_memories(
+                id TEXT PRIMARY KEY, text TEXT NOT NULL, embedding_json TEXT NOT NULL,
+                session_key TEXT NOT NULL, date TEXT NOT NULL, period TEXT NOT NULL,
+                start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+                participants_json TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodic_memories(session_key);
+            CREATE INDEX IF NOT EXISTS idx_episodes_date ON episodic_memories(date, period);
+        """)
         self.db.execute("""CREATE TABLE IF NOT EXISTS idle_anchor_state(
             session_key TEXT NOT NULL, anchor TEXT NOT NULL, day TEXT NOT NULL,
             PRIMARY KEY(session_key, anchor, day)

@@ -281,11 +281,12 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
              patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
              patch.object(pipeline, "history_budget_tokens", return_value=100000), \
              patch.object(pipeline, "sample_memory",
-                          return_value="เคยสัญญากับคุณยูตะว่าจะไปดูดาวด้วยกัน"):
+                          return_value="เคยสัญญากับคุณยูตะว่าจะไปดูดาวด้วยกัน") as sampled:
             await pipeline.process_character_reply(message, character, input_saved=True)
         context = self.generate.await_args.args[1]
         self.assertIn("เรื่องหนึ่งจากความทรงจำของคุณเอง: เคยสัญญากับคุณยูตะว่าจะไปดูดาวด้วยกัน",
                       context)
+        sampled.assert_not_awaited()
 
     async def test_a_character_that_repeats_itself_stays_silent(self):
         session = "group:echo"
