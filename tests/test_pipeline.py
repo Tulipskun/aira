@@ -302,7 +302,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
 
         async def embed(text, task="query"):
             # tea words land on one axis, everything else on another
-            return [1.0, 0.0, 0.0] if "ชา" in text else [0.0, 1.0, 0.0]
+            return [1.0, 0.0, 0.0] if ("ชา" in text or "ชง" in text) else [0.0, 1.0, 0.0]
 
         with patch.object(pipeline, "embed", embed):
             self.assertFalse(await pipeline.topic_is_fresh(
