@@ -712,7 +712,12 @@ class AiraBot(commands.Bot):
                 speaker = {"user_id": message["user_id"], "user": message["user"]}
                 if speaker not in speakers:
                     speakers.append(speaker)
-            text = "\n".join(f"{item['user']}: {item['text'] or '(ไม่มีข้อความแนบมา)'}" for item in messages)
+            # One speaker needs no name prefix: the prompt already names the sender, and
+            # repeating it makes the model read "Yuuta: Yuuta: ..." in its own transcript.
+            def _line(item: dict) -> str:
+                body = item["text"] or "(ไม่มีข้อความแนบมา)"
+                return body if len(speakers) == 1 else f"{item['user']}: {body}"
+            text = "\n".join(_line(item) for item in messages)
             attachments = [attachment for item in messages for attachment in item.get("attachments", [])]
             raw_content = "\n".join(item.get("raw_content", item.get("text", "")) for item in messages)
             embeds = [embed for item in messages for embed in item.get("embeds", [])]
