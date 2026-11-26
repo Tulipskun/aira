@@ -16,7 +16,8 @@ from google.genai import types
 from .config import config, ROOT
 from .store import utc_now
 from .token_budget import (
-    estimate_live_request_tokens, live_token_budget, usage_metrics, usage_tpm_tokens,
+    decision_token_budget, estimate_live_request_tokens, estimate_tokens, live_token_budget,
+    usage_metrics, usage_tpm_tokens,
 )
 from .debug_dump import debug_dump
 
@@ -346,13 +347,18 @@ async def decide_speakers(shared_input: str, questions: dict[str, str]) -> dict[
     payload = {key: {"type": "noul", "instructions": instruction}
                for key, instruction in questions.items()}
     started = time.monotonic()
+    estimate = estimate_tokens(shared_input) + sum(estimate_tokens(v["instructions"])
+                                                   for v in payload.values())
+    reservation = await decision_token_budget.reserve(estimate, label="decision")
     response = await client.aio.decisions.create(
         model=f"models/{config.decision_model}", input=shared_input, questions=payload,
     )
     usage = getattr(response, "usage", None)
-    log.info("Gemini decision: model=%s characters=%s ms=%s tokens=%s",
+    spent = getattr(usage, "total_tokens", None)
+    await decision_token_budget.settle(reservation, int(spent) if spent else estimate)
+    log.info("Gemini decision: model=%s characters=%s ms=%s tokens=%s decision_tpm_left=%s",
              config.decision_model, len(payload), int((time.monotonic() - started) * 1000),
-             getattr(usage, "total_tokens", "unreported"))
+             spent or "unreported", decision_token_budget.available_tokens())
     return {key: float(getattr(answer, "noul", 0.0) or 0.0)
             for key, answer in (getattr(response, "answers", None) or {}).items()}
 
@@ -379,15 +385,19 @@ async def decide_open_thread(transcript: str, candidates: dict[str, str]) -> str
         ),
     }}
     started = time.monotonic()
+    estimate = estimate_tokens(transcript) + estimate_tokens(payload["hang"]["instructions"])
+    reservation = await decision_token_budget.reserve(estimate, label="open_thread")
     response = await client.aio.decisions.create(
         model=f"models/{config.decision_model}", input=transcript, questions=payload,
     )
     answer = (getattr(response, "answers", None) or {}).get("hang")
     chosen = str(getattr(answer, "choice", "none") or "none")
     usage = getattr(response, "usage", None)
-    log.info("Gemini open-thread decision: pick=%s options=%s ms=%s tokens=%s", chosen,
-             len(criteria), int((time.monotonic() - started) * 1000),
-             getattr(usage, "total_tokens", "unreported"))
+    spent = getattr(usage, "total_tokens", None)
+    await decision_token_budget.settle(reservation, int(spent) if spent else estimate)
+    log.info("Gemini open-thread decision: pick=%s options=%s ms=%s tokens=%s decision_tpm_left=%s",
+             chosen, len(criteria), int((time.monotonic() - started) * 1000),
+             spent or "unreported", decision_token_budget.available_tokens())
     return chosen
 
 

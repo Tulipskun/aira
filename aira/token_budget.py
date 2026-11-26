@@ -217,13 +217,20 @@ TURNS_PER_WINDOW = 6
 HISTORY_WINDOW_TOKENS = 9_500
 IMAGE_TOKENS = 258
 
-# Six turns a minute at the ten second beat, measured against what one turn of the
-# room actually costs today (~18k tokens including a 9,500 token history window):
-# 130,000 x 0.85 leaves room for six. AIRA_GEMINI_TPM_LIMIT overrides it.
-_LIMIT = int(os.environ.get("AIRA_GEMINI_TPM_LIMIT", "130000"))
+# The dialogue allowance: what the cast may spend on speaking, every character turn
+# counted against this one ledger.
+_LIMIT = int(os.environ.get("AIRA_GEMINI_TPM_LIMIT", "65000"))
 live_token_budget = SlidingWindowTokenBudget(
     _LIMIT, window_seconds=60, safety_ratio=0.85,
     state_path=Path(__file__).resolve().parent.parent / ".aira" / "gemini-tpm.json",
+)
+
+# The decision model answers short questions instead of writing dialogue, so it gets
+# its own ledger: choosing who speaks or what is pending never eats the room's budget.
+DECISION_LIMIT = int(os.environ.get("AIRA_DECISION_TPM_LIMIT", "30000"))
+decision_token_budget = SlidingWindowTokenBudget(
+    DECISION_LIMIT, window_seconds=60, safety_ratio=0.85,
+    state_path=Path(__file__).resolve().parent.parent / ".aira" / "decision-tpm.json",
 )
 
 

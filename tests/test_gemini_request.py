@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from aira import gemini
 from aira.token_budget import SlidingWindowTokenBudget
@@ -355,6 +355,24 @@ class GeminiRequestTests(unittest.TestCase):
         self.assertEqual(parsed["relationships"], [
             {"target_character_id": "nova", "relationship": "ไว้ใจ Nova"},
         ])
+
+class DecisionLedgerTests(unittest.TestCase):
+    def test_a_decision_is_billed_to_the_decision_ledger_not_the_room(self):
+        answer = SimpleNamespace(noul=0.9)
+        response = SimpleNamespace(answers={"rem": answer},
+                                   usage=SimpleNamespace(total_tokens=700))
+        decisions = SimpleNamespace(create=AsyncMock(return_value=response))
+        client = SimpleNamespace(aio=SimpleNamespace(decisions=decisions))
+        budget = SlidingWindowTokenBudget(limit=10_000, window_seconds=60, safety_ratio=1.0)
+        room = SlidingWindowTokenBudget(limit=10_000, window_seconds=60, safety_ratio=1.0)
+        with patch.object(gemini, "_live_client", return_value=client), \
+             patch.object(gemini, "decision_token_budget", budget), \
+             patch.object(gemini, "live_token_budget", room):
+            scores = asyncio.run(gemini.decide_speakers("ห้อง", {"rem": "ตอบไหม"}))
+        self.assertEqual(scores, {"rem": 0.9})
+        self.assertEqual(room.available_tokens(), 10_000)
+        self.assertLess(budget.available_tokens(), 10_000)
+
 
 if __name__ == "__main__":
     unittest.main()
