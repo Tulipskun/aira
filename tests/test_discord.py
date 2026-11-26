@@ -205,17 +205,17 @@ class DiscordTests(unittest.TestCase):
                 await bot.close()
         asyncio.run(run_test())
 
-    def test_exchange_pauses_for_the_pace_then_gives_up_after_the_wait_cap(self):
+    def test_character_replies_follow_each_other_without_an_artificial_wait(self):
         async def run_test():
             import time
             import aira.discord_app as app
             from aira.store import Store
 
-            class Paced(Exception):
+            class FakeChannel:
                 pass
 
             with tempfile.TemporaryDirectory() as directory:
-                test_store = Store(Path(directory) / "tpm-chain.db")
+                test_store = Store(Path(directory) / "chat-chain.db")
                 bot = AiraBot()
                 test_store.save_autonomous_continuation("group:9", "9", {
                     "created_at": time.time(), "batch_id": "batch-1", "hops": 1,
@@ -228,46 +228,64 @@ class DiscordTests(unittest.TestCase):
                                  "text": "Isla ตอบ", "next_speaker_id": "rem"},
                     "pending_send": None,
                 })
-
-                class FakeChannel:
-                    pass
-
-                generated = AsyncMock()
-                # Sleep means "the worker waited": stop the loop there to observe it.
-                paced = AsyncMock(side_effect=Paced)
+                generated = AsyncMock(return_value={
+                    "character": None, "text": "Rem ตอบต่อ", "mood": "", "color": None,
+                    "image": "", "rps": None, "next_speaker_id": "",
+                })
+                send = AsyncMock()
+                slept = AsyncMock()
                 try:
-                    bot.last_ai_turn_at["9"] = time.time()
                     with patch.object(app, "store", test_store), \
                          patch.object(app, "process_character_reply", new=generated), \
                          patch.object(bot, "get_channel", return_value=FakeChannel()), \
                          patch.object(app.discord, "TextChannel", FakeChannel), \
                          patch.object(app.discord, "Thread", FakeChannel), \
-                         patch.object(app.live_token_budget, "turn_interval_seconds",
-                                      return_value=15.0), \
-                         patch.object(app.asyncio, "sleep", new=paced):
-                        with self.assertRaises(Paced):
-                            await bot._run_autonomous_continuation("group:9")
-                    paced.assert_awaited()
-                    generated.assert_not_awaited()
-                    # Pacing keeps the exchange, it does not cancel it.
-                    self.assertEqual(test_store.autonomous_continuation_count(), 1)
-
-                    state = test_store.get_autonomous_continuation("group:9")
-                    state["waited"] = app.MAX_CHAIN_WAIT_SECONDS
-                    test_store.save_autonomous_continuation("group:9", "9", state)
-                    bot.last_ai_turn_at.clear()
-                    with patch.object(app, "store", test_store), \
-                         patch.object(app, "process_character_reply", new=generated), \
-                         patch.object(bot, "get_channel", return_value=FakeChannel()), \
-                         patch.object(app.discord, "TextChannel", FakeChannel), \
-                         patch.object(app.discord, "Thread", FakeChannel), \
-                         patch.object(app.live_token_budget, "remaining_turns", return_value=0), \
-                         patch.object(app.live_token_budget, "turn_interval_seconds",
-                                      return_value=0.0), \
-                         patch.object(app.asyncio, "sleep", new=AsyncMock()):
+                         patch.object(app.live_token_budget, "remaining_turns", return_value=6), \
+                         patch.object(bot, "_send_character_output", new=send), \
+                         patch.object(bot, "_resolve_next_speaker",
+                                      new=AsyncMock(return_value=None)), \
+                         patch.object(app.asyncio, "sleep", new=slept):
                         await bot._run_autonomous_continuation("group:9")
-                    generated.assert_not_awaited()
+                    # The next character answers straight away, like a person would.
+                    generated.assert_awaited_once()
+                    send.assert_awaited_once()
+                    slept.assert_not_awaited()
                     self.assertEqual(test_store.autonomous_continuation_count(), 0)
+                finally:
+                    await bot.close()
+                    test_store.close()
+
+        asyncio.run(run_test())
+
+    def test_a_user_message_cancels_the_character_exchange(self):
+        async def run_test():
+            import time
+            import aira.discord_app as app
+            from aira.store import Store
+
+            with tempfile.TemporaryDirectory() as directory:
+                test_store = Store(Path(directory) / "chat-cancel.db")
+                bot = AiraBot()
+                test_store.save_autonomous_continuation("group:9", "9", {
+                    "created_at": time.time(), "batch_id": "batch-1", "hops": 2,
+                    "incoming": {"user_id": "1", "user": "Alice", "text": "คุยกัน",
+                                 "timestamp": "2026-01-01T00:00:00Z", "session_key": "group:9",
+                                 "speakers": [{"user_id": "1", "user": "Alice"}]},
+                    "last": {"user_id": "1", "user": "Alice", "channel_id": "9",
+                             "message_id": "10", "session_key": "group:9"},
+                    "previous": {"character_id": "isla", "character_name": "Isla",
+                                 "text": "Isla ตอบ", "next_speaker_id": "rem"},
+                    "pending_send": None,
+                })
+                running = asyncio.create_task(asyncio.sleep(30))
+                bot.autonomous_tasks["group:9"] = running
+                try:
+                    with patch.object(app, "store", test_store):
+                        bot._cancel_autonomous_continuation("group:9")
+                    await asyncio.sleep(0)
+                    self.assertTrue(running.cancelled())
+                    self.assertEqual(test_store.autonomous_continuation_count(), 0)
+                    self.assertNotIn("group:9", bot.autonomous_tasks)
                 finally:
                     await bot.close()
                     test_store.close()

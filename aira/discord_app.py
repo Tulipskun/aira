@@ -299,8 +299,8 @@ class AiraBot(commands.Bot):
         self.scheduler = MessageScheduler(self._flush, debounce_ms=320, max_wait_ms=1500)
         self.tree.add_command(app_commands.Command(name="aira", description="เปิดแผงควบคุมผู้ดูแล Aira", callback=self.open_admin_panel))
         self.in_flight = 0
-        # Automated turns are paced by the TPM allowance; user turns are not.
-        self.last_ai_turn_at: dict[str, float] = {}
+        # Automated turns follow the same path as a reply to the user; the TPM
+        # ledger alone decides when the room has to wait.
         self.idle_task: asyncio.Task | None = None
         self.idle_starts: list[float] = []
         self.autonomous_tasks: dict[str, asyncio.Task] = {}
@@ -683,16 +683,6 @@ class AiraBot(commands.Bot):
                 previous_id = str(previous.get("character_id") or "")
                 next_id = str(previous.get("next_speaker_id") or "").strip()
                 hops = int(state.get("hops") or 0)
-                interval = live_token_budget.turn_interval_seconds()
-                last_spoken = self.last_ai_turn_at.get(channel_id, 0.0)
-                pace = max(0.0, last_spoken + interval - time.time())
-                if pace > 0:
-                    log.info("AI exchange paced: session=%s wait=%.1fs interval=%.1fs "
-                             "requestsPerWindow=%s avgTurnTokens=%s",
-                             session_key, pace, interval, live_token_budget.requests_per_window(),
-                             live_token_budget.average_request_tokens())
-                    await asyncio.sleep(min(pace, 20.0))
-                    continue
                 if live_token_budget.remaining_turns() < 1:
                     waited = float(state.get("waited") or 0.0)
                     if waited >= MAX_CHAIN_WAIT_SECONDS:
@@ -817,7 +807,6 @@ class AiraBot(commands.Bot):
             raise RuntimeError(f"Discord did not return the sent message for {character.id}")
         if output.get("message_row_id"):
             store.set_discord_message_id(int(output["message_row_id"]), str(sent.id))
-        self.last_ai_turn_at[str(last.get("channel_id") or "")] = time.time()
         log.info("Discord webhook send succeeded: message=%s channel=%s character=%s sent_message=%s "
                  "webhook_avatar=%s webhook=%s",
                  batch_id, last["channel_id"], character.id, sent.id,

@@ -68,16 +68,15 @@ class TokenBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_fixed_beat_sets_the_context_budget(self):
         budget = SlidingWindowTokenBudget(limit=1000, window_seconds=60, safety_ratio=1.0,
                                           default_request_tokens=250)
-        # A ten second beat means six turns a minute, so a turn gets a sixth of the window.
-        self.assertEqual(budget.turn_interval_seconds(), 10.0)
+        # Six turns a window, so a turn gets a sixth of the window.
         self.assertEqual(budget.requests_per_window(), 6)
         self.assertEqual(budget.target_request_tokens(), 166)
         self.assertEqual(budget.history_budget(reserve_tokens=50), 116)
         heavier = await budget.reserve(166, "turn")
         await budget.settle(heavier, 400)
-        # The beat does not move; the remaining allowance shrinks instead.
-        self.assertEqual(budget.turn_interval_seconds(), 10.0)
+        # The remaining allowance shrinks; the shared context budget does not move.
         self.assertEqual(budget.remaining_turns(), 1)
+        self.assertEqual(budget.target_request_tokens(), 166)
 
     async def test_tpm_ledger_survives_recreation(self):
         with tempfile.TemporaryDirectory() as folder:
