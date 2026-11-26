@@ -142,10 +142,16 @@ class Store:
         """)
         # The wait before the room may start talking again lives in the database so a
         # restart resumes the same silence instead of starting a fresh one.
+        # The wait before the room may speak again lives in the database, tied to the
+        # message it was measured from, so a restart resumes the very same silence.
         self.db.execute("""CREATE TABLE IF NOT EXISTS idle_state(
             session_key TEXT PRIMARY KEY,
-            next_open_at TEXT NOT NULL
+            next_open_at TEXT NOT NULL,
+            last_message_id INTEGER NOT NULL DEFAULT 0
         )""")
+        if "last_message_id" not in self._columns("idle_state"):
+            self.db.execute(
+                "ALTER TABLE idle_state ADD COLUMN last_message_id INTEGER NOT NULL DEFAULT 0")
         self.db.execute("""CREATE TABLE IF NOT EXISTS idle_anchor_state(
             session_key TEXT NOT NULL, anchor TEXT NOT NULL, day TEXT NOT NULL,
             PRIMARY KEY(session_key, anchor, day)
@@ -412,16 +418,21 @@ class Store:
             self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
 
-    def idle_next_open(self, session_key: str) -> str | None:
+    def idle_wait(self, session_key: str) -> dict | None:
         row = self.db.execute(
-            "SELECT next_open_at FROM idle_state WHERE session_key=?", (session_key,)).fetchone()
-        return str(row["next_open_at"]) if row else None
+            "SELECT next_open_at, last_message_id FROM idle_state WHERE session_key=?",
+            (session_key,)).fetchone()
+        if not row:
+            return None
+        return {"deadline": str(row["next_open_at"]),
+                "marker": int(row["last_message_id"] or 0)}
 
-    def set_idle_next_open(self, session_key: str, when: str) -> None:
+    def set_idle_wait(self, session_key: str, marker: int, when: str) -> None:
         self.db.execute(
-            """INSERT INTO idle_state(session_key,next_open_at) VALUES(?,?)
-               ON CONFLICT(session_key) DO UPDATE SET next_open_at=excluded.next_open_at""",
-            (session_key, when))
+            """INSERT INTO idle_state(session_key,next_open_at,last_message_id) VALUES(?,?,?)
+               ON CONFLICT(session_key) DO UPDATE SET next_open_at=excluded.next_open_at,
+                                                   last_message_id=excluded.last_message_id""",
+            (session_key, when, int(marker)))
 
     def idle_anchor_done(self, session_key: str, anchor: str, day: str) -> bool:
         """Has this moment of the day already produced a conversation?"""

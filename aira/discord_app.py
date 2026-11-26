@@ -6,7 +6,7 @@ import logging
 import mimetypes
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +36,19 @@ log = logging.getLogger("aira.discord")
 # A paced exchange may wait for the window to refill, but not forever.
 MAX_CHAIN_WAIT_SECONDS = 120.0
 IDLE_POLL_SECONDS = 20.0
+
+
+def _message_time(timestamp: str) -> datetime | None:
+    """The moment a message was sent, in the bot's own timezone."""
+    if not timestamp:
+        return None
+    try:
+        moment = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(ZoneInfo(config.timezone))
 
 
 def _quiet_minutes(timestamp: str) -> float | None:
@@ -519,16 +532,23 @@ class AiraBot(commands.Bot):
                 lines.append(f"{who}: {text}")
         return "\n".join(lines)
 
-    def _idle_deadline(self, session_key: str, now: datetime) -> datetime:
-        """When the room may speak again, remembered across restarts."""
-        saved = store.idle_next_open(session_key)
-        if saved:
+    def _idle_deadline(self, session_key: str, now: datetime, last: dict) -> datetime:
+        """When the room may speak again: the last message plus a random 15-45 minutes.
+
+        The answer is remembered with the message it was measured from, so a restart
+        keeps the same silence instead of giving the room a fresh wait.
+        """
+        marker = int(last.get("id") or 0)
+        saved = store.idle_wait(session_key)
+        if saved and saved["marker"] == marker:
             try:
-                return datetime.fromisoformat(saved)
+                return datetime.fromisoformat(saved["deadline"])
             except ValueError:
-                log.warning("Ignoring unreadable idle deadline: %s", saved)
-        deadline = now + timedelta(minutes=idle_target_minutes(now))
-        store.set_idle_next_open(session_key, deadline.isoformat())
+                log.warning("Ignoring unreadable idle deadline: %s", saved["deadline"])
+        sent_at = _message_time(str(last.get("timestamp") or ""))
+        wait = idle_target_minutes(now)
+        deadline = (sent_at or now) + timedelta(minutes=wait)
+        store.set_idle_wait(session_key, marker, deadline.isoformat())
         return deadline
 
     async def _run_idle_loop(self, channel_id: str) -> None:
@@ -548,7 +568,7 @@ class AiraBot(commands.Bot):
                 last = rows[-1]
                 quiet = _quiet_minutes(str(last.get("timestamp") or ""))
                 now = datetime.now(ZoneInfo(config.timezone))
-                deadline = self._idle_deadline(session_key, now)
+                deadline = self._idle_deadline(session_key, now, last)
                 marker = int(last["id"])
                 if marker != last_seen:
                     # A new line arrived, so this is the only moment the model has to
@@ -557,7 +577,7 @@ class AiraBot(commands.Bot):
                     if await open_thread(session_key):
                         # Something is hanging, so the room answers it now: no wait at all.
                         deadline = now
-                        store.set_idle_next_open(session_key, deadline.isoformat())
+                        store.set_idle_wait(session_key, marker, deadline.isoformat())
                 if now < deadline:
                     continue
                 thread = await open_thread(session_key)
@@ -574,12 +594,12 @@ class AiraBot(commands.Bot):
                     reason = "spontaneous"
                 if not reason:
                     deadline = now + timedelta(minutes=idle_target_minutes(now))
-                    store.set_idle_next_open(session_key, deadline.isoformat())
+                    store.set_idle_wait(session_key, marker, deadline.isoformat())
                     continue
                 if live_token_budget.remaining_turns() < 1:
                     log.info("Idle chat skipped: no TPM room left for another turn")
                     deadline = now + timedelta(minutes=idle_target_minutes(now))
-                    store.set_idle_next_open(session_key, deadline.isoformat())
+                    store.set_idle_wait(session_key, marker, deadline.isoformat())
                     continue
                 log.info("Idle chat attempt: quiet=%.0fmin reason=%s thread=%s part=%s",
                          quiet or 0.0, reason, bool(thread), part_of_day(now))
@@ -588,7 +608,7 @@ class AiraBot(commands.Bot):
                 if started:
                     self.idle_starts.append(time.time())
                     deadline = now + timedelta(minutes=idle_target_minutes(now))
-                    store.set_idle_next_open(session_key, deadline.isoformat())
+                    store.set_idle_wait(session_key, marker, deadline.isoformat())
                 # A silent opening is not a start: the moment stays open and the next
                 # poll hands it to someone else instead of resting for another hour.
                 log.info("Idle chat round finished: channel=%s started=%s quiet=%.0fmin",
