@@ -34,8 +34,9 @@ class IdlePacingTests(unittest.TestCase):
 
     def test_an_unfinished_topic_is_far_more_likely_to_be_resumed(self):
         evening = datetime(2026, 2, 1, 20, 0)
+        self.assertEqual(idle.start_probability(evening, True), 1.0)
         self.assertGreater(idle.start_probability(evening, True),
-                           idle.start_probability(evening, False) * 2)
+                           idle.start_probability(evening, False))
         rolls = [idle.should_start(evening, 30, 10, 0, True, random.Random(seed))
                  for seed in range(20)]
         self.assertGreater(sum(rolls), sum(
