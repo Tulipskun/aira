@@ -263,7 +263,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         embedded.assert_awaited()
         # The quiet room adds no fake user message to the transcript.
         rows = self.store.get_history(10, session)
-        self.assertEqual(len(rows), 1)
+        self.assertEqual([row["role"] for row in rows], ["user", "model"])
 
     async def test_transcript_shows_which_message_each_reply_answers(self):
         chars = [
