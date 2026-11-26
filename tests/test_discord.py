@@ -304,6 +304,8 @@ class DiscordTests(unittest.TestCase):
                          patch.object(app.discord, "Thread", FakeChannel), \
                          patch.object(bot, "get_channel", return_value=fake_channel), \
                          patch.object(bot, "_autonomous_wait_seconds", return_value=0), \
+                         patch.object(app, "decide_next_speaker",
+                                      new=AsyncMock(return_value=None)) as decision, \
                          patch.object(bot, "_send_character_output", new=AsyncMock()) as send:
                         await bot._run_autonomous_continuation("group:9")
                     generated.assert_awaited_once()
@@ -312,6 +314,7 @@ class DiscordTests(unittest.TestCase):
                     send.assert_awaited_once()
                     sent = send.await_args.args[1]
                     self.assertEqual(sent["text"], "Rem ตอบต่อ")
+                    decision.assert_awaited_once()
                     self.assertEqual(test_store.autonomous_continuation_count(), 0)
                 finally:
                     await bot.close()

@@ -406,7 +406,8 @@ class Store:
         selected = []
         used = 0
         for row in reversed(rows):
-            text = " ".join(str(row.get(key) or "") for key in ("text", "summary", "media_summary"))
+            text = " ".join(str(row[key]) for key in ("text", "summary", "media_summary")
+                            if row.get(key))
             cost = max(1, int(estimate_tokens(text)))
             if used + cost > budget:
                 break

@@ -619,7 +619,9 @@ class AiraBot(commands.Bot):
                     store.delete_autonomous_continuation(session_key)
                     return
                 response["character_turn"] = True
-                resolved = await self._resolve_next_speaker(response, session_key)
+                resolved = await self._resolve_next_speaker(
+                    {"character": next_character, "text": response["text"],
+                     "next_speaker_id": response.get("next_speaker_id", "")}, session_key)
                 saved_output = {
                     "character_id": next_character.id, "text": response["text"],
                     "message_row_id": response.get("message_row_id"),
