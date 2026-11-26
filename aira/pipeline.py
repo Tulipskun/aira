@@ -182,6 +182,24 @@ def _conversation_focus(rows: list[dict], names: dict[str, str]) -> str:
     return "ลำดับการคุยล่าสุด: " + " | ".join(exchanges[-4:]) if exchanges else ""
 
 
+COMMITMENT_TEXT = re.compile(r"เดี๋ยว|ไว้วันหลัง|ไว้ค่อย|จะกลับมา|รอสักครู่|แล้วค่อยคุย|ไว้เจอกัน")
+
+
+def open_thread(session_key: str) -> str:
+    """What the room left hanging, if anything — the only reason to come back soon."""
+    rows = store.get_history(12, session_key)
+    if not rows:
+        return ""
+    last = rows[-1]
+    text = " ".join(str(last.get("text") or "").split())
+    if last.get("role") == "user":
+        # Somebody spoke and nobody answered yet.
+        return text
+    if COMMITMENT_TEXT.search(text) or text.endswith("?"):
+        return text
+    return ""
+
+
 def idle_candidate_order(session_key: str) -> list[Character]:
     """Who has been quiet the longest starts the conversation when the room wakes."""
     characters = load_characters()
@@ -350,6 +368,9 @@ async def process_character_reply(message: dict, character: Character, prepared_
         f"ผู้ใช้ต้นทางของห้องนี้: {owner_name} [Discord User ID: {user_id}]",
     ]
     if ambient:
+        pending = " ".join(str(message.get("open_thread") or "").split())
+        if pending:
+            context_lines.append(f"เรื่องที่ค้างไว้จากการคุยครั้งก่อน: \"{pending[:200]}\"")
         who = str(message.get("user") or "")
         context_lines.append(
             f"ห้องเงียบมา {ambient_minutes:.0f} นาทีแล้ว ไม่มีใครพิมพ์ต่อ"

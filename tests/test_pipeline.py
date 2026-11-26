@@ -244,6 +244,19 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual({item.id for item in selected}, {item.id for item in chars})
 
+    def test_an_unanswered_message_is_an_open_thread(self):
+        session = "group:thread"
+        self.store.save_message("user", "แล้วพรุ่งนี้ไปไหนกันดี", utc_now(), session, "1", "Yuuta")
+        self.assertEqual(pipeline.open_thread(session), "แล้วพรุ่งนี้ไปไหนกันดี")
+        self.store.save_message("model", "ไปสวนกันไหมคะ", utc_now(), session, None, "Rem", None, None, "rem")
+        self.assertEqual(pipeline.open_thread(session), "")
+
+    def test_a_promise_keeps_the_thread_open(self):
+        session = "group:promise"
+        self.store.save_message("model", "เดี๋ยวเรมกลับมาคุยต่อนะคะ", utc_now(), session,
+                                None, "Rem", None, None, "rem")
+        self.assertEqual(pipeline.open_thread(session), "เดี๋ยวเรมกลับมาคุยต่อนะคะ")
+
     async def test_a_character_that_repeats_itself_stays_silent(self):
         session = "group:echo"
         self.store.save_message("model", "ฉันอยู่ตรงนี้ มีธุระอะไรกับหน่วย AST หรือเปล่าคะ",

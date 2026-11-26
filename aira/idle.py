@@ -10,8 +10,12 @@ from __future__ import annotations
 import random
 from datetime import datetime
 
-IDLE_MIN_MINUTES = 3.0
-IDLE_MAX_MINUTES = 14.0
+# A thread left hanging (an unanswered question, a promise) is worth picking up
+# soon; a room with nothing left open only gets a fresh topic after a long rest.
+RESUME_MIN_MINUTES = 6.0
+RESUME_MAX_MINUTES = 20.0
+FRESH_MIN_MINUTES = 45.0
+FRESH_MAX_MINUTES = 120.0
 QUIET_START_HOUR = 2
 QUIET_END_HOUR = 9
 QUIET_MULTIPLIER = 3.0
@@ -19,28 +23,36 @@ MAX_STARTS_PER_HOUR = 4
 DEAD_ROOM_MINUTES = 12 * 60
 
 
-def idle_target_minutes(now: datetime, rng: random.Random | None = None) -> float:
-    """Pick how long this silence should last before anyone considers talking."""
+def idle_target_minutes(now: datetime, open_thread: bool = False,
+                        rng: random.Random | None = None) -> float:
+    """How long this silence should last before anyone considers talking."""
     generator = rng or random
-    target = generator.uniform(IDLE_MIN_MINUTES, IDLE_MAX_MINUTES)
+    low, high = ((RESUME_MIN_MINUTES, RESUME_MAX_MINUTES) if open_thread
+                 else (FRESH_MIN_MINUTES, FRESH_MAX_MINUTES))
+    target = generator.uniform(low, high)
     if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR:
         target *= QUIET_MULTIPLIER
     return target
 
 
-def start_probability(now: datetime) -> float:
-    """How likely someone wants to speak once the silence target is reached."""
+def start_probability(now: datetime, open_thread: bool = False) -> float:
+    """How likely someone picks the room up once its silence target is reached."""
+    if open_thread:
+        # An unfinished topic is a reason to come back; only the night holds it.
+        return 0.4 if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR else 0.9
     if now.hour < QUIET_START_HOUR:
-        return 0.35
-    if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR:
         return 0.2
+    if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR:
+        return 0.15
     if now.hour >= 23:
-        return 0.5
-    return 0.85
+        return 0.3
+    # A room with nothing pending mostly stays quiet; a new topic is occasional.
+    return 0.35
 
 
 def should_start(now: datetime, quiet_minutes: float, target_minutes: float,
-                 starts_last_hour: int, rng: random.Random | None = None) -> bool:
+                 starts_last_hour: int, open_thread: bool = False,
+                 rng: random.Random | None = None) -> bool:
     """Decide whether this is a natural moment to start a conversation."""
     if quiet_minutes < target_minutes:
         return False
@@ -48,4 +60,4 @@ def should_start(now: datetime, quiet_minutes: float, target_minutes: float,
         return False
     if starts_last_hour >= MAX_STARTS_PER_HOUR:
         return False
-    return (rng or random).random() < start_probability(now)
+    return (rng or random).random() < start_probability(now, open_thread)

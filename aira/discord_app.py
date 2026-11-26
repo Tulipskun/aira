@@ -22,7 +22,8 @@ from .media import prepare_attachments
 from .liveness import Liveness
 from .idle import idle_target_minutes, should_start
 from .pipeline import (
-    _save_incoming_message, decide_next_speaker, idle_candidate_order, process_character_reply,
+    _save_incoming_message, decide_next_speaker, idle_candidate_order, open_thread,
+    process_character_reply,
     select_characters, shutdown_pipeline,
 )
 from .scheduler import MessageScheduler
@@ -524,19 +525,21 @@ class AiraBot(commands.Bot):
                 if quiet is None or quiet < target_minutes:
                     continue
                 now = datetime.now(ZoneInfo(config.timezone))
+                thread = open_thread(session_key)
                 starts = [moment for moment in self.idle_starts if moment > time.time() - 3600]
                 self.idle_starts = starts
-                if not should_start(now, quiet, target_minutes, len(starts)):
-                    # Someone had nothing to say: wait another natural gap.
-                    target_minutes = idle_target_minutes(now)
+                if not should_start(now, quiet, target_minutes, len(starts), bool(thread)):
+                    # Nothing worth saying yet: measure the next gap from this silence.
+                    target_minutes = idle_target_minutes(now, bool(thread))
                     continue
                 if live_token_budget.remaining_turns() < 1:
                     log.info("Idle chat skipped: no TPM room left for another turn")
-                    target_minutes = idle_target_minutes(now)
+                    target_minutes = idle_target_minutes(now, bool(thread))
                     continue
-                started = await self._start_idle_turn(channel_id, session_key, quiet)
+                log.info("Idle chat attempt: quiet=%.0fmin thread=%s", quiet, bool(thread))
+                started = await self._start_idle_turn(channel_id, session_key, quiet, thread)
                 self.idle_starts.append(time.time())
-                target_minutes = idle_target_minutes(now)
+                target_minutes = idle_target_minutes(now, False)
                 log.info("Idle chat round finished: channel=%s started=%s quiet=%.0fmin",
                          channel_id, started, quiet)
             except asyncio.CancelledError:
@@ -545,7 +548,8 @@ class AiraBot(commands.Bot):
                 log.exception("Idle chat loop failed; continuing")
                 target_minutes = idle_target_minutes(datetime.now(ZoneInfo(config.timezone)))
 
-    async def _start_idle_turn(self, channel_id: str, session_key: str, quiet_minutes: float) -> bool:
+    async def _start_idle_turn(self, channel_id: str, session_key: str, quiet_minutes: float,
+                               thread: str = "") -> bool:
         channel = self.get_channel(int(channel_id)) if channel_id.isdigit() else None
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             return False
@@ -563,6 +567,7 @@ class AiraBot(commands.Bot):
             "speakers": [],
             "ambient": True,
             "idle_minutes": quiet_minutes,
+            "open_thread": thread,
         }
         response = None
         character = None
