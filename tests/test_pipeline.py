@@ -288,10 +288,9 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         session = "group:window-media"
         for index in range(80):
             self.store.save_message("user", f"ข้อความ {index}", utc_now(), session, "1", "Yuuta")
-        window = pipeline.room_history(session, HISTORY_WINDOW_TOKENS)
+        window = pipeline.room_history(session, 500)
         self.assertLess(len(window), 80)
-        self.assertLessEqual(sum(pipeline.message_cost(row) for row in window),
-                             HISTORY_WINDOW_TOKENS)
+        self.assertLessEqual(sum(pipeline.message_cost(row) for row in window), 500)
 
     async def test_a_greeting_opening_carries_the_moment_not_a_script(self):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
