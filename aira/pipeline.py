@@ -369,8 +369,13 @@ async def process_character_reply(message: dict, character: Character, prepared_
     ]
     if ambient:
         pending = " ".join(str(message.get("open_thread") or "").split())
+        reason = str(message.get("idle_reason") or "")
         if pending:
             context_lines.append(f"เรื่องที่ค้างไว้จากการคุยครั้งก่อน: \"{pending[:200]}\"")
+        elif reason in ("morning", "noon", "evening"):
+            context_lines.append(f"สถานะห้อง: ไม่มีเรื่องค้าง · ช่วงเวลาของวัน: {reason}")
+        elif reason != "resume":
+            context_lines.append("สถานะห้อง: ไม่มีเรื่องค้าง · ห้องเงียบมานานแล้ว")
         who = str(message.get("user") or "")
         context_lines.append(
             f"ห้องเงียบมา {ambient_minutes:.0f} นาทีแล้ว ไม่มีใครพิมพ์ต่อ"

@@ -10,12 +10,15 @@ from __future__ import annotations
 import random
 from datetime import datetime
 
-# A thread left hanging (an unanswered question, a promise) is worth picking up
-# soon; a room with nothing left open only gets a fresh topic after a long rest.
-RESUME_MIN_MINUTES = 6.0
-RESUME_MAX_MINUTES = 20.0
-FRESH_MIN_MINUTES = 45.0
-FRESH_MAX_MINUTES = 120.0
+# A thread left hanging is finished straight away; a room with nothing pending
+# waits, and may then open a new topic on a time-of-day beat or by chance.
+RESUME_MIN_MINUTES = 0.5
+RESUME_MAX_MINUTES = 2.0
+FRESH_MIN_MINUTES = 30.0
+FRESH_MAX_MINUTES = 90.0
+ANCHOR_MIN_QUIET_MINUTES = 12.0
+# Beats in the day when people naturally bring something up.
+DAY_ANCHORS = (("morning", 7, 10), ("noon", 11, 14), ("evening", 17, 21))
 QUIET_START_HOUR = 2
 QUIET_END_HOUR = 9
 QUIET_MULTIPLIER = 3.0
@@ -35,19 +38,26 @@ def idle_target_minutes(now: datetime, open_thread: bool = False,
     return target
 
 
+def day_anchor(now: datetime) -> str | None:
+    """Which natural moment of the day this is, if any."""
+    for name, start, end in DAY_ANCHORS:
+        if start <= now.hour < end:
+            return name
+    return None
+
+
 def start_probability(now: datetime, open_thread: bool = False) -> float:
     """How likely someone picks the room up once its silence target is reached."""
     if open_thread:
-        # An unfinished topic is a reason to come back; only the night holds it.
-        return 0.4 if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR else 0.9
+        # An unfinished topic gets finished; only deep night holds it back.
+        return 0.5 if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR else 1.0
     if now.hour < QUIET_START_HOUR:
         return 0.2
     if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR:
-        return 0.15
+        return 0.2
     if now.hour >= 23:
         return 0.3
-    # A room with nothing pending mostly stays quiet; a new topic is occasional.
-    return 0.35
+    return 0.5
 
 
 def should_start(now: datetime, quiet_minutes: float, target_minutes: float,

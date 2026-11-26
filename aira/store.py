@@ -122,6 +122,10 @@ class Store:
                           ("media_summary", "TEXT")):
             if name not in message_cols:
                 self.db.execute(f"ALTER TABLE messages ADD COLUMN {name} {ddl}")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS idle_anchor_state(
+            session_key TEXT NOT NULL, anchor TEXT NOT NULL, day TEXT NOT NULL,
+            PRIMARY KEY(session_key, anchor, day)
+        )""")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_key ON messages(session_key)")
@@ -383,6 +387,21 @@ class Store:
                 del cached[:-self._history_cache_rows]
             self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
+
+    def idle_anchor_done(self, session_key: str, anchor: str, day: str) -> bool:
+        """Has this moment of the day already produced a conversation?"""
+        row = self.db.execute(
+            "SELECT 1 FROM idle_anchor_state WHERE session_key=? AND anchor=? AND day=?",
+            (session_key, anchor, day),
+        ).fetchone()
+        return bool(row)
+
+    def mark_idle_anchor(self, session_key: str, anchor: str, day: str) -> None:
+        self.db.execute(
+            "INSERT OR REPLACE INTO idle_anchor_state(session_key,anchor,day) VALUES(?,?,?)",
+            (session_key, anchor, day),
+        )
+        self.db.execute("DELETE FROM idle_anchor_state WHERE day<?", (day,))
 
     def set_discord_message_id(self, row_id: int, discord_message_id: str) -> None:
         """Attach the Discord id of a sent character card so replies to it can be linked."""

@@ -50,6 +50,12 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.db.delete_messages(session_key="group:cache", limit=1), 1)
         self.assertEqual([row["text"] for row in self.db.get_history(10, "group:cache")], ["keep"])
 
+    def test_a_day_beat_only_happens_once(self):
+        self.assertFalse(self.db.idle_anchor_done("group:9", "morning", "2026-11-26"))
+        self.db.mark_idle_anchor("group:9", "morning", "2026-11-26")
+        self.assertTrue(self.db.idle_anchor_done("group:9", "morning", "2026-11-26"))
+        self.assertFalse(self.db.idle_anchor_done("group:9", "noon", "2026-11-26"))
+
     def test_a_placeholder_answer_never_becomes_a_relationship(self):
         self.assertFalse(self.db.save_character_pair_relationship("isla", "rem", "ยังไม่เคยสร้างความสัมพันธ์"))
         self.assertEqual(self.db.get_character_pair_relationship("isla", "rem"), "")
