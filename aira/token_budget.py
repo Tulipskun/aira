@@ -154,9 +154,19 @@ class SlidingWindowTokenBudget:
     async def reserve(self, tokens: int, label: str = "") -> Reservation:
         amount = max(1, int(tokens))
         if amount > self.capacity:
-            raise ValueError(
-                f"Single Gemini request estimate ({amount}) exceeds the safe TPM budget ({self.capacity})"
-            )
+            # The room's whole transcript can outgrow one window of the allowance.
+            # Such a request is never trimmed, so it goes out alone once the window
+            # has emptied instead of being refused.
+            log.warning("Request larger than one window: stage=%s tokens=%s capacity=%s",
+                        label or "unknown", amount, self.capacity)
+            while True:
+                async with self._lock:
+                    if self._used(time.time()) == 0:
+                        reservation = Reservation(time.time(), amount)
+                        self._events.append(reservation)
+                        self._save_state()
+                        return reservation
+                await asyncio.sleep(0.5)
         waited = 0.0
         while True:
             async with self._lock:

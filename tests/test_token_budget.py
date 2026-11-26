@@ -93,5 +93,12 @@ class TokenBudgetTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 
+class OversizedRequestTests(unittest.TestCase):
+    def test_a_request_bigger_than_one_window_goes_out_alone(self):
+        budget = SlidingWindowTokenBudget(limit=1_000)
+        reservation = asyncio.run(budget.reserve(5_000))
+        self.assertEqual(reservation.tokens, 5_000)
+
+
 if __name__ == "__main__":
     unittest.main()
