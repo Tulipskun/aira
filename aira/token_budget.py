@@ -210,15 +210,6 @@ live_token_budget = SlidingWindowTokenBudget(
 )
 
 
-def history_budget_tokens(kind: str = "reply") -> int:
-    """Same ledger, same arithmetic: the prompt fits one turn's share of the window."""
-    if kind == "selector":
-        return live_token_budget.history_budget(reserve_tokens=8_000)
-    if kind == "conversation":
-        return live_token_budget.history_budget(reserve_tokens=9_000)
-    return live_token_budget.history_budget(reserve_tokens=6_000)
-
-
 def usage_metrics(metadata) -> dict[str, int | None]:
     """Normalize Gemini usage metadata without mixing input and output tokens."""
     if metadata is None:

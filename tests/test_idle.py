@@ -6,25 +6,16 @@ from aira import idle
 
 
 class IdlePacingTests(unittest.TestCase):
-    def test_a_thread_left_open_is_finished_straight_away(self):
+    def test_a_quiet_room_waits_between_fifteen_and_forty_five_minutes(self):
         now = datetime(2026, 2, 1, 15, 0)
-        gaps = [idle.idle_target_minutes(now, True, random.Random(seed)) for seed in range(20)]
-        self.assertGreater(len(set(gaps)), 5)
-        for gap in gaps:
-            self.assertLessEqual(gap, idle.RESUME_MAX_MINUTES)
+        gaps = [idle.idle_target_minutes(now, random.Random(seed)) for seed in range(40)]
+        self.assertGreaterEqual(min(gaps), idle.FRESH_MIN_MINUTES)
+        self.assertLessEqual(max(gaps), idle.FRESH_MAX_MINUTES)
+        self.assertGreater(len(set(gaps)), 10)
 
-    def test_a_room_with_nothing_pending_rests_much_longer(self):
-        now = datetime(2026, 2, 1, 15, 0)
-        resume = idle.idle_target_minutes(now, True, random.Random(4))
-        fresh = idle.idle_target_minutes(now, False, random.Random(4))
-        self.assertGreater(fresh, resume * 10)
-        self.assertGreaterEqual(fresh, idle.FRESH_MIN_MINUTES)
-
-    def test_night_waits_much_longer_than_afternoon(self):
-        night = datetime(2026, 2, 1, 4, 0)
-        afternoon = datetime(2026, 2, 1, 15, 0)
-        self.assertGreater(idle.idle_target_minutes(night, True, random.Random(3)),
-                           idle.idle_target_minutes(afternoon, True, random.Random(3)) * 2)
+    def test_a_hanging_matter_is_not_given_a_wait_at_all(self):
+        # Resuming is decided by the room, so there is no resume window left to sample.
+        self.assertFalse([name for name in dir(idle) if name.startswith("RESUME")])
 
     def test_the_day_has_natural_beats(self):
         self.assertEqual(idle.day_anchor(datetime(2026, 2, 1, 8, 0)), "morning")
@@ -34,19 +25,18 @@ class IdlePacingTests(unittest.TestCase):
 
     def test_an_unfinished_topic_is_far_more_likely_to_be_resumed(self):
         evening = datetime(2026, 2, 1, 20, 0)
-        self.assertEqual(idle.start_probability(evening, True), 1.0)
-        self.assertGreater(idle.start_probability(evening, True),
-                           idle.start_probability(evening, False))
-        rolls = [idle.should_start(evening, 30, 10, 0, True, random.Random(seed))
+        self.assertGreater(idle.start_probability(datetime(2026, 2, 1, 15, 0)),
+                           idle.start_probability(datetime(2026, 2, 1, 3, 0)))
+        rolls = [idle.should_start(evening, 30, 10, 0, random.Random(seed))
                  for seed in range(20)]
         self.assertGreater(sum(rolls), sum(
-            idle.should_start(evening, 30, 10, 0, False, random.Random(seed))
+            idle.should_start(evening, 30, 10, 0, random.Random(seed))
             for seed in range(20)))
 
     def test_a_quiet_room_only_restarts_after_its_gap(self):
         now = datetime(2026, 2, 1, 20, 0)
-        self.assertFalse(idle.should_start(now, 2, 10, 0, True, random.Random(1)))
-        self.assertTrue(idle.should_start(now, 11, 10, 0, True))
+        self.assertFalse(idle.should_start(now, 2, 10, 0, random.Random(1)))
+        self.assertTrue(idle.should_start(now, 11, 10, 0))
 
     def test_the_day_is_only_labelled_never_scripted(self):
         # The code names the part of the day; what to say is the model's decision.
@@ -58,12 +48,12 @@ class IdlePacingTests(unittest.TestCase):
 
     def test_the_room_stays_quiet_when_it_has_been_dead_for_hours(self):
         now = datetime(2026, 2, 1, 20, 0)
-        self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10, 0, True,
+        self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10, 0,
                                            random.Random(1)))
 
     def test_an_hourly_cap_stops_the_cast_talking_to_itself(self):
         now = datetime(2026, 2, 1, 20, 0)
-        self.assertFalse(idle.should_start(now, 30, 10, idle.MAX_STARTS_PER_HOUR, True,
+        self.assertFalse(idle.should_start(now, 30, 10, idle.MAX_STARTS_PER_HOUR,
                                            random.Random(1)))
 
 

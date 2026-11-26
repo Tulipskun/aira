@@ -22,7 +22,7 @@ from .memory import (
     is_boilerplate, recall_episodes, search_memories_by_vector,
 )
 from .store import store, utc_now
-from .token_budget import estimate_tokens, history_budget_tokens
+from .token_budget import estimate_tokens
 
 log = logging.getLogger("aira.pipeline")
 _background: set[asyncio.Task] = set()
@@ -129,6 +129,11 @@ def _row_label(row: dict, names: dict[str, str]) -> str:
     if row.get("role") == "model":
         return names.get(str(row.get("character_id") or "")) or str(row.get("user_name") or "ตัวละคร")
     return str(row.get("user_name") or "ผู้ใช้")
+
+
+def room_history(session_key: str) -> list[dict]:
+    """Every message in the room: the cast reads what a member reads."""
+    return store.get_history(store.count_messages(session_key=session_key) + 1, session_key)
 
 
 def _transcript_with_replies(rows: list[dict], names: dict[str, str]) -> tuple[list[str], int, str]:
@@ -266,14 +271,11 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
     broadcast = bool(BROADCAST_TEXT.search(current)) or len(mentioned) > 1
     names = {item.id: item.name for item in characters}
 
-    history = store.get_history_by_budget(
-        str(message["session_key"]), history_budget_tokens("reply"), estimate_tokens,
-        max_messages=24,
-    )
-    history_lines, unanswered, last_speaker = _transcript_with_replies(history[-16:], names)
-    focus = _conversation_focus(history[-16:], names)
+    history = room_history(str(message["session_key"]))
+    history_lines, unanswered, last_speaker = _transcript_with_replies(history, names)
+    focus = _conversation_focus(history, names)
     media_summary = getattr(prepared_media, "summary", "") or message.get("media_summary", "")
-    reply_target = _quote_index(history[-16:]).get(str(message.get("reply_to_message_id") or ""))
+    reply_target = _quote_index(history).get(str(message.get("reply_to_message_id") or ""))
     roster = ", ".join(f"{item.id} ({item.name})" for item in characters)
     shared_input = "\n".join([
         f"ห้องแชท Discord มีคนจริงคุยกับตัวละคร {len(characters)} ตัว: {roster}",
@@ -312,7 +314,8 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
               if score >= SPEAKER_THRESHOLD]
     selected = resolve_character_speakers(characters, [], [item.id for item in chosen])
     if not selected:
-        selected = _silence_breaker(characters, current, history[-16:], unanswered, last_speaker)
+        selected = _silence_breaker(characters, current, history, unanswered,
+                                  last_speaker)
         if selected:
             log.info("Decision model kept the room silent; continuing with %s",
                      [item.id for item in selected])
@@ -330,10 +333,8 @@ async def decide_next_speaker(speaker: Character, spoken: str, session_key: str)
     if not candidates or not spoken.strip():
         return None
     names = {item.id: item.name for item in characters}
-    history = store.get_history_by_budget(
-        session_key, history_budget_tokens("reply"), estimate_tokens, max_messages=24,
-    )
-    lines, _, _ = _transcript_with_replies(history[-12:], names)
+    history = room_history(session_key)
+    lines, _, _ = _transcript_with_replies(history, names)
     shared_input = "\n".join([
         f"ห้องแชท Discord มีตัวละคร: {', '.join(f'{item.id} ({item.name})' for item in candidates)}",
         f"บทสนทนาล่าสุด (ล่าสุดอยู่ท้าย):\n" + ("\n".join(lines) or "(ยังไม่มี)"),
@@ -379,9 +380,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
     if not input_saved:
         _save_incoming_message(message)
 
-    history = store.get_history_by_budget(
-        base_session, history_budget_tokens("reply"), estimate_tokens, max_messages=500,
-    )
+    history = room_history(base_session)
     if not character_turn:
         history = _history_before_message(history, message)
 
@@ -503,6 +502,10 @@ async def process_character_reply(message: dict, character: Character, prepared_
         material = sample_memory(character_session_key(base_session, character.id),
                                  avoid=" ".join(str(row.get("text") or "")
                                                 for row in store.get_history(6, base_session)))
+        event = " ".join(str(message.get("idle_event") or "").split())
+        if event:
+            log.info("Idle opening event: character=%s event=%s", character.id, event[:90])
+            context_lines.append(f"เหตุการณ์ที่เพิ่งเกิดขึ้นในห้อง: {event}")
         if material:
             log.info("Idle opening material: character=%s memory=%s", character.id,
                      " ".join(material.split())[:90])

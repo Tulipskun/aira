@@ -281,7 +281,6 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                    "idle_reason": "day_greeting", "part_of_day": "morning"}
         with patch.object(pipeline, "load_characters", return_value=[character]), \
              patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
-             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
              patch.object(pipeline, "sample_memory") as sampled:
             await pipeline.process_character_reply(message, character, input_saved=True)
         context = self.generate.await_args.args[1]
@@ -298,7 +297,6 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                    "idle_reason": "spontaneous", "part_of_day": "evening"}
         with patch.object(pipeline, "load_characters", return_value=[character]), \
              patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
-             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
              patch.object(pipeline, "sample_memory",
                           return_value="เคยสัญญากับคุณยูตะว่าจะไปดูดาวด้วยกัน") as sampled:
             await pipeline.process_character_reply(message, character, input_saved=True)
@@ -320,8 +318,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         }
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
         with patch.object(pipeline, "load_characters", return_value=[character]), \
-             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
-             patch.object(pipeline, "history_budget_tokens", return_value=100000):
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"):
             result = await pipeline.process_character_reply(
                 {"user_id": "1", "user": "Yuuta", "text": "ว่าไง", "session_key": session,
                  "timestamp": utc_now(), "character_turn": True,
@@ -337,7 +334,6 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
         with patch.object(pipeline, "load_characters", return_value=[character]), \
              patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
-             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
              patch.object(pipeline, "search_memories_by_vector", return_value=[
                  {"text": "ฉันอยู่ตรงนี้ มีธุระอะไรกับหน่วย AST หรือเปล่าคะ", "timestamp": utc_now()},
                  {"text": "คุณยูตะชอบชาเขียว", "timestamp": utc_now()}]):
@@ -362,7 +358,6 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                    "trigger_character": "Rem", "trigger_character_id": "rem"}
         with patch.object(pipeline, "load_characters", return_value=[character]), \
              patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
-             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
              patch.object(pipeline, "embed", new=AsyncMock(return_value=[0.1])) as embedded:
             await pipeline.process_character_reply(message, character, input_saved=True)
         context = self.generate.await_args.args[1]
@@ -381,7 +376,6 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                    "ambient": True, "idle_minutes": 24.0}
         with patch.object(pipeline, "load_characters", return_value=[character]), \
              patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
-             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
              patch.object(pipeline, "embed", new=AsyncMock(return_value=[0.1])) as embedded:
             await pipeline.process_character_reply(message, character, input_saved=True)
         context = self.generate.await_args.args[1]
@@ -421,8 +415,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                    "timestamp": utc_now()}
         character = Character("isla", "Isla", ("Isla",), Path("isla.md"))
         with patch.object(pipeline, "load_characters", return_value=[character]), \
-             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
-             patch.object(pipeline, "history_budget_tokens", return_value=100000):
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"):
             await pipeline.process_character_reply(message, character)
         context = self.generate.await_args.args[1]
         self.assertIn('Yuuta [Discord User ID: 1] (ตอบกลับ Rem: "ชาอุ่น ๆ ค่ะ"): ขอบใจนะ', context)

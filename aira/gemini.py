@@ -391,6 +391,24 @@ async def decide_open_thread(transcript: str, candidates: dict[str, str]) -> str
     return chosen
 
 
+EVENT_INSTRUCTION = (
+    "คุณเป็นผู้ช่วยเบื้องหลังของห้องแชทนี้ หน้าที่คือเลือกเหตุการณ์เล็ก ๆ ที่เพิ่งเกิดขึ้น "
+    "ในห้องหรือรอบ ๆ ตัวละคร แล้วเขียนเป็นประโยคภาษาไทยสั้น ๆ 1 ประโยค "
+    "ข้อกำหนด: ต้องเป็นเรื่องใหม่ที่ไม่ซ้ำกับเรื่องที่ห้องกำลังคุยอยู่ "
+    "ต้องเป็นสิ่งที่ตัวละครในห้องจะหยิบไปคุยต่อได้จริง "
+    "ห้ามแต่งบทพูดของตัวละคร ห้ามอธิบาย ห้ามใส่เครื่องหมายคำพูด "
+    "ตอบกลับมาเป็นประโยคเดียวเท่านั้น"
+)
+
+
+async def generate_event(room_transcript: str) -> str:
+    """One separate request that invents a small happening for the cast to notice."""
+    text = await _create_live_response(
+        "gemini1", [{"type": "text", "text": room_transcript or "(ห้องยังไม่มีบทสนทนา)"}],
+        EVENT_INSTRUCTION)
+    return " ".join(text.split())[:200]
+
+
 async def _create_live_response(stage: str, input_parts: list[dict], system_instruction: str,
                                 response_schema: dict | None = None,
                                 debug_context: dict | None = None,
@@ -413,16 +431,18 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
     # Aira call already seeds its own authoritative transcript and memories.
     # Reusing a prior handle while resending that transcript would duplicate
     # conversation state and can corrupt character continuity.
-    # Compression starts when a session outgrows one TPM window, so a long-lived
-    # session can never carry more context than one minute of budget pays for.
-    compression_trigger = min(live_token_budget.capacity, 100_000)
+    # The room's whole transcript is sent, so compression only ever steps in at the
+    # model's own window: the cast reads exactly the messages a member reads.
+    limit_probe = _live_client(stage)
+    model_input_limit = await _model_input_limit(limit_probe, chosen_model)
+    compression_trigger = model_input_limit
     live_config = types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         output_audio_transcription=types.AudioTranscriptionConfig(),
         system_instruction=system_instruction,
         context_window_compression=types.ContextWindowCompressionConfig(
             trigger_tokens=compression_trigger,
-            sliding_window=types.SlidingWindow(target_tokens=int(compression_trigger * 0.8)),
+            sliding_window=types.SlidingWindow(target_tokens=int(compression_trigger * 0.9)),
         ),
     )
     while key_attempts < max_keys:
@@ -442,7 +462,7 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
         # TPM is input-token throughput. Do not reserve output/thinking tokens here.
         estimate = estimate_live_request_tokens(system_instruction, content_parts, output_reserve=0)
         input_limit = await _model_input_limit(client, chosen_model)
-        context_budget = min(max(1, int(input_limit * 0.90)), live_token_budget.capacity)
+        context_budget = max(1, int(input_limit * 0.95))
         if estimate > context_budget:
             raise ValueError(
                 f"Gemini input estimate ({estimate}) exceeds the safe context budget "

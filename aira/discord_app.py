@@ -16,6 +16,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from . import gemini
 from .characters import load_characters, save_character
 from .config import ROOT, config, load_settings, save_settings
 from .media import prepare_attachments
@@ -25,8 +26,7 @@ from .idle import (
 )
 from .pipeline import (
     _save_incoming_message, decide_next_speaker, idle_candidate_order, open_thread,
-    process_character_reply,
-    select_characters, shutdown_pipeline,
+    process_character_reply, room_history, select_characters, shutdown_pipeline,
 )
 from .scheduler import MessageScheduler
 from .store import group_session_key, store, utc_now
@@ -508,6 +508,17 @@ class AiraBot(commands.Bot):
             return
         await self._process_batch(messages)
 
+    @staticmethod
+    def _room_transcript(session_key: str) -> str:
+        """The room as a member reads it, ended with an instruction-free excerpt."""
+        lines = []
+        for row in room_history(session_key):
+            who = row.get("character_id") or row.get("user_name") or row.get("role")
+            text = " ".join(str(row.get("text") or "").split())
+            if text:
+                lines.append(f"{who}: {text}")
+        return "\n".join(lines)
+
     def _idle_deadline(self, session_key: str, now: datetime) -> datetime:
         """When the room may speak again, remembered across restarts."""
         saved = store.idle_next_open(session_key)
@@ -516,7 +527,7 @@ class AiraBot(commands.Bot):
                 return datetime.fromisoformat(saved)
             except ValueError:
                 log.warning("Ignoring unreadable idle deadline: %s", saved)
-        deadline = now + timedelta(minutes=idle_target_minutes(now, False))
+        deadline = now + timedelta(minutes=idle_target_minutes(now))
         store.set_idle_next_open(session_key, deadline.isoformat())
         return deadline
 
@@ -544,9 +555,8 @@ class AiraBot(commands.Bot):
                     # judge whether the room is waiting on somebody.
                     last_seen = marker
                     if await open_thread(session_key):
-                        # Something is hanging: finish it soon instead of after the wait.
-                        deadline = min(deadline, now + timedelta(
-                            minutes=idle_target_minutes(now, True)))
+                        # Something is hanging, so the room answers it now: no wait at all.
+                        deadline = now
                         store.set_idle_next_open(session_key, deadline.isoformat())
                 if now < deadline:
                     continue
@@ -560,15 +570,15 @@ class AiraBot(commands.Bot):
                         and not store.idle_anchor_done(session_key, anchor, day)):
                     reason = "day_greeting"
                 if not reason and len(starts) < 4 and should_start(
-                        now, quiet or 0.0, 0.0, len(starts), bool(thread)):
+                        now, quiet or 0.0, 0.0, len(starts)):
                     reason = "spontaneous"
                 if not reason:
-                    deadline = now + timedelta(minutes=idle_target_minutes(now, bool(thread)))
+                    deadline = now + timedelta(minutes=idle_target_minutes(now))
                     store.set_idle_next_open(session_key, deadline.isoformat())
                     continue
                 if live_token_budget.remaining_turns() < 1:
                     log.info("Idle chat skipped: no TPM room left for another turn")
-                    deadline = now + timedelta(minutes=idle_target_minutes(now, bool(thread)))
+                    deadline = now + timedelta(minutes=idle_target_minutes(now))
                     store.set_idle_next_open(session_key, deadline.isoformat())
                     continue
                 log.info("Idle chat attempt: quiet=%.0fmin reason=%s thread=%s part=%s",
@@ -577,7 +587,7 @@ class AiraBot(commands.Bot):
                                                       thread, reason)
                 if started:
                     self.idle_starts.append(time.time())
-                    deadline = now + timedelta(minutes=idle_target_minutes(now, False))
+                    deadline = now + timedelta(minutes=idle_target_minutes(now))
                     store.set_idle_next_open(session_key, deadline.isoformat())
                 # A silent opening is not a start: the moment stays open and the next
                 # poll hands it to someone else instead of resting for another hour.
@@ -611,6 +621,12 @@ class AiraBot(commands.Bot):
             "idle_reason": reason,
             "part_of_day": part_of_day(datetime.now(ZoneInfo(config.timezone))),
         }
+        if reason == "spontaneous":
+            # A separate request invents the happening; the cast only reacts to it.
+            try:
+                message["idle_event"] = await gemini.generate_event(_room_transcript(session_key))
+            except Exception:
+                log.exception("Could not invent an event; opening without one")
         response = None
         character = None
         for candidate in idle_candidate_order(session_key)[:2]:
