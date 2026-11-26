@@ -18,7 +18,7 @@ from .gemini import (
 )
 from .memory import (
     embed, ingest_memory_background, overlap_ratio, persist_episode_background,
-    recall_episodes, search_memories_by_vector,
+    recall_episodes, sample_memory, search_memories_by_vector,
 )
 from .store import store, utc_now
 from .token_budget import estimate_tokens, history_budget_tokens
@@ -372,13 +372,12 @@ async def process_character_reply(message: dict, character: Character, prepared_
         reason = str(message.get("idle_reason") or "")
         if pending:
             context_lines.append(f"เรื่องที่ค้างไว้จากการคุยครั้งก่อน: \"{pending[:200]}\"")
-        elif reason in ("morning", "noon", "evening"):
-            context_lines.append(f"สถานะห้อง: ไม่มีเรื่องค้าง · ช่วงเวลาของวัน: {reason}")
-        elif reason != "resume":
-            context_lines.append("สถานะห้อง: ไม่มีเรื่องค้าง · ห้องเงียบมานานแล้ว")
-        situation = " ".join(str(message.get("idle_event") or "").split())
-        if situation:
-            context_lines.append(f"สถานการณ์ที่เพิ่งเกิดขึ้นในห้อง: {situation}")
+        else:
+            part = str(message.get("part_of_day") or "")
+            context_lines.append("สถานะห้อง: ไม่มีเรื่องค้าง"
+                                 + (f" · ช่วงเวลาของวัน: {part}" if part else ""))
+            if reason == "day_greeting":
+                context_lines.append("โอกาส: คุณเป็นคนแรกที่เปิดปากในห้องช่วงนี้")
         who = str(message.get("user") or "")
         context_lines.append(
             f"ห้องเงียบมา {ambient_minutes:.0f} นาทีแล้ว ไม่มีใครพิมพ์ต่อ"
@@ -458,6 +457,11 @@ async def process_character_reply(message: dict, character: Character, prepared_
         relationship = store.get_character_relationship(character.id, user_id)
         relationship_label = f"ความสัมพันธ์ระหว่าง {character.name} กับผู้ใช้ {owner_name} (Discord User ID: {user_id})"
         relationship_scope = "ความสัมพันธ์ระหว่างคุณกับผู้ใช้คนนี้"
+
+    if ambient and not str(message.get("open_thread") or ""):
+        material = sample_memory(character_session_key(base_session, character.id))
+        if material:
+            context_lines.append(f"เรื่องหนึ่งจากความทรงจำของคุณเอง: {material[:300]}")
 
     raw_prompt = "\n".join([
         load_character_prompt(character),

@@ -48,12 +48,13 @@ class IdlePacingTests(unittest.TestCase):
         self.assertFalse(idle.should_start(now, 2, 10, 0, True, random.Random(1)))
         self.assertTrue(idle.should_start(now, 11, 10, 0, True, random.Random(1)))
 
-    def test_a_fresh_topic_gets_a_concrete_situation_to_react_to(self):
-        now = datetime(2026, 2, 1, 19, 0)
-        for seed in range(30):
-            event = idle.random_event(now, random.Random(seed))
-            self.assertTrue(event)
-            self.assertIsInstance(event, str)
+    def test_the_day_is_only_labelled_never_scripted(self):
+        # The code names the part of the day; what to say is the model's decision.
+        self.assertEqual(idle.part_of_day(datetime(2026, 2, 1, 8, 0)), "morning")
+        self.assertEqual(idle.part_of_day(datetime(2026, 2, 1, 13, 0)), "noon")
+        self.assertEqual(idle.part_of_day(datetime(2026, 2, 1, 19, 0)), "evening")
+        self.assertEqual(idle.part_of_day(datetime(2026, 2, 1, 2, 0)), "night")
+        self.assertFalse(hasattr(idle, "EVENTS_BY_PERIOD"))
 
     def test_the_room_stays_quiet_when_it_has_been_dead_for_hours(self):
         now = datetime(2026, 2, 1, 20, 0)
