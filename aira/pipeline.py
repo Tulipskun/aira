@@ -131,11 +131,14 @@ def _row_label(row: dict, names: dict[str, str]) -> str:
     return str(row.get("user_name") or "ผู้ใช้")
 
 
+ROW_OVERHEAD_TOKENS = 30  # speaker tag, Discord id and the "replying to" note
+
+
 def message_cost(row: dict) -> int:
     """What one message costs the model: its words, its attachments, its picture."""
     text = " ".join(str(row.get("text") or "").split())
     speaker = row.get("character_id") or row.get("user_name") or ""
-    cost = estimate_tokens(f"{speaker}: {text}")
+    cost = estimate_tokens(f"{speaker}: {text}") + ROW_OVERHEAD_TOKENS
     media = " ".join(str(row.get("media_summary") or "").split())
     if media:
         cost += estimate_tokens(media)
