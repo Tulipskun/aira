@@ -159,14 +159,23 @@ def overlap_ratio(first: str, second: str, size: int = 4) -> float:
     return len(left & right) / min(len(left), len(right))
 
 
+MEMORY_FRAMING = re.compile(r"^(?:ฉัน)?(?:จำได้ว่า|จำได้|รู้ว่า|ฉันรู้ว่า|ฉันจำได้ว่า)")
+
+
 def _restates_dialogue(text: str) -> bool:
-    """A summary of who answered whom is episode material, not a memory."""
-    compact = str(text or "").strip()
-    if ":" in compact[:4] or compact.startswith(("-", "*")):
+    """A summary of who answered whom is episode material, not a memory.
+
+    "จำได้ว่าคุณฟาริสบอกว่าชอบชา" is a memory about a person; "เรมตอบกลับคุณยูตะ
+    ว่า..." is only a retelling of the transcript line that is already on screen.
+    """
+    compact = re.sub(r"\s+", " ", str(text or "").strip())
+    if not compact or ":" in compact[:4] or compact.startswith(("-", "*")):
+        return False
+    if MEMORY_FRAMING.match(compact):
         return False
     for marker in ("ตอบกลับ", "ตอบว่า", "บอกว่า", "กล่าวว่า", "ถามว่า", "แจ้งว่า"):
         position = compact.find(marker)
-        if position > 0:
+        if 0 < position < 40:
             return True
     return False
 
