@@ -17,7 +17,7 @@ from .gemini import (
     current_time_block, _image_catalog_prompt,
 )
 from .memory import (
-    embed, ingest_memory_background, persist_episode_background,
+    embed, ingest_memory_background, overlap_ratio, persist_episode_background,
     recall_episodes, search_memories_by_vector,
 )
 from .store import store, utc_now
@@ -182,46 +182,14 @@ def _conversation_focus(rows: list[dict], names: dict[str, str]) -> str:
     return "ลำดับการคุยล่าสุด: " + " | ".join(exchanges[-4:]) if exchanges else ""
 
 
-async def choose_idle_speaker(session_key: str, idle_minutes: float) -> list[Character]:
-    """Ask the cast whether anyone wants to restart a quiet room on their own."""
+def idle_candidate_order(session_key: str) -> list[Character]:
+    """Who has been quiet the longest starts the conversation when the room wakes."""
     characters = load_characters()
-    if not characters:
-        return []
-    names = {item.id: item.name for item in characters}
-    history = store.get_history_by_budget(
-        session_key, history_budget_tokens("reply"), estimate_tokens, max_messages=24,
-    )
-    lines, _, _ = _transcript_with_replies(history[-16:], names)
-    roster = ", ".join(f"{item.id} ({item.name})" for item in characters)
-    shared_input = "\n".join([
-        f"ห้องแชท Discord มีตัวละคร {len(characters)} ตัว: {roster}",
-        f"ห้องเงียบมา {idle_minutes:.0f} นาที ไม่มีใครพิมพ์ต่อ",
-        "ประวัติห้อง (ล่าสุดอยู่ท้าย):",
-        "\n".join(lines) or "(ยังไม่มีประวัติ)",
-        "หลักการ: ให้มีคนเริ่มพูดเองก็ต่อเมื่อมีเรื่องที่อยากพูดจริง ๆ เช่น ทักทาย ชวนคุยต่อจากเรื่องเดิม "
-        "แซวคนที่คุยค้างไว้ เล่าเรื่องเล็ก ๆ ที่เพิ่งเกิดขึ้น หรือถามไถ่กันเอง "
-        "ถ้าประโยคสุดท้ายจบลงอย่างสมบูรณ์และไม่มีอะไรน่าสนใจ ให้เงียบไว้",
-    ])
-    questions = {
-        item.id: f"ตัวละคร {item.name} ({item.id}) อยากเริ่มพูดขึ้นมาเองตอนนี้หรือไม่"
-        for item in characters
-    }
-    try:
-        scores = await decide_speakers(shared_input, questions)
-    except Exception:
-        log.exception("Idle decision failed; the room stays quiet")
-        return []
-    ranked = sorted(((item, scores.get(item.id, 0.0)) for item in characters),
-                    key=lambda pair: -pair[1])
-    chosen = [item for item, score in ranked if score >= SPEAKER_THRESHOLD]
-    if not chosen:
-        log.info("Idle decision kept the room quiet: scores=%s",
-                 {item.id: round(score, 2) for item, score in ranked})
-        return []
-    # One voice starts the conversation; the chain decides who answers it.
-    log.info("Idle decision picked %s: scores=%s",
-             chosen[0].id, {item.id: round(score, 2) for item, score in ranked})
-    return chosen[:1]
+    last_seen: dict[str, int] = {}
+    for index, row in enumerate(store.get_history(200, session_key)):
+        if row.get("role") == "model" and row.get("character_id"):
+            last_seen[str(row["character_id"])] = index
+    return sorted(characters, key=lambda item: last_seen.get(item.id, -1))
 
 
 def _silence_breaker(characters: list[Character], text: str, rows: list[dict], trailing: int,
@@ -428,6 +396,20 @@ async def process_character_reply(message: dict, character: Character, prepared_
     episodes = await recall_episodes(
         vector, session_key, str(message.get("text") or ""), user_id=user_id,
     )
+    # A memory that repeats something already on screen adds nothing and teaches
+    # the character to say it again.
+    own_recent = [str(row.get("text") or "") for row in history
+                  if row.get("role") == "model" and row.get("character_id") == character.id][-4:]
+
+    def fresh(item: dict) -> bool:
+        text_value = str(item.get("text") or "")
+        return all(overlap_ratio(text_value, line) < 0.5 for line in own_recent)
+
+    memories = [item for item in memories if fresh(item)]
+    episodes = [item for item in episodes if fresh(item)]
+    seen_memory: set[str] = set()
+    memories = [item for item in memories
+                if not (str(item["text"]) in seen_memory or seen_memory.add(str(item["text"])))]
 
     profile = store.get_profile(user_id) or store.upsert_profile(user_id, user_name=owner_name)
     if profile and profile.get("user_name") != owner_name:
@@ -522,6 +504,10 @@ async def process_character_reply(message: dict, character: Character, prepared_
         retry_guard=superseded,
     )
     text = result["reply"]
+    if text and (character_turn or ambient) and any(
+            overlap_ratio(text, line) >= 0.6 for line in own_recent):
+        log.info("Character repeated its own recent line and stays silent: character=%s", character.id)
+        text = ""
     timestamp = str(message.get("timestamp") or utc_now())
     reply_timestamp = utc_now()
     message_row_id = None

@@ -22,7 +22,7 @@ from .media import prepare_attachments
 from .liveness import Liveness
 from .idle import idle_target_minutes, should_start
 from .pipeline import (
-    _save_incoming_message, choose_idle_speaker, decide_next_speaker, process_character_reply,
+    _save_incoming_message, decide_next_speaker, idle_candidate_order, process_character_reply,
     select_characters, shutdown_pipeline,
 )
 from .scheduler import MessageScheduler
@@ -549,10 +549,8 @@ class AiraBot(commands.Bot):
         channel = self.get_channel(int(channel_id)) if channel_id.isdigit() else None
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             return False
-        speakers = await choose_idle_speaker(session_key, quiet_minutes)
-        if not speakers:
-            return False
-        character = speakers[0]
+        # The longest-quiet character tries first; if her own reply comes back empty
+        # (she has nothing to say) the next quiet one gets a turn.
         rows = store.get_history(1, session_key)
         last = rows[-1] if rows else {}
         user_id = str(last.get("user_id") or config.owner_id or "")
@@ -566,9 +564,17 @@ class AiraBot(commands.Bot):
             "ambient": True,
             "idle_minutes": quiet_minutes,
         }
-        response = await process_character_reply(message, character, None, input_saved=True)
-        if not response.get("text"):
-            log.info("Idle speaker chose silence: character=%s", character.id)
+        response = None
+        character = None
+        for candidate in idle_candidate_order(session_key)[:2]:
+            attempt = await process_character_reply(
+                {**message, "idle_minutes": quiet_minutes}, candidate, None, input_saved=True,
+            )
+            if attempt.get("text"):
+                response, character = attempt, candidate
+                break
+            log.info("Idle opening stayed silent: character=%s", candidate.id)
+        if response is None or character is None:
             return False
         sent = await self._send_character_output(
             channel, response,

@@ -120,12 +120,69 @@ def search_memories_by_vector(vector: list[float], session_key: str, limit: int 
         score = _cosine_similarity(vector, stored)
         if min_similarity is not None and score < min_similarity:
             continue
+        if not worth_remembering(item["text"]):
+            continue
         metadata = json.loads(item.get("metadata_json") or "{}")
         rows.append({"id": item["id"], "text": item["text"], "metadata": metadata,
                      "timestamp": item["timestamp"], "user_id": item["user_id"],
                      "session_key": item["session_key"], "score": score})
     rows.sort(key=lambda row: (row["score"], row["timestamp"]), reverse=True)
     return rows[:limit]
+
+
+# A memory is only worth keeping when it says something about the world. The
+# character describing its own availability ("standing by", "I am here") or a
+# sentence that merely reports who said what both come straight back out of the
+# model as a canned line, so they never enter the store.
+SELF_PRESENCE = re.compile(
+    r"พร้อมรับคำสั่ง|อยู่ตรงนี้|แจ้งให้คุณทราบว่า|ฉันพร้อม|ยินดีช่วยเหลือ|รอคำสั่ง|"
+    r"พร้อมให้บริการ|ปฏิบัติหน้าที่อยู่|standing by|here for you|at your service", re.I)
+REPORTING_VERB = re.compile(r"^(?:แจ้ง|บอก|ตอบ|ถาม|กล่าว|พูด|รายงาน)")
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"[\s,.!?…\"'()\[\]]+", "", str(text or "")).lower()
+
+
+def _char_grams(text: str, size: int = 4) -> set[str]:
+    compact = _normalize(text)
+    if len(compact) < size:
+        return {compact} if compact else set()
+    return {compact[index:index + size] for index in range(len(compact) - size + 1)}
+
+
+def overlap_ratio(first: str, second: str, size: int = 4) -> float:
+    """How much two Thai sentences say the same thing, without spaces to split on."""
+    left, right = _char_grams(first, size), _char_grams(second, size)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def _restates_dialogue(text: str) -> bool:
+    """A summary of who answered whom is episode material, not a memory."""
+    compact = str(text or "").strip()
+    if ":" in compact[:4] or compact.startswith(("-", "*")):
+        return False
+    for marker in ("ตอบกลับ", "ตอบว่า", "บอกว่า", "กล่าวว่า", "ถามว่า", "แจ้งว่า"):
+        position = compact.find(marker)
+        if position > 0:
+            return True
+    return False
+
+
+def worth_remembering(text: str, existing: list[str] | None = None) -> bool:
+    compact = re.sub(r"\s+", " ", str(text or "").strip())
+    if len(_normalize(compact)) < 12:
+        return False
+    if SELF_PRESENCE.search(compact):
+        return False
+    if _restates_dialogue(compact):
+        return False
+    for other in existing or []:
+        if overlap_ratio(compact, other) >= 0.8:
+            return False
+    return True
 
 
 async def is_duplicate_memory(vector: list[float], session_key: str,
@@ -137,6 +194,10 @@ async def is_duplicate_memory(vector: list[float], session_key: str,
 async def ingest_memory_background(text: str, user_id: str, timestamp: str, session_key: str) -> None:
     """Embed and persist a semantic memory without blocking the Discord reply pipeline."""
     if not text or not text.strip():
+        return
+    known = [row["text"] for row in _semantic_rows(session_key=session_key, user_id=user_id)]
+    if not worth_remembering(text, known):
+        log.info("Memory rejected as boilerplate or a restatement: %s", text[:60])
         return
     try:
         vector = await embed(text, "document")
@@ -252,7 +313,15 @@ def save_episode_vector(episode: dict, vector: list[float]) -> None:
 
 
 async def save_episode(episode: dict) -> None:
-    save_episode_vector(episode, await embed(episode["text"], "document"))
+    """Store an episode summary, unless it only restates the last exchange again."""
+    text = str(episode.get("text") or "")
+    known = [row["text"] for row in store.db.execute(
+        "SELECT text FROM episodic_memories WHERE session_key=? ORDER BY created_at DESC LIMIT 40",
+        (episode["session_key"],)).fetchall()]
+    if not text.strip() or not worth_remembering(text, known):
+        log.info("Episode rejected as a restatement or duplicate: %s", text[:60])
+        return
+    save_episode_vector(episode, await embed(text, "document"))
 
 
 async def build_recent_episode(session_key: str, history_session_key: str | None = None,
@@ -297,6 +366,8 @@ async def recall_episodes(vector: list[float], session_key: str, query_text: str
             continue
         if temporal.get("date") and row["date"] != temporal["date"]: continue
         if temporal.get("period") and row["period"] != temporal["period"]: continue
+        if not worth_remembering(row["text"]):
+            continue
         try: stored = json.loads(row["embedding_json"])
         except (ValueError, TypeError): continue
         score = _cosine_similarity(vector, stored)

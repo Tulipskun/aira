@@ -244,6 +244,48 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertEqual({item.id for item in selected}, {item.id for item in chars})
 
+    async def test_a_character_that_repeats_itself_stays_silent(self):
+        session = "group:echo"
+        self.store.save_message("model", "ฉันอยู่ตรงนี้ มีธุระอะไรกับหน่วย AST หรือเปล่าคะ",
+                                utc_now(), session, None, "Origami", None, None, "origami")
+        self.generate.return_value = {
+            "reply": "ฉันอยู่ตรงนี้ มีธุระอะไรกับหน่วย AST ไหมคะ", "summary": "",
+            "memory": "", "relationship": "", "relationships": [], "next_speaker_id": "",
+            "mood": "", "color": None, "image": "", "rps": None,
+        }
+        character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
+        with patch.object(pipeline, "load_characters", return_value=[character]), \
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
+             patch.object(pipeline, "history_budget_tokens", return_value=100000):
+            result = await pipeline.process_character_reply(
+                {"user_id": "1", "user": "Yuuta", "text": "ว่าไง", "session_key": session,
+                 "timestamp": utc_now(), "character_turn": True,
+                 "trigger_character": "Rem", "trigger_character_id": "rem"},
+                character, input_saved=True,
+            )
+        self.assertEqual(result["text"], "")
+
+    async def test_a_memory_that_echoes_the_current_room_is_not_injected(self):
+        session = "group:echo-memory"
+        self.store.save_message("model", "ฉันอยู่ตรงนี้ มีธุระอะไรกับหน่วย AST หรือเปล่าคะ",
+                                utc_now(), session, None, "Origami", None, None, "origami")
+        character = Character("origami", "Origami", ("Origami",), Path("origami.md"))
+        with patch.object(pipeline, "load_characters", return_value=[character]), \
+             patch.object(pipeline, "load_character_prompt", return_value="prompt"), \
+             patch.object(pipeline, "history_budget_tokens", return_value=100000), \
+             patch.object(pipeline, "search_memories_by_vector", return_value=[
+                 {"text": "ฉันอยู่ตรงนี้ มีธุระอะไรกับหน่วย AST หรือเปล่าคะ", "timestamp": utc_now()},
+                 {"text": "คุณยูตะชอบชาเขียว", "timestamp": utc_now()}]):
+            await pipeline.process_character_reply(
+                {"user_id": "1", "user": "Yuuta", "text": "ว่าไง", "session_key": session,
+                 "timestamp": utc_now(), "character_turn": True,
+                 "trigger_character": "Rem", "trigger_character_id": "rem"},
+                character, input_saved=True,
+            )
+        context = self.generate.await_args.args[1]
+        self.assertNotIn("มีธุระอะไรกับหน่วย AST", context)
+        self.assertIn("คุณยูตะชอบชาเขียว", context)
+
     async def test_a_character_turn_treats_the_other_character_like_a_user(self):
         session = "group:duo"
         self.store.save_message("model", "รีบนอนเถอะค่ะ", utc_now(), session, None, "Rem",
