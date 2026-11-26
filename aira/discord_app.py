@@ -563,8 +563,11 @@ class AiraBot(commands.Bot):
                          quiet, reason, bool(thread), part_of_day(now))
                 started = await self._start_idle_turn(channel_id, session_key, quiet, thread,
                                                       reason)
-                self.idle_starts.append(time.time())
-                target_minutes = idle_target_minutes(now, False)
+                if started:
+                    self.idle_starts.append(time.time())
+                    target_minutes = idle_target_minutes(now, False)
+                # A silent opening is not a start: the moment stays open and the next
+                # poll hands it to someone else instead of resting for another hour.
                 log.info("Idle chat round finished: channel=%s started=%s quiet=%.0fmin",
                          channel_id, started, quiet)
             except asyncio.CancelledError:

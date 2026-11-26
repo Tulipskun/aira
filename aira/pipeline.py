@@ -395,7 +395,7 @@ async def process_character_reply(message: dict, character: Character, prepared_
             context_lines.append("สถานะห้อง: ไม่มีเรื่องค้าง"
                                  + (f" · ช่วงเวลาของวัน: {part}" if part else ""))
             if reason == "day_greeting":
-                context_lines.append("โอกาส: คุณเป็นคนแรกที่เปิดปากในห้องช่วงนี้")
+                context_lines.append(f"สถานะ: ยังไม่มีใครทักทายกันในช่วง{part}นี้เลย")
         who = str(message.get("user") or "")
         context_lines.append(
             f"ห้องเงียบมา {ambient_minutes:.0f} นาทีแล้ว ไม่มีใครพิมพ์ต่อ"

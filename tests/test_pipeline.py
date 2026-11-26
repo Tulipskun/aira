@@ -270,7 +270,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         context = self.generate.await_args.args[1]
         sampled.assert_not_called()
         self.assertIn("สถานะห้อง: ไม่มีเรื่องค้าง · ช่วงเวลาของวัน: morning", context)
-        self.assertIn("โอกาส: คุณเป็นคนแรกที่เปิดปากในห้องช่วงนี้", context)
+        self.assertIn("สถานะ: ยังไม่มีใครทักทายกันในช่วงmorningนี้เลย", context)
         # Nothing is scripted for the character: no prewritten situation reaches her.
         self.assertNotIn("สถานการณ์", context)
 
