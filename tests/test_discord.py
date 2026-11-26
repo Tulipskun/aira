@@ -205,17 +205,43 @@ class DiscordTests(unittest.TestCase):
                 await bot.close()
         asyncio.run(run_test())
 
-    def test_autonomous_channel_guard_returns_wait_instead_of_dropping_conversation(self):
-        bot = AiraBot()
-        try:
-            from collections import deque
-            bot.autonomous_history["9"] = deque([100.0, 101.0, 102.0, 103.0])
-            with patch("aira.discord_app.time.monotonic", return_value=104.0):
-                self.assertAlmostEqual(bot._autonomous_wait_seconds("9"), 296.0)
-            with patch("aira.discord_app.time.monotonic", return_value=405.0):
-                self.assertEqual(bot._autonomous_wait_seconds("9"), 0.0)
-        finally:
-            asyncio.run(bot.close())
+    def test_exchange_ends_when_the_tpm_window_cannot_pay_for_another_turn(self):
+        async def run_test():
+            import time
+            import aira.discord_app as app
+            from aira.store import Store
+            with tempfile.TemporaryDirectory() as directory:
+                test_store = Store(Path(directory) / "tpm-chain.db")
+                bot = AiraBot()
+                test_store.save_autonomous_continuation("group:9", "9", {
+                    "created_at": time.time(), "batch_id": "batch-1", "hops": 1,
+                    "incoming": {"user_id": "1", "user": "Alice", "text": "คุยกัน",
+                                 "timestamp": "2026-01-01T00:00:00Z", "session_key": "group:9",
+                                 "speakers": [{"user_id": "1", "user": "Alice"}]},
+                    "last": {"user_id": "1", "user": "Alice", "channel_id": "9",
+                             "message_id": "10", "session_key": "group:9"},
+                    "previous": {"character_id": "isla", "character_name": "Isla",
+                                 "text": "Isla ตอบ", "next_speaker_id": "rem"},
+                    "pending_send": None,
+                })
+                class FakeChannel:
+                    pass
+                generated = AsyncMock()
+                try:
+                    with patch.object(app, "store", test_store), \
+                         patch.object(app, "process_character_reply", new=generated), \
+                         patch.object(bot, "get_channel", return_value=FakeChannel()), \
+                         patch.object(app.discord, "TextChannel", FakeChannel), \
+                         patch.object(app.discord, "Thread", FakeChannel), \
+                         patch.object(app.live_token_budget, "remaining_turns", return_value=0):
+                        await bot._run_autonomous_continuation("group:9")
+                    generated.assert_not_awaited()
+                    self.assertEqual(test_store.autonomous_continuation_count(), 0)
+                finally:
+                    await bot.close()
+                    test_store.close()
+
+        asyncio.run(run_test())
 
 
     def test_later_speakers_answer_the_previous_character_not_the_user_again(self):
@@ -303,7 +329,7 @@ class DiscordTests(unittest.TestCase):
                          patch.object(app.discord, "TextChannel", FakeChannel), \
                          patch.object(app.discord, "Thread", FakeChannel), \
                          patch.object(bot, "get_channel", return_value=fake_channel), \
-                         patch.object(bot, "_autonomous_wait_seconds", return_value=0), \
+                         patch.object(app.live_token_budget, "remaining_turns", return_value=5), \
                          patch.object(app, "decide_next_speaker",
                                       new=AsyncMock(return_value=None)) as decision, \
                          patch.object(bot, "_send_character_output", new=AsyncMock()) as send:

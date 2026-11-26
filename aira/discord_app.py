@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 import json
 import logging
 import mimetypes
@@ -20,8 +19,8 @@ from .config import ROOT, config, load_settings, save_settings
 from .media import prepare_attachments
 from .liveness import Liveness
 from .pipeline import (
-    CHAIN_MAX_HOPS, _save_incoming_message, decide_next_speaker, process_character_reply,
-    select_characters, shutdown_pipeline,
+    _save_incoming_message, decide_next_speaker, process_character_reply, select_characters,
+    shutdown_pipeline,
 )
 from .scheduler import MessageScheduler
 from .store import store, utc_now
@@ -271,7 +270,6 @@ class AiraBot(commands.Bot):
         self.scheduler = MessageScheduler(self._flush, debounce_ms=320, max_wait_ms=1500)
         self.tree.add_command(app_commands.Command(name="aira", description="เปิดแผงควบคุมผู้ดูแล Aira", callback=self.open_admin_panel))
         self.in_flight = 0
-        self.autonomous_history: dict[str, deque[float]] = {}
         self.autonomous_tasks: dict[str, asyncio.Task] = {}
         self.started_at = time.time()
         self.health_server = None
@@ -479,18 +477,6 @@ class AiraBot(commands.Bot):
                 return chosen
         return await decide_next_speaker(character, str(output.get("text") or ""), session_key)
 
-    def _autonomous_wait_seconds(self, channel_id: str) -> float:
-        now = time.monotonic()
-        history = self.autonomous_history.setdefault(channel_id, deque())
-        while history and history[0] <= now - 300:
-            history.popleft()
-        if len(history) < 4:
-            return 0.0
-        return max(0.05, history[0] + 300 - now)
-
-    def _record_autonomous_turn(self, channel_id: str) -> None:
-        self.autonomous_history.setdefault(channel_id, deque()).append(time.monotonic())
-
     def _cancel_autonomous_continuation(self, session_key: str) -> None:
         store.delete_autonomous_continuation(session_key)
         task = self.autonomous_tasks.pop(session_key, None)
@@ -567,9 +553,12 @@ class AiraBot(commands.Bot):
                 previous_id = str(previous.get("character_id") or "")
                 next_id = str(previous.get("next_speaker_id") or "").strip()
                 hops = int(state.get("hops") or 0)
-                if hops >= CHAIN_MAX_HOPS:
-                    log.info("Autonomous exchange reached the hop limit: session=%s hops=%s",
-                             session_key, hops)
+                if live_token_budget.remaining_turns() < 1:
+                    log.info("Autonomous exchange stopped by the TPM allowance: session=%s hops=%s "
+                             "available=%s avgTurnTokens=%s requestsPerWindow=%s",
+                             session_key, hops, live_token_budget.available_tokens(),
+                             live_token_budget.average_request_tokens(),
+                             live_token_budget.requests_per_window())
                     store.delete_autonomous_continuation(session_key)
                     return
                 characters = load_characters()
@@ -581,16 +570,6 @@ class AiraBot(commands.Bot):
                     store.delete_autonomous_continuation(session_key)
                     return
 
-                wait_seconds = self._autonomous_wait_seconds(channel_id)
-                if wait_seconds > 0:
-                    log.info("Autonomous exchange paused by channel turn guard: session=%s wait=%.1fs",
-                             session_key, wait_seconds)
-                    await asyncio.sleep(min(wait_seconds, 10.0))
-                    continue
-                if live_token_budget.available_tokens() <= 4096:
-                    log.info("Autonomous exchange paused for TPM capacity: session=%s", session_key)
-                    await asyncio.sleep(5.0)
-                    continue
 
                 turn_message = {
                     **state["incoming"],
@@ -601,7 +580,6 @@ class AiraBot(commands.Bot):
                     "discord_message_id": previous.get("discord_message_id"),
                     "character_turn": True,
                 }
-                self._record_autonomous_turn(channel_id)
                 log.info("Autonomous character turn: channel=%s speaker=%s replying_to=%s",
                          channel_id, next_character.id, previous_id)
                 try:
@@ -790,6 +768,13 @@ class AiraBot(commands.Bot):
             # character the reply points at, so a two-way exchange can keep going.
             if previous_spoken is not None:
                 next_character = await self._resolve_next_speaker(previous_spoken, incoming["session_key"])
+                if next_character is not None and live_token_budget.remaining_turns() < 1:
+                    log.info("Chain stops after this card: TPM allowance spent "
+                             "(available=%s avgTurnTokens=%s requestsPerWindow=%s)",
+                             live_token_budget.available_tokens(),
+                             live_token_budget.average_request_tokens(),
+                             live_token_budget.requests_per_window())
+                    next_character = None
                 if next_character is not None:
                     payload = {
                         "created_at": time.time(), "batch_id": batch_id, "hops": 1,

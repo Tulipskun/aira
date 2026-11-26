@@ -49,6 +49,24 @@ class TokenBudgetTests(unittest.IsolatedAsyncioTestCase):
         await budget.settle(second, 0)
         self.assertEqual(budget.available_tokens(), 60)
 
+    async def test_turn_allowance_follows_measured_request_tokens(self):
+        budget = SlidingWindowTokenBudget(limit=1000, window_seconds=60, safety_ratio=1.0,
+                                          default_request_tokens=250)
+        # Before any measurement the configured fallback decides the allowance.
+        self.assertEqual(budget.average_request_tokens(), 250)
+        self.assertEqual(budget.requests_per_window(), 4)
+        self.assertEqual(budget.remaining_turns(), 4)
+        first = await budget.reserve(250, "turn-1")
+        await budget.settle(first, 400)
+        self.assertEqual(budget.average_request_tokens(), 400)
+        self.assertEqual(budget.requests_per_window(), 2)
+        self.assertEqual(budget.remaining_turns(), 1)
+        second = await budget.reserve(300, "turn-2")
+        await budget.settle(second, 600)
+        # 1000 used of 1000: the window cannot pay for another turn.
+        self.assertEqual(budget.average_request_tokens(), 500)
+        self.assertEqual(budget.remaining_turns(), 0)
+
     async def test_tpm_ledger_survives_recreation(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "budget.json"

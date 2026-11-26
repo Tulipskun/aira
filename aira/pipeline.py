@@ -256,9 +256,6 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
     return selected
 
 
-CHAIN_MAX_HOPS = 4
-
-
 async def decide_next_speaker(speaker: Character, spoken: str, session_key: str) -> Character | None:
     """Ask the decision model whether another character should answer this line."""
     characters = load_characters()

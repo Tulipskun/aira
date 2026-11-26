@@ -47,10 +47,13 @@ class SlidingWindowTokenBudget:
     """One shared project-level rolling budget for Live text generations."""
 
     def __init__(self, limit: int = 65_000, window_seconds: float = 60.0,
-                 safety_ratio: float = 0.85, state_path: Path | None = None):
+                 safety_ratio: float = 0.85, state_path: Path | None = None,
+                 default_request_tokens: int = 12_000):
         self.limit = max(1, int(limit))
         self.window_seconds = max(1.0, float(window_seconds))
         self.capacity = max(1, int(self.limit * min(1.0, max(0.1, safety_ratio))))
+        # Used only until the ledger has measured at least one real request.
+        self.default_request_tokens = max(1, int(default_request_tokens))
         self.state_path = Path(state_path) if state_path else None
         self._events: deque[Reservation] = deque()
         self._lock = asyncio.Lock()
@@ -107,6 +110,22 @@ class SlidingWindowTokenBudget:
     def available_tokens(self) -> int:
         return max(0, self.capacity - self._used(time.time()))
 
+    def average_request_tokens(self) -> int:
+        """Mean input tokens of the requests measured inside the current window."""
+        self._purge(time.time())
+        measured = [event.tokens for event in self._events if event.tokens > 0]
+        if not measured:
+            return self.default_request_tokens
+        return max(1, int(sum(measured) / len(measured)))
+
+    def requests_per_window(self) -> int:
+        """How many requests the TPM allowance pays for in one window."""
+        return max(1, self.capacity // self.average_request_tokens())
+
+    def remaining_turns(self) -> int:
+        """Completed requests the remaining window budget can still pay for."""
+        return self.available_tokens() // self.average_request_tokens()
+
     def snapshot(self) -> dict:
         now = time.time()
         used = self._used(now)
@@ -119,6 +138,9 @@ class SlidingWindowTokenBudget:
             "inputTokensUsed": used,
             "inputTokensRemaining": max(0, self.capacity - used),
             "events": len(self._events),
+            "averageRequestTokens": self.average_request_tokens(),
+            "requestsPerWindow": self.requests_per_window(),
+            "remainingTurns": self.remaining_turns(),
         }
 
     async def reserve(self, tokens: int, label: str = "") -> Reservation:
