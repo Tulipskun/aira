@@ -691,7 +691,7 @@ class AiraBot(commands.Bot):
             raise RuntimeError(f"Discord did not return the sent message for {character.id}")
         if output.get("message_row_id"):
             store.set_discord_message_id(int(output["message_row_id"]), str(sent.id))
-        self.last_ai_turn_at[str(channel.id)] = time.time()
+        self.last_ai_turn_at[str(last.get("channel_id") or "")] = time.time()
         log.info("Discord webhook send succeeded: message=%s channel=%s character=%s sent_message=%s "
                  "webhook_avatar=%s webhook=%s",
                  batch_id, last["channel_id"], character.id, sent.id,
