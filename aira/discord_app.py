@@ -584,6 +584,14 @@ class AiraBot(commands.Bot):
         )
         spoken = {**response, "discord_message_id": str(sent.id)}
         next_character = await self._resolve_next_speaker(spoken, session_key)
+        if next_character is None:
+            # Nobody is there to answer a line addressed to the room, so one other
+            # character picks it up; after that the normal decision takes over.
+            others = [item for item in idle_candidate_order(session_key) if item.id != character.id]
+            next_character = others[0] if others else None
+            if next_character is not None:
+                log.info("Idle opening handed to %s so the room answers itself",
+                         next_character.id)
         if next_character is not None:
             store.save_autonomous_continuation(session_key, channel_id, {
                 "created_at": time.time(), "batch_id": "idle", "hops": 1,
