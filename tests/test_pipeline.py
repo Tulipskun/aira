@@ -427,7 +427,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                          "ยังไม่เคยสร้างความสัมพันธ์")
         self.assertEqual(self.store.get_character_pair_relationship("nova", "isla"),
                          "Nova เริ่มไว้วางใจ Isla มากขึ้น")
-        pipeline.embed.assert_not_awaited()
+        # A character brings its own memories to another character's line too.
+        pipeline.embed.assert_awaited()
 
     async def test_user_facts_are_available_without_exposing_legacy_relationship_scores(self):
         self.store.upsert_profile("alice", user_name="Alice", nickname=["ชาเขียว"],
