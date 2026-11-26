@@ -45,6 +45,8 @@ class Config:
     timezone: str = field(default_factory=lambda: str(_setting("timezone", "Asia/Bangkok")))
     health_port: int = 8091
     images_dir: Path = field(default_factory=lambda: _resolve_path("images"))
+    image_base_url: str = field(default_factory=lambda: str(_setting(
+        "imageBaseUrl", "https://raw.githubusercontent.com/Tulipskun/aira/main/images")).rstrip("/"))
     gemini1_prompt: Path = field(default_factory=lambda: _resolve_path("prompts/isla.md"))
     gemini2_prompt: Path = field(default_factory=lambda: _resolve_path("prompts/isla-state.md"))
     key_state_file: Path = field(default_factory=lambda: _resolve_path(".aira/gemini-key-state.json"))

@@ -19,7 +19,11 @@ class CharacterTests(unittest.TestCase):
         self.assertEqual(characters["bocchi"].name, "Hitori Gotoh")
         self.assertEqual(characters["origami"].name, "Origami Tobiichi")
         self.assertIn("หน้าตาย", load_character_prompt(characters["origami"]))
-        self.assertTrue(characters["origami"].avatar_url.startswith("https://"))
+        # The avatar URL is built from a frame that is really on disk, so a rebuild
+        # of the image set cannot leave a dead URL behind.
+        for character in characters.values():
+            self.assertTrue(character.avatar_url.startswith("https://"))
+            self.assertIn(f"/{character.id}/", character.avatar_url)
         rem_prompt = load_character_prompt(characters["rem"])
         bocchi_prompt = load_character_prompt(characters["bocchi"])
         self.assertIn("เด็ดเดี่ยว", rem_prompt)
@@ -29,14 +33,17 @@ class CharacterTests(unittest.TestCase):
         self.assertIn("ไม่ใช่ผู้ช่วยที่ต้องตอบทุกข้อความ",
                       load_character_prompt(characters["origami"]))
 
-    def test_character_avatar_url_must_be_https(self):
+    def test_the_avatar_comes_from_a_frame_that_exists(self):
         character = _validate({"id": "rem", "name": "Rem", "promptFile": "prompts/rem.md",
-                               "avatarUrl": "https://example.com/rem.png"}, "rem.json")
-        self.assertEqual(character.avatar_url, "https://example.com/rem.png")
+                               "avatarFile": "rem_calm_06.jpg"}, "rem.json")
+        self.assertTrue(character.avatar_url.endswith("/rem/rem_calm_06.jpg"))
         self.assertTrue(character.enabled)
+        stale = _validate({"id": "rem", "name": "Rem", "promptFile": "prompts/rem.md",
+                           "avatarFile": "rem_gone_99999.jpg"}, "rem.json")
+        self.assertNotIn("rem_gone_99999.jpg", stale.avatar_url)
         with self.assertRaises(ValueError):
             _validate({"id": "rem", "name": "Rem", "promptFile": "prompts/rem.md",
-                       "avatarUrl": "http://example.com/rem.png"}, "rem.json")
+                       "avatarFile": "../../etc/passwd"}, "rem.json")
 
     def test_prompt_path_must_stay_inside_repository(self):
         with self.assertRaises(ValueError):

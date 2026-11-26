@@ -8,5 +8,5 @@
   ],
   "promptFile": "prompts/origami.md",
   "enabled": true,
-  "avatarUrl": "https://raw.githubusercontent.com/Tulipskun/aira/main/images/origami/origami_neutral_8757333.jpg"
+  "avatarFile": "origami_neutral_01.jpg"
 }

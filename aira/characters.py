@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import ROOT
+from .config import ROOT, config
+
+log = logging.getLogger("aira.characters")
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,30 @@ class Character:
 
 
 CHAR_DIR = ROOT / "characters"
+
+
+def character_images(character_id: str) -> list[str]:
+    """The frames this character actually has on disk, in a stable order."""
+    directory = config.images_dir / character_id
+    if not directory.is_dir():
+        return []
+    return sorted(path.name for path in directory.iterdir()
+                  if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS)
+
+
+def avatar_url(character_id: str, avatar_file: str | None) -> str | None:
+    """Build the public URL from a frame that exists instead of storing a URL.
+
+    A stored URL survives image rebuilds as dead text and then 404s every time
+    the webhook tries to set it, so the file name is the only state kept.
+    """
+    available = character_images(character_id)
+    if not available:
+        return None
+    chosen = avatar_file if avatar_file in available else available[0]
+    if avatar_file and avatar_file not in available:
+        log.warning("Avatar frame %r is gone for %s; using %r", avatar_file, character_id, chosen)
+    return f"{config.image_base_url}/{character_id}/{chosen}"
 
 
 def _validate(value: object, filename: str) -> Character:
@@ -38,11 +66,13 @@ def _validate(value: object, filename: str) -> Character:
     prompt_path = (CHAR_DIR / prompt).resolve()
     if prompt_path != ROOT and ROOT not in prompt_path.parents:
         raise ValueError(f"Character prompt escapes project directory: {filename}")
-    avatar_url = value.get("avatarUrl")
-    if avatar_url is not None and (not isinstance(avatar_url, str) or not avatar_url.startswith("https://")):
-        raise ValueError(f"Invalid avatarUrl: {filename}")
+    avatar_file = value.get("avatarFile")
+    if avatar_file is not None and (not isinstance(avatar_file, str)
+                                    or Path(avatar_file).name != avatar_file):
+        raise ValueError(f"Invalid avatarFile: {filename}")
     return Character(character_id, name.strip(), tuple([name.strip(), *aliases]), prompt_path,
-                     value.get("enabled") is not False, avatar_url)
+                     value.get("enabled") is not False,
+                     avatar_url(character_id, avatar_file))
 
 
 def load_characters() -> list[Character]:
@@ -113,8 +143,8 @@ def save_character(character_id: str, name: str, aliases: list[str], prompt: str
         "id": character_id, "name": name.strip(), "aliases": aliases,
         "promptFile": f"prompts/{character_id}.md", "enabled": enabled,
     }
-    if isinstance(previous.get("avatarUrl"), str) and previous["avatarUrl"].startswith("https://"):
-        definition["avatarUrl"] = previous["avatarUrl"]
+    if isinstance(previous.get("avatarFile"), str):
+        definition["avatarFile"] = previous["avatarFile"]
     (CHAR_DIR / f"{character_id}.json").write_text(
         json.dumps(definition, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
