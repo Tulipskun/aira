@@ -12,8 +12,8 @@ class MemoryTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.old_store=memory.store
+        # The store creates the memory tables as part of its own schema.
         memory.store=Store(Path(self.temp.name)/"test.db")
-        memory._initialize_tables()
         self.old_max=config.episode_max_results
         self.old_min=config.episode_min_similarity
         config.episode_max_results=5
