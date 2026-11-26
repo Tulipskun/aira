@@ -19,7 +19,6 @@ ANCHOR_MIN_QUIET_MINUTES = 12.0
 QUIET_START_HOUR = 2
 QUIET_END_HOUR = 9
 QUIET_MULTIPLIER = 3.0
-MAX_STARTS_PER_HOUR = 4
 DEAD_ROOM_MINUTES = 12 * 60
 # Moments of the day when people naturally greet each other.
 DAY_ANCHORS = (("morning", 7, 10), ("noon", 11, 14), ("evening", 17, 21))
@@ -53,11 +52,12 @@ def idle_target_minutes(now: datetime, rng: random.Random | None = None) -> floa
     return target
 
 
-def should_start(now: datetime, quiet_minutes: float, target_minutes: float,
-                 starts_last_hour: int) -> bool:
-    """Whether the wait is over. Chance decides the wait, never whether to speak."""
+def should_start(now: datetime, quiet_minutes: float, target_minutes: float) -> bool:
+    """Whether the wait is over. Chance decides the wait, never whether to speak.
+
+    There is no hourly cap: the token allowance already bounds how fast the room
+    can talk, and a room that has been dead for half a day stays quiet.
+    """
     if quiet_minutes < target_minutes:
         return False
-    if quiet_minutes > DEAD_ROOM_MINUTES:
-        return False
-    return starts_last_hour < MAX_STARTS_PER_HOUR
+    return quiet_minutes <= DEAD_ROOM_MINUTES

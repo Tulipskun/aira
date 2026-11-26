@@ -29,15 +29,16 @@ class IdlePacingTests(unittest.TestCase):
             now = datetime(2026, 2, 1, hour, 0)
             for seed in range(5):
                 wait = idle.idle_target_minutes(now, random.Random(seed))
-                self.assertTrue(idle.should_start(now, wait + 0.5, wait, 0))
+                self.assertTrue(idle.should_start(now, wait + 0.5, wait))
 
     def test_the_room_stays_quiet_when_it_has_been_dead_for_hours(self):
         now = datetime(2026, 2, 1, 20, 0)
-        self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10, 0))
+        self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10))
 
-    def test_an_hourly_cap_stops_the_cast_talking_to_itself(self):
+    def test_the_room_keeps_talking_while_the_allowance_pays_for_it(self):
         now = datetime(2026, 2, 1, 20, 0)
-        self.assertFalse(idle.should_start(now, 30, 10, idle.MAX_STARTS_PER_HOUR))
+        self.assertFalse(hasattr(idle, "MAX_STARTS_PER_HOUR"))
+        self.assertTrue(idle.should_start(now, 30, 10))
 
 
 if __name__ == "__main__":

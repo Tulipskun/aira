@@ -318,7 +318,6 @@ class AiraBot(commands.Bot):
         # Automated turns keep a human beat; user turns are answered straight away.
         self.last_ai_turn_at: dict[str, float] = {}
         self.idle_task: asyncio.Task | None = None
-        self.idle_starts: list[float] = []
         self.autonomous_tasks: dict[str, asyncio.Task] = {}
         self.started_at = time.time()
         self.health_server = None
@@ -582,23 +581,20 @@ class AiraBot(commands.Bot):
                 if now < deadline:
                     continue
                 thread = await open_thread(session_key)
-                starts = [moment for moment in self.idle_starts if moment > time.time() - 3600]
-                self.idle_starts = starts
                 reason = "resume" if thread else ""
                 anchor = day_anchor(now)
                 day = now.date().isoformat()
                 if (not reason and anchor and quiet and quiet >= ANCHOR_MIN_QUIET_MINUTES
                         and not store.idle_anchor_done(session_key, anchor, day)):
                     reason = "day_greeting"
-                if not reason and should_start(now, quiet or 0.0, 0.0, len(starts)):
+                if not reason and should_start(now, quiet or 0.0, 0.0):
                     reason = "spontaneous"
                 if not reason:
                     wait = idle_target_minutes(now)
                     deadline = now + timedelta(minutes=wait)
                     store.set_idle_wait(session_key, marker, deadline.isoformat())
-                    log.info("Idle chat skipped: quiet=%.0fmin part=%s next_try_in=%.0fmin "
-                             "starts_last_hour=%s", quiet or 0.0, part_of_day(now), wait,
-                             len(starts))
+                    log.info("Idle chat deferred: quiet=%.0fmin part=%s next_try_in=%.0fmin",
+                             quiet or 0.0, part_of_day(now), wait)
                     continue
                 if live_token_budget.remaining_turns() < 1:
                     log.info("Idle chat skipped: no TPM room left for another turn")
@@ -610,7 +606,6 @@ class AiraBot(commands.Bot):
                 started = await self._start_idle_turn(channel_id, session_key, quiet or 0.0,
                                                       thread, reason)
                 if started:
-                    self.idle_starts.append(time.time())
                     deadline = now + timedelta(minutes=idle_target_minutes(now))
                     store.set_idle_wait(session_key, marker, deadline.isoformat())
                 # A silent opening is not a start: the moment stays open and the next
