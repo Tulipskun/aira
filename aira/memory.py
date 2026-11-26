@@ -198,21 +198,6 @@ def worth_remembering(text: str, existing: list[str] | None = None) -> bool:
     return True
 
 
-def sample_memory(session_key: str, rng=None) -> str:
-    """One of this character's own memories, picked at random as talking material."""
-    import random as _random
-    rows = [row["text"] for row in store.db.execute(
-        "SELECT text FROM semantic_memories WHERE session_key=?", (session_key,)).fetchall()
-        if not is_boilerplate(row["text"])]
-    if not rows:
-        rows = [row["text"] for row in store.db.execute(
-            "SELECT text FROM episodic_memories WHERE session_key=?", (session_key,)).fetchall()
-            if not is_boilerplate(row["text"])]
-    if not rows:
-        return ""
-    return (_random.Random(rng) if isinstance(rng, int) else rng or _random).choice(rows)
-
-
 async def is_duplicate_memory(vector: list[float], session_key: str,
                               user_id: str | None = None) -> dict | None:
     found = search_memories_by_vector(vector, session_key, 1, user_id=user_id)

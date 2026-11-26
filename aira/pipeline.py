@@ -18,7 +18,7 @@ from .gemini import (
 )
 from .memory import (
     embed, ingest_memory_background, overlap_ratio, persist_episode_background,
-    recall_episodes, sample_memory, search_memories_by_vector,
+    is_boilerplate, recall_episodes, search_memories_by_vector,
 )
 from .store import store, utc_now
 from .token_budget import estimate_tokens, history_budget_tokens
@@ -197,6 +197,19 @@ def open_thread(session_key: str) -> str:
         return text
     if COMMITMENT_TEXT.search(text) or text.endswith("?"):
         return text
+    return ""
+
+
+def sample_memory(character_session: str) -> str:
+    """One of this character's own memories, at random, as material for a new topic."""
+    for table in ("semantic_memories", "episodic_memories"):
+        rows = store.db.execute(
+            f"SELECT text FROM {table} WHERE session_key=? ORDER BY RANDOM() LIMIT 6",
+            (character_session,),
+        ).fetchall()
+        texts = [row["text"] for row in rows if row["text"] and not is_boilerplate(row["text"])]
+        if texts:
+            return texts[0]
     return ""
 
 
