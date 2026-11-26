@@ -297,18 +297,21 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         with_media = len(pipeline.room_history(session))
         self.assertLess(with_media, plain + 20)
 
-    async def test_a_topic_the_room_is_already_on_is_not_fresh(self):
+    async def test_a_topic_the_room_has_used_is_not_fresh(self):
         room = ["วันนี้ชาอุ่น ๆ อร่อยมากเลยนะคะ", "ไว้เรมชงให้อีกนะคะ"]
+        repeats = {True: "repeat", False: "new"}
 
-        async def embed(text, task="query"):
-            # tea words land on one axis, everything else on another
-            return [1.0, 0.0, 0.0] if ("ชา" in text or "ชง" in text) else [0.0, 1.0, 0.0]
+        async def repeat(candidate, used):
+            return True
 
-        with patch.object(pipeline, "embed", embed):
-            self.assertFalse(await pipeline.topic_is_fresh(
-                "ชาอุ่น ๆ กำลังจะชงให้ทุกคน", room))
-            self.assertTrue(await pipeline.topic_is_fresh(
-                "หนังที่เพิ่งเข้าฉายสัปดาห์นี้", room))
+        async def fresh(candidate, used):
+            return False
+
+        with patch.object(pipeline.gemini, "decide_topic_repeat", repeat):
+            self.assertFalse(await pipeline.topic_is_fresh("ชงชาเพิ่มให้ทุกคน", room))
+        with patch.object(pipeline.gemini, "decide_topic_repeat", fresh):
+            self.assertTrue(await pipeline.topic_is_fresh("หนังที่เพิ่งเข้าฉาย", room))
+        self.assertTrue(repeats[False] == "new")
 
     async def test_a_greeting_opening_carries_the_moment_not_a_script(self):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))

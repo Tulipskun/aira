@@ -260,44 +260,25 @@ async def open_thread(session_key: str) -> str:
 _OPEN_THREAD_CACHE: dict[str, tuple[int, str]] = {}
 
 
-TOPIC_SIMILARITY_LIMIT = 0.84
-
-
-def _cosine(left: list[float], right: list[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    dot = sum(a * b for a, b in zip(left, right))
-    norm = (sum(a * a for a in left) ** 0.5) * (sum(b * b for b in right) ** 0.5)
-    return dot / norm if norm else 0.0
-
-
 async def topic_is_fresh(topic: str, spoken: list[str],
                          known_topics: list[str] = ()) -> bool:
-    """True when this topic is not already what the room is talking about.
+    """True when this topic is not one the room has already been through.
 
-    Compared by meaning with the room's recent lines and the topics already used,
-    so nothing depends on a list of banned words.
+    The candidates are the topics already opened plus the room's own recent lines,
+    and the decision model says whether the new sentence is one of them.
     """
     text = " ".join(topic.split())
     if not text:
         return False
-    candidates = [line for line in spoken[-20:] if line.strip()]
-    candidates += [item for item in known_topics if item.strip()]
-    if not candidates:
+    used = [item for item in known_topics if item.strip()]
+    used += [line for line in spoken[-12:] if line.strip()]
+    if not used:
         return True
-    vectors = await asyncio.gather(embed(text, "document"),
-                                   *(embed(line, "document") for line in candidates),
-                                   return_exceptions=True)
-    if isinstance(vectors[0], Exception):
-        log.warning("Topic check skipped: %s", type(vectors[0]).__name__)
+    try:
+        return not await gemini.decide_topic_repeat(text, used[-12:])
+    except Exception:
+        log.exception("Topic check failed; keeping the topic")
         return True
-    base = vectors[0]
-    for vector in vectors[1:]:
-        if isinstance(vector, Exception):
-            continue
-        if _cosine(base, vector) >= TOPIC_SIMILARITY_LIMIT:
-            return False
-    return True
 
 
 def sample_memory(character_session: str, avoid: str = "") -> str:

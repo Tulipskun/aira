@@ -407,6 +407,43 @@ async def generate_event(room_transcript: str) -> str:
     return " ".join(text.split())[:200]
 
 
+async def decide_topic_repeat(candidate: str, used: list[str]) -> bool:
+    """Ask the decision model whether the new topic is really one of the old ones.
+
+    Shared words are not enough and embeddings mix habits with subjects, so the
+    judgement is made by the model: each earlier topic is an option, and matching
+    any of them means the room would be repeating itself.
+    """
+    if not used:
+        return False
+    client = _live_client("gemini1")  # the decision model is served on v1beta only
+    criteria = {f"t{index}": text[:160] for index, text in enumerate(used, start=1)}
+    criteria["new"] = "เรื่องใหม่ที่ยังไม่เคยพูด"
+    payload = {"repeat": {
+        "type": "choice",
+        "criteria": criteria,
+        "instructions": (
+            "ประโยคใน input คือหัวข้อที่กำลังจะหยิบมาคุย เลือกว่ามันเป็นเรื่องเดียวกับ "
+            "หัวข้อที่เคยใช้ไปแล้วข้อใดข้อหนึ่ง หรือเป็นเรื่องใหม่ "
+            "ถ้าเป็นเรื่องประเภทเดียวกันกับที่เคยพูด (เช่น ชงชา/ของว่าง/ซ้อมกีตาร์/เฝ้าระวัง "
+            "ที่เคยพูดไปแล้ว) ให้นับเป็นเรื่องเดิม เลือก new เฉพาะเมื่อเป็นหัวข้อที่ต่างจริง ๆ"
+        ),
+    }}
+    started = time.monotonic()
+    estimate = estimate_tokens(candidate) + estimate_tokens(payload["repeat"]["instructions"])
+    reservation = await decision_token_budget.reserve(estimate, label="topic_repeat")
+    response = await client.aio.decisions.create(
+        model=f"models/{config.decision_model}", input=candidate, questions=payload,
+    )
+    answer = (getattr(response, "answers", None) or {}).get("repeat")
+    chosen = str(getattr(answer, "choice", "new") or "new")
+    spent = getattr(getattr(response, "usage", None), "total_tokens", None)
+    await decision_token_budget.settle(reservation, int(spent) if spent else estimate)
+    log.info("Gemini topic decision: pick=%s options=%s ms=%s", chosen, len(criteria),
+             int((time.monotonic() - started) * 1000))
+    return chosen != "new"
+
+
 async def _create_live_response(stage: str, input_parts: list[dict], system_instruction: str,
                                 response_schema: dict | None = None,
                                 debug_context: dict | None = None,
