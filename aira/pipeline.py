@@ -200,15 +200,20 @@ def open_thread(session_key: str) -> str:
     return ""
 
 
-def sample_memory(character_session: str) -> str:
-    """One of this character's own memories, at random, as material for a new topic."""
+def sample_memory(character_session: str, avoid: str = "") -> str:
+    """One of this character's own memories, at random, as material for a new topic.
+
+    Chosen to be unlike what the room is already talking about: a memory that
+    echoes the last lines just continues the old subject under a new label.
+    """
     for table in ("semantic_memories", "episodic_memories"):
         rows = store.db.execute(
-            f"SELECT text FROM {table} WHERE session_key=? ORDER BY RANDOM() LIMIT 6",
+            f"SELECT text FROM {table} WHERE session_key=? ORDER BY RANDOM() LIMIT 12",
             (character_session,),
         ).fetchall()
         texts = [row["text"] for row in rows if row["text"] and not is_boilerplate(row["text"])]
         if texts:
+            texts.sort(key=lambda text: overlap_ratio(text, avoid) if avoid else 0.0)
             return texts[0]
     return ""
 
@@ -474,8 +479,12 @@ async def process_character_reply(message: dict, character: Character, prepared_
     if ambient and message.get("idle_reason") == "spontaneous":
         # A greeting is just a greeting; a spontaneous opening needs real material,
         # so it gets one of the character's own memories to build a topic from.
-        material = sample_memory(character_session_key(base_session, character.id))
+        material = sample_memory(character_session_key(base_session, character.id),
+                                 avoid=" ".join(str(row.get("text") or "")
+                                                for row in store.get_history(6, base_session)))
         if material:
+            log.info("Idle opening material: character=%s memory=%s", character.id,
+                     " ".join(material.split())[:90])
             context_lines.append(f"เรื่องหนึ่งจากความทรงจำของคุณเอง: {material[:300]}")
 
     raw_prompt = "\n".join([

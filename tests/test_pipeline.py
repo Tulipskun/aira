@@ -289,6 +289,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("เรื่องหนึ่งจากความทรงจำของคุณเอง: เคยสัญญากับคุณยูตะว่าจะไปดูดาวด้วยกัน",
                       context)
         sampled.assert_called_once()
+        # The memory is chosen to differ from what the room is already discussing.
+        self.assertIn("avoid", sampled.call_args.kwargs)
 
     async def test_a_character_that_repeats_itself_stays_silent(self):
         session = "group:echo"
