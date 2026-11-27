@@ -1,8 +1,11 @@
 {
   "id": "gemini-chan",
   "name": "Gemini-chan",
-  "aliases": ["เจมินี่จัง", "เจมินิจัง"],
+  "aliases": [
+    "เจมินี่จัง",
+    "เจมินิจัง"
+  ],
   "promptFile": "prompts/gemini-chan.md",
-  "enabled": true,
+  "enabled": false,
   "assistant": true
 }
