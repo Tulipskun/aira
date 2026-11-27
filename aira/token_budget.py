@@ -234,6 +234,15 @@ decision_token_budget = SlidingWindowTokenBudget(
 )
 
 
+# Gemini-chan runs her own model with its own allowance: her thinking turns must not
+# take the room's turns away from the characters.
+ASSISTANT_LIMIT = int(os.environ.get("AIRA_ASSISTANT_TPM_LIMIT", "30000"))
+assistant_token_budget = SlidingWindowTokenBudget(
+    ASSISTANT_LIMIT, window_seconds=60, safety_ratio=0.85,
+    state_path=Path(__file__).resolve().parent.parent / ".aira" / "assistant-tpm.json",
+)
+
+
 def usage_metrics(metadata) -> dict[str, int | None]:
     """Normalize Gemini usage metadata without mixing input and output tokens."""
     if metadata is None:

@@ -20,6 +20,7 @@ class Character:
     prompt_file: Path
     enabled: bool = True
     avatar_url: str | None = None
+    assistant: bool = False
 
 
 CHAR_DIR = ROOT / "characters"
@@ -72,7 +73,8 @@ def _validate(value: object, filename: str) -> Character:
         raise ValueError(f"Invalid avatarFile: {filename}")
     return Character(character_id, name.strip(), tuple([name.strip(), *aliases]), prompt_path,
                      value.get("enabled") is not False,
-                     avatar_url(character_id, avatar_file))
+                     avatar_url(character_id, avatar_file),
+                     value.get("assistant") is True)
 
 
 def load_characters() -> list[Character]:

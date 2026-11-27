@@ -77,6 +77,11 @@ def _client(stage: str) -> genai.Client:
     return _clients[key]
 
 
+def api_client(stage: str) -> genai.Client:
+    """The plain Gemini API client (function calls on a non-live model)."""
+    return _client(stage)
+
+
 def _live_client(stage: str) -> genai.Client:
     """Gemini Live 3.8 is served on the v1beta Gemini API endpoint."""
     key = _key(stage)
@@ -482,12 +487,16 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
                                 response_schema: dict | None = None,
                                 debug_context: dict | None = None,
                                 max_output_tokens: int | None = None,
-                                temperature: float | None = None) -> str:
+                                temperature: float | None = None,
+                                model: str | None = None,
+                                thinking_level: str | None = None,
+                                budget=None) -> str:
     key_attempts = 0
     retry = 0
     attempt = 0
     max_keys = max(1, len(_keys(stage)))
-    chosen_model = config.gemini2_model if stage == "gemini2" else config.gemini1_model
+    chosen_model = model or (config.gemini2_model if stage == "gemini2" else config.gemini1_model)
+    ledger = budget or live_token_budget
     content_parts = _live_parts(input_parts)
     if response_schema:
         system_instruction = "\n\n".join([
@@ -512,6 +521,8 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
         system_instruction=system_instruction,
         generation_config=(types.GenerationConfig(temperature=temperature)
                            if temperature is not None else None),
+        thinking_config=(types.ThinkingConfig(thinking_level=thinking_level)
+                         if thinking_level else None),
         context_window_compression=types.ContextWindowCompressionConfig(
             trigger_tokens=compression_trigger,
             sliding_window=types.SlidingWindow(target_tokens=int(compression_trigger * 0.9)),
@@ -540,7 +551,7 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
                 f"Gemini input estimate ({estimate}) exceeds the safe context budget "
                 f"({context_budget}/{input_limit}); trim conversation history or attachments"
             )
-        reservation = await live_token_budget.reserve(estimate, label=stage)
+        reservation = await ledger.reserve(estimate, label=stage)
         usage_tokens = None
         usage_detail = None
         try:
@@ -571,7 +582,7 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
                                         output.append(part.text)
                         if server_content and getattr(server_content, "turn_complete", False):
                             break
-            await live_token_budget.settle(reservation, usage_tokens)
+            await ledger.settle(reservation, usage_tokens)
             result = "".join(output).strip()
             debug_dump({**debug_meta, "event": "response", "text": result,
                         "estimated_tokens": estimate, "usage_tokens": usage_tokens})
@@ -586,14 +597,14 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
                 usage_detail.get("tool_input", "unreported"),
                 usage_detail.get("cached", "unreported"),
                 usage_detail.get("total", "unreported"), estimate, input_limit,
-                live_token_budget.available_tokens(), live_token_budget.capacity,
+                ledger.available_tokens(), ledger.capacity,
             )
             if not result:
                 raise RuntimeError("Gemini Live completed without a text response")
             return result
         except Exception as exc:
             status = _status(exc)
-            await live_token_budget.settle(
+            await ledger.settle(
                 reservation, 0 if status == 429 and usage_tokens is None else usage_tokens,
             )
             debug_dump({**debug_meta, "event": "error", "error": {
@@ -609,6 +620,16 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
                 continue
             raise
     raise RuntimeError(f"All API keys rate limited for {stage}")
+
+
+async def generate_live_text(stage: str, input_parts: list[dict], system_instruction: str,
+                             model: str, budget, thinking_level: str | None = None,
+                             max_output_tokens: int | None = None) -> str:
+    """One live turn on a model and an allowance of its own (used by Gemini-chan)."""
+    return await _create_live_response(
+        stage, input_parts, system_instruction, model=model, budget=budget,
+        thinking_level=thinking_level, max_output_tokens=max_output_tokens,
+    )
 
 
 async def generate_text(stage: str, prompt: str, system_instruction: str,

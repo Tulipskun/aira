@@ -271,7 +271,7 @@ def sample_memory(character_session: str, avoid: str = "") -> str:
 
 def idle_candidate_order(session_key: str) -> list[Character]:
     """Who has been quiet the longest starts the conversation when the room wakes."""
-    characters = load_characters()
+    characters = [item for item in load_characters() if not item.assistant]
     last_seen: dict[str, int] = {}
     for index, row in enumerate(store.get_history(200, session_key)):
         if row.get("role") == "model" and row.get("character_id"):
@@ -281,7 +281,9 @@ def idle_candidate_order(session_key: str) -> list[Character]:
 
 async def select_characters(message: dict, prepared_media=None, superseded=None) -> list[Character]:
     """Let the decision model answer one yes/no question per character."""
-    characters = load_characters()
+    everyone = load_characters()
+    characters = [item for item in everyone if not item.assistant]
+    assistants = [item for item in everyone if item.assistant]
     current = str(message.get("text") or "(ไม่มีข้อความ)")
     mentioned = find_mentioned_characters(current, characters)
     broadcast = bool(BROADCAST_TEXT.search(current)) or len(mentioned) > 1
@@ -319,6 +321,15 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
                   "ตอบใช่เมื่อมีเหตุผลชัดเจนว่าเขาควรพูดในจังหวะนี้")
         for item in characters
     }
+    # She is a helper, not a member of the cast: she may join only when the message is
+    # from a person and she has something to add, and her answer never replaces the
+    # character's own reply.
+    assistant_questions = {
+        item.id: (f"ข้อความล่าสุดจากผู้ใช้ต้องการคำตอบเชิงข้อมูลหรือความช่วยเหลือจริง "
+                  f"(โค้ด เอกสาร ข้อเท็จจริง หรือการค้นในห้อง) จนควรให้ผู้ช่วย {item.name} ตอบหรือไม่ "
+                  "ถ้าผู้ใช้กำลังคุยเล่นกับตัวละครอื่นอยู่ ให้ตอบไม่")
+        for item in assistants if not message.get("is_bot")
+    }
 
     if not message.get("is_bot") and not broadcast:
         # Somebody spoke to one of them, so somebody answers: the decision model picks
@@ -341,12 +352,20 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         if not picked:
             picked = characters[0].id
         selected = resolve_character_speakers(characters, [], [picked])
-        log.info("Character selector decision: selected=%s mode=%s",
-                 [item.id for item in selected], "room" if broadcast else "normal")
-        return selected
+        try:
+            assistant_scores = await decide_speakers(shared_input, assistant_questions)
+        except Exception:
+            log.exception("Assistant decision failed; the room answers without her")
+            assistant_scores = {}
+        joined = [item for item in assistants
+                  if assistant_scores.get(item.id, 0.0) >= SPEAKER_THRESHOLD]
+        log.info("Character selector decision: selected=%s assistant=%s mode=%s",
+                 [item.id for item in selected], [item.id for item in joined],
+                 "room" if broadcast else "normal")
+        return [*selected, *joined]
 
     try:
-        scores = await decide_speakers(shared_input, questions)
+        scores = await decide_speakers(shared_input, {**questions, **assistant_questions})
     except Exception:
         log.exception("Decision model failed; nothing answers this bot message")
         scores = {}
@@ -364,7 +383,8 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
 async def decide_next_speaker(speaker: Character, spoken: str, session_key: str) -> Character | None:
     """Ask the decision model whether another character should answer this line."""
     characters = load_characters()
-    candidates = [item for item in characters if item.id != speaker.id]
+    candidates = [item for item in characters
+                  if item.id != speaker.id and not item.assistant and not speaker.assistant]
     if not candidates or not spoken.strip():
         return None
     names = {item.id: item.name for item in characters}
@@ -394,9 +414,55 @@ async def decide_next_speaker(speaker: Character, spoken: str, session_key: str)
     return best if score >= SPEAKER_THRESHOLD else None
 
 
+async def process_assistant_turn(message: dict, character: Character) -> dict:
+    """The assistant answers people, looks things up, and stays out of the roleplay.
+
+    She is silent when another character is answering her or when nobody asked her
+    anything: a turn that comes from a character or from an idle opener returns no
+    text at all.
+    """
+    from .assistant import respond
+
+    base_session = str(message["session_key"])
+    empty = {"character": character, "text": "", "color": None, "mood": "", "image": "",
+             "message_row_id": None, "character_turn": False, "rps": None,
+             "next_speaker_id": ""}
+    if message.get("character_turn") or message.get("ambient"):
+        log.info("Assistant stays out of this turn: character=%s source=%s", character.id,
+                 "character" if message.get("character_turn") else "idle opener")
+        return empty
+    rows = store.get_history(60, base_session)
+    questions = [f"{row.get('user_name') or 'ผู้ใช้'}: {row.get('text') or ''}"
+                 for row in rows if row.get("role") == "user"]
+    incoming = str(message.get("text") or "").strip()
+    if incoming:
+        questions.append(f"{message.get('user') or 'ผู้ใช้'}: {incoming}")
+    question = "\n".join([
+        "บทสนทนาที่คนในห้องพิมพ์ไว้ ล่าสุดอยู่ท้าย:",
+        "\n".join(questions[-30:]) or "(ยังไม่มีข้อความ)",
+        "",
+        f"ข้อความล่าสุดที่ต้องตอบตอนนี้: {incoming or '(ไม่มี)'}",
+        "ถ้าต้องรู้ว่าตัวละครในห้องพูดอะไรไว้ ให้เรียก recent_messages ก่อนตอบ",
+    ])
+    try:
+        reply = await respond(question, base_session)
+    except Exception:
+        log.exception("Assistant turn failed; she stays quiet: character=%s", character.id)
+        return empty
+    if not reply:
+        return empty
+    row_id = store.save_message(
+        "model", reply, utc_now(), base_session, None, character.name, None, None,
+        character.id, reply_to_message_id=str(message.get("discord_message_id") or "") or None,
+    )
+    return {**empty, "text": reply, "message_row_id": row_id}
+
+
 async def process_character_reply(message: dict, character: Character, prepared_media=None,
                                   input_saved: bool = False, superseded=None) -> dict:
     """Generate every character turn through one shared memory/relationship/metadata pipeline."""
+    if character.assistant:
+        return await process_assistant_turn(message, character)
     started = datetime.now(timezone.utc)
     base_session = str(message["session_key"])
     session_key = character_session_key(base_session, character.id)
@@ -609,7 +675,8 @@ async def process_character_reply(message: dict, character: Character, prepared_
             f"- {item['timestamp']} — {item['text']}" for item in memory_items))
         if memory_items else "\nคุณยังไม่มีอะไรที่จำได้เกี่ยวกับเรื่องนี้"
     )
-    available_characters = [item for item in load_characters() if item.id != character.id]
+    available_characters = [item for item in load_characters()
+                            if item.id != character.id and not item.assistant]
     raw_prompt += "\n\nตัวละครอื่นที่อาจตอบต่อ: " + ", ".join(
         f"{item.id} ({item.name})" for item in available_characters
     )
