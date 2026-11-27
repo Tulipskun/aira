@@ -401,23 +401,40 @@ EVENT_INSTRUCTION = (
 
 MATERIAL_INSTRUCTION = (
     "คุณเป็นแหล่งไอเดียของห้องแชทนี้ หน้าที่คือสร้าง 'วัตถุดิบ' 1 อย่างที่ยังไม่เคยใช้\n"
-    "วัตถุดิบคือเรื่องเล็ก ๆ ที่ชวนคุยได้ เช่น ความรู้แปลก ๆ เหตุการณ์ในโลก สถานการณ์สมมุติ "
-    "เรื่องตลกในชีวิตประจำวัน หรือคำถามชวนคิด\n"
-    "ข้อกำหนด: เขียน 1-2 ประโยค เขียนให้ต่างจากรายการที่ห้ามใช้ "
-    "ห้ามอ้างถึงห้องแชทนี้ ตัวละครในห้อง หรือบทสนทนาที่ผ่านมา\n"
-    "ตอบกลับมาเป็นประโยคเท่านั้น"
+    "ให้เลือก 'สไตล์' ของวัตถุดิบก่อน 1 สไตล์ (ตั้งชื่อสั้น ๆ เองตามธรรมชาติ เช่น ข่าว ความรู้ "
+    "ประวัติศาสตร์ เรื่องตลก ปรัชญา สถานการณ์สมมุติ กีฬา ดนตรี อาหาร เทคโนโลยี สภาพอากาศ) "
+    "แล้วเขียนวัตถุดิบตามสไตล์นั้น 1-2 ประโยค\n"
+    "ข้อกำหนด: ต้องเป็นสไตล์ที่ต่างจากรายการที่ห้ามใช้ และวัตถุดิบต้องต่างจากรายการที่ห้ามใช้ "
+    "ห้ามอ้างถึงห้องแชทนี้หรือตัวละครในห้อง\n"
+    'ตอบเป็น JSON เท่านั้น: {"style": "...", "material": "..."}'
 )
+MATERIAL_SCHEMA = {"type": "object", "properties": {
+    "style": {"type": "string"}, "material": {"type": "string"}},
+    "required": ["style", "material"]}
 
 
-async def generate_material(avoid: list[str] | None = None) -> str:
-    """One request that invents raw material, with nothing from the room attached."""
+async def generate_material(avoid: list[str] | None = None,
+                            avoid_styles: list[str] | None = None) -> tuple[str, str]:
+    """One request that invents raw material in a style it has not used recently."""
     prompt = "สร้างวัตถุดิบใหม่ 1 อย่าง"
+    if avoid_styles:
+        prompt += "\n\nห้ามใช้สไตล์เหล่านี้:\n" + "\n".join(
+            f"- {item}" for item in avoid_styles[:6])
     if avoid:
-        prompt += "\n\nห้ามซ้ำกับรายการนี้:\n" + "\n".join(f"- {item}" for item in avoid[:8])
-    text = await _create_live_response(
+        prompt += "\n\nห้ามซ้ำกับวัตถุดิบเหล่านี้:\n" + "\n".join(
+            f"- {item}" for item in avoid[:8])
+    raw = await _create_live_response(
         "gemini1", [{"type": "text", "text": prompt}], MATERIAL_INSTRUCTION,
-        temperature=1.3)
-    return " ".join(text.split())[:240]
+        response_schema=MATERIAL_SCHEMA, temperature=1.3)
+    try:
+        parsed = json.loads(raw)
+        style = " ".join(str(parsed.get("style") or "").split())[:40]
+        material = " ".join(str(parsed.get("material") or "").split())[:240]
+        if material:
+            return style or "ทั่วไป", material
+    except ValueError:
+        log.warning("Material came back unreadable; using the text as is")
+    return "ทั่วไป", " ".join(raw.split())[:240]
 
 
 async def generate_event(material: str) -> str:

@@ -427,6 +427,12 @@ class Store:
             self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
 
+    def recent_styles(self, session_key: str, limit: int = 6) -> list[str]:
+        rows = self.db.execute(
+            """SELECT ref FROM idle_material WHERE session_key=? AND kind='style'
+               ORDER BY used_at DESC LIMIT ?""", (session_key, int(limit))).fetchall()
+        return [str(row["ref"]) for row in rows]
+
     def recent_materials(self, session_key: str, limit: int = 8) -> list[str]:
         rows = self.db.execute(
             """SELECT ref FROM idle_material WHERE session_key=? AND kind='ai'
@@ -437,6 +443,12 @@ class Store:
         self.db.execute(
             """INSERT OR REPLACE INTO idle_material(session_key,kind,ref,used_at)
                VALUES(?,?,?,?)""", (session_key, kind, ref, utc_now()))
+
+    def recent_styles(self, session_key: str, limit: int = 6) -> list[str]:
+        rows = self.db.execute(
+            """SELECT ref FROM idle_material WHERE session_key=? AND kind='style'
+               ORDER BY used_at DESC LIMIT ?""", (session_key, int(limit))).fetchall()
+        return [str(row["ref"]) for row in rows]
 
     def recent_materials(self, session_key: str, limit: int = 8) -> list[str]:
         rows = self.db.execute(

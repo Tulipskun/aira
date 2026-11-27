@@ -664,10 +664,12 @@ class AiraBot(commands.Bot):
                 # The material is invented, not harvested: one request invents a seed
                 # that owes nothing to the room, the next turns it into a topic.
                 try:
-                    material = await gemini.generate_material(
-                        store.recent_materials(session_key))
+                    style, material = await gemini.generate_material(
+                        store.recent_materials(session_key),
+                        store.recent_styles(session_key))
                     payload["idle_event"] = await gemini.generate_event(material)
                     store.mark_material(session_key, "ai", material)
+                    store.mark_material(session_key, "style", style)
                 except Exception:
                     log.exception("Could not invent a topic; opening without one")
             attempt = await process_character_reply(
