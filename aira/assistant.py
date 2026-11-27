@@ -177,11 +177,14 @@ async def respond(question: str, session_key: str) -> str:
                 turns=types.Content(role="user", parts=[types.Part.from_text(text=question)]),
                 turn_complete=True,
             )
+            # One reader for the whole session: a fresh receive() on every wait would
+            # drop whatever the socket had already buffered, including the tool call.
+            stream = session.receive()
             deadline = time.monotonic() + SESSION_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
                 try:
                     message = await asyncio.wait_for(
-                        session.receive().__anext__(), timeout=TOOL_GRACE_SECONDS)
+                        stream.__anext__(), timeout=TOOL_GRACE_SECONDS)
                 except (asyncio.TimeoutError, StopAsyncIteration):
                     # Nothing more is coming on this connection: she is done.
                     break
