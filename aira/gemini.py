@@ -77,9 +77,9 @@ def _client(stage: str) -> genai.Client:
     return _clients[key]
 
 
-def api_client(stage: str) -> genai.Client:
-    """The plain Gemini API client (function calls on a non-live model)."""
-    return _client(stage)
+def live_client(stage: str) -> genai.Client:
+    """The Live (WebSocket) client, for a session that stays open across turns."""
+    return _live_client(stage)
 
 
 def _live_client(stage: str) -> genai.Client:
