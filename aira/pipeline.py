@@ -260,25 +260,21 @@ async def open_thread(session_key: str) -> str:
 _OPEN_THREAD_CACHE: dict[str, tuple[int, str]] = {}
 
 
-async def topic_is_fresh(topic: str, spoken: list[str],
-                         known_topics: list[str] = ()) -> bool:
-    """True when this topic is not one the room has already been through.
+async def opening_material(session_key: str, character_session: str) -> dict:
+    """What the next opening starts from: a memory nobody has used and an old line.
 
-    The candidates are the topics already opened plus the room's own recent lines,
-    and the decision model says whether the new sentence is one of them.
+    Repetition came from the material, not from the wording: every opening searched
+    the same memories by similarity and invented an event from the same room. Here
+    the pieces are picked to be unused, so the topic can be new without anyone
+    having to veto anything.
     """
-    text = " ".join(topic.split())
-    if not text:
-        return False
-    used = [item for item in known_topics if item.strip()]
-    used += [line for line in spoken[-12:] if line.strip()]
-    if not used:
-        return True
-    try:
-        return not await gemini.decide_topic_repeat(text, used[-12:])
-    except Exception:
-        log.exception("Topic check failed; keeping the topic")
-        return True
+    picked = store.unused_memory(character_session, session_key)
+    memory_id, memory = picked if picked else ("", "")
+    return {
+        "memory_id": memory_id,
+        "memory": " ".join(memory.split())[:300],
+        "old_line": " ".join(store.old_user_line(session_key).split())[:200],
+    }
 
 
 def sample_memory(character_session: str, avoid: str = "") -> str:

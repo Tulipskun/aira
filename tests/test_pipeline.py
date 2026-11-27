@@ -297,21 +297,25 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         with_media = len(pipeline.room_history(session))
         self.assertLess(with_media, plain + 20)
 
-    async def test_a_topic_the_room_has_used_is_not_fresh(self):
-        room = ["วันนี้ชาอุ่น ๆ อร่อยมากเลยนะคะ", "ไว้เรมชงให้อีกนะคะ"]
-        repeats = {True: "repeat", False: "new"}
-
-        async def repeat(candidate, used):
-            return True
-
-        async def fresh(candidate, used):
-            return False
-
-        with patch.object(pipeline.gemini, "decide_topic_repeat", repeat):
-            self.assertFalse(await pipeline.topic_is_fresh("ชงชาเพิ่มให้ทุกคน", room))
-        with patch.object(pipeline.gemini, "decide_topic_repeat", fresh):
-            self.assertTrue(await pipeline.topic_is_fresh("หนังที่เพิ่งเข้าฉาย", room))
-        self.assertTrue(repeats[False] == "new")
+    async def test_an_opening_starts_from_material_nobody_used(self):
+        session = "group:material"
+        character_session = f"{session}:character:rem"
+        self.store.save_message("user", "เมื่อวานไปดูหนังเรื่องใหม่มา", utc_now(), session,
+                                "1", "Yuuta")
+        self.store.save_message("user", "พรุ่งนี้จะไปเที่ยวทะเล", utc_now(), session,
+                                "1", "Yuuta")
+        for index in range(3):
+            self.store.db.execute(
+                """INSERT INTO semantic_memories(id,text,embedding_json,user_id,timestamp,
+                   session_key,metadata_json) VALUES(?,?,?,?,?,?,?)""",
+                (f"m{index}", f"ความทรงจำหมายเลข {index}", "[]", "1", utc_now(),
+                 character_session, "{}"))
+        seen = set()
+        for _ in range(3):
+            material = await pipeline.opening_material(session, character_session)
+            seen.add(material["memory"])
+            self.store.mark_material(session, "memory", material["memory_id"])
+        self.assertEqual(len(seen), 3)
 
     async def test_a_greeting_opening_carries_the_moment_not_a_script(self):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))

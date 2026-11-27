@@ -17,7 +17,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from . import gemini
-from .characters import load_characters, save_character
+from .characters import character_session_key, load_characters, save_character
 from .config import ROOT, config, load_settings, save_settings
 from .media import prepare_attachments
 from .liveness import Liveness
@@ -26,8 +26,8 @@ from .idle import (
 )
 from .pipeline import (
     _save_incoming_message, decide_next_speaker, idle_candidate_order, open_thread,
-    process_character_reply, room_history, select_characters, shutdown_pipeline,
-    topic_is_fresh,
+    opening_material, process_character_reply, room_history, select_characters,
+    shutdown_pipeline,
 )
 from .scheduler import MessageScheduler
 from .store import group_session_key, store, utc_now
@@ -657,30 +657,25 @@ class AiraBot(commands.Bot):
             "idle_reason": reason,
             "part_of_day": part_of_day(datetime.now(ZoneInfo(config.timezone))),
         }
-        if reason == "spontaneous":
-            # A separate request invents the topic. A topic the room is already
-            # talking about is thrown away, so the cast is never handed last
-            # night's subject again; if nothing fresh comes back, stay quiet.
-            spoken = [str(row.get("text") or "") for row in room_history(session_key)]
-            known = store.recent_idle_topics(session_key)
-            for attempt in range(3):
-                try:
-                    candidate = await gemini.generate_event(_room_transcript(session_key))
-                except Exception:
-                    log.exception("Could not invent a topic; opening without one")
-                    break
-                if await topic_is_fresh(candidate, spoken, known):
-                    message["idle_event"] = candidate
-                    break
-                log.info("Idle topic rejected as a repeat: %s", candidate[:80])
-            if not message.get("idle_event"):
-                log.info("Idle chat skipped: no fresh topic this round")
-                return False
         response = None
         character = None
         for candidate in idle_candidate_order(session_key)[:2]:
+            payload = {**message, "idle_minutes": quiet_minutes}
+            if reason == "spontaneous":
+                # Start from material this character has never used, so the topic is
+                # new by construction instead of being vetoed afterwards.
+                material = await opening_material(
+                    session_key, character_session_key(session_key, candidate.id))
+                pieces = [piece for piece in (material["memory"], material["old_line"]) if piece]
+                try:
+                    payload["idle_event"] = await gemini.generate_event(
+                        _room_transcript(session_key), "\n".join(pieces))
+                except Exception:
+                    log.exception("Could not invent a topic; opening without one")
+                if material["memory_id"]:
+                    store.mark_material(session_key, "memory", material["memory_id"])
             attempt = await process_character_reply(
-                {**message, "idle_minutes": quiet_minutes}, candidate, None, input_saved=True,
+                payload, candidate, None, input_saved=True,
             )
             if attempt.get("text"):
                 response, character = attempt, candidate
@@ -688,8 +683,6 @@ class AiraBot(commands.Bot):
             log.info("Idle opening stayed silent: character=%s", candidate.id)
         if response is None or character is None:
             return False
-        if reason == "spontaneous" and message.get("idle_event"):
-            store.add_idle_topic(session_key, str(message["idle_event"]))
         if reason == "day_greeting":
             store.mark_idle_anchor(session_key, day_anchor(datetime.now(
                 ZoneInfo(config.timezone))) or "day", datetime.now(

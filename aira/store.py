@@ -152,12 +152,14 @@ class Store:
         if "last_message_id" not in self._columns("idle_state"):
             self.db.execute(
                 "ALTER TABLE idle_state ADD COLUMN last_message_id INTEGER NOT NULL DEFAULT 0")
-        # Topics the cast already opened, so the next one is not the same again.
-        self.db.execute("""CREATE TABLE IF NOT EXISTS idle_topics(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        # Material the cast already used for an opening, so the next one starts from
+        # something it has never drawn on.
+        self.db.execute("""CREATE TABLE IF NOT EXISTS idle_material(
             session_key TEXT NOT NULL,
-            topic TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            kind TEXT NOT NULL,
+            ref TEXT NOT NULL,
+            used_at TEXT NOT NULL,
+            PRIMARY KEY(session_key, kind, ref)
         )""")
         self.db.execute("""CREATE TABLE IF NOT EXISTS idle_anchor_state(
             session_key TEXT NOT NULL, anchor TEXT NOT NULL, day TEXT NOT NULL,
@@ -425,20 +427,65 @@ class Store:
             self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
 
-    def recent_idle_topics(self, session_key: str, limit: int = 10) -> list[str]:
-        rows = self.db.execute(
-            """SELECT topic FROM idle_topics WHERE session_key=?
-               ORDER BY id DESC LIMIT ?""", (session_key, int(limit))).fetchall()
-        return [str(row["topic"]) for row in rows]
+    def unused_memory(self, character_session: str, session_key: str) -> tuple[str, str] | None:
+        """A memory this character has never used as an opening, at random."""
+        for _ in range(2):
+            row = self.db.execute(
+                """SELECT id, text FROM semantic_memories
+                   WHERE session_key=?
+                     AND id NOT IN (SELECT ref FROM idle_material
+                                    WHERE session_key=? AND kind='memory')
+                   ORDER BY RANDOM() LIMIT 1""",
+                (character_session, session_key)).fetchone()
+            if row:
+                return str(row["id"]), str(row["text"])
+            # everything has been used once: forget the marks and start again
+            self.db.execute(
+                "DELETE FROM idle_material WHERE session_key=? AND kind='memory'", (session_key,))
+        return None
 
-    def add_idle_topic(self, session_key: str, topic: str) -> None:
+    def old_user_line(self, session_key: str, skip_recent: int = 30) -> str:
+        """Something a member said long ago, offered as raw material."""
+        row = self.db.execute(
+            """SELECT text FROM messages
+               WHERE session_key=? AND role='user' AND length(trim(text)) > 12
+               ORDER BY RANDOM() LIMIT 1""", (session_key,)).fetchone()
+        return str(row["text"]) if row else ""
+
+    def mark_material(self, session_key: str, kind: str, ref: str) -> None:
         self.db.execute(
-            "INSERT INTO idle_topics(session_key,topic,created_at) VALUES(?,?,?)",
-            (session_key, topic, utc_now()))
+            """INSERT OR REPLACE INTO idle_material(session_key,kind,ref,used_at)
+               VALUES(?,?,?,?)""", (session_key, kind, ref, utc_now()))
+
+    def unused_memory(self, character_session: str, session_key: str) -> tuple[str, str] | None:
+        """A memory this character has never used as an opening, at random."""
+        for _ in range(2):
+            row = self.db.execute(
+                """SELECT id, text FROM semantic_memories
+                   WHERE session_key=?
+                     AND id NOT IN (SELECT ref FROM idle_material
+                                    WHERE session_key=? AND kind='memory')
+                   ORDER BY RANDOM() LIMIT 1""",
+                (character_session, session_key)).fetchone()
+            if row:
+                return str(row["id"]), str(row["text"])
+            # everything has been used once: forget the marks and start again
+            self.db.execute(
+                "DELETE FROM idle_material WHERE session_key=? AND kind='memory'", (session_key,))
+        return None
+
+    def old_user_line(self, session_key: str, skip_recent: int = 30) -> str:
+        """Something a member said long ago, offered as raw material."""
+        row = self.db.execute(
+            """SELECT text FROM messages
+               WHERE session_key=? AND role='user' AND length(trim(text)) > 12
+               ORDER BY RANDOM() LIMIT 1""", (session_key,)).fetchone()
+        return str(row["text"]) if row else ""
+
+    def mark_material(self, session_key: str, kind: str, ref: str) -> None:
         self.db.execute(
-            """DELETE FROM idle_topics WHERE session_key=? AND id NOT IN (
-                   SELECT id FROM idle_topics WHERE session_key=? ORDER BY id DESC LIMIT 50)""",
-            (session_key, session_key))
+            """INSERT OR REPLACE INTO idle_material(session_key,kind,ref,used_at)
+               VALUES(?,?,?,?)""", (session_key, kind, ref, utc_now()))
 
     def idle_wait(self, session_key: str) -> dict | None:
         row = self.db.execute(
