@@ -18,7 +18,6 @@ FRESH_MAX_MINUTES = 30.0
 ANCHOR_MIN_QUIET_MINUTES = 12.0
 QUIET_START_HOUR = 2
 QUIET_END_HOUR = 5
-QUIET_MULTIPLIER = 3.0
 DEAD_ROOM_MINUTES = 12 * 60
 # Moments of the day when people naturally greet each other.
 DAY_ANCHORS = (("morning", 7, 10), ("noon", 11, 14), ("evening", 17, 21))
@@ -43,13 +42,18 @@ def day_anchor(now: datetime) -> str | None:
     return None
 
 
+def quiet_hours(now: datetime) -> bool:
+    """The stretch of the night when the cast starts nothing on its own.
+
+    Replies to a person are unaffected: this governs only the openings.
+    """
+    return QUIET_START_HOUR <= now.hour < QUIET_END_HOUR
+
+
 def idle_target_minutes(now: datetime, rng: random.Random | None = None) -> float:
     """How long this silence should last before anyone considers talking."""
     generator = rng or random
-    target = generator.uniform(FRESH_MIN_MINUTES, FRESH_MAX_MINUTES)
-    if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR:
-        target *= QUIET_MULTIPLIER
-    return target
+    return generator.uniform(FRESH_MIN_MINUTES, FRESH_MAX_MINUTES)
 
 
 def should_start(now: datetime, quiet_minutes: float, target_minutes: float) -> bool:

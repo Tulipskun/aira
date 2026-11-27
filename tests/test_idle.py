@@ -31,6 +31,20 @@ class IdlePacingTests(unittest.TestCase):
                 wait = idle.idle_target_minutes(now, random.Random(seed))
                 self.assertTrue(idle.should_start(now, wait + 0.5, wait))
 
+    def test_the_cast_starts_nothing_in_the_small_hours(self):
+        for hour in (2, 3, 4):
+            now = datetime(2026, 1, 1, hour, 30)
+            self.assertTrue(idle.quiet_hours(now), hour)
+        for hour in (0, 1, 5, 9, 14, 23):
+            now = datetime(2026, 1, 1, hour, 30)
+            self.assertFalse(idle.quiet_hours(now), hour)
+
+    def test_the_wait_does_not_grow_at_night(self):
+        generator = random.Random(7)
+        night = [idle.idle_target_minutes(datetime(2026, 1, 1, 3, 0), generator)
+                 for _ in range(50)]
+        self.assertLessEqual(max(night), idle.FRESH_MAX_MINUTES)
+
     def test_the_room_stays_quiet_when_it_has_been_dead_for_hours(self):
         now = datetime(2026, 2, 1, 20, 0)
         self.assertFalse(idle.should_start(now, idle.DEAD_ROOM_MINUTES + 1, 10))

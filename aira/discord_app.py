@@ -22,7 +22,8 @@ from .config import ROOT, config, load_settings, save_settings
 from .media import prepare_attachments
 from .liveness import Liveness
 from .idle import (
-    ANCHOR_MIN_QUIET_MINUTES, day_anchor, idle_target_minutes, part_of_day, should_start,
+    ANCHOR_MIN_QUIET_MINUTES, day_anchor, idle_target_minutes, part_of_day, quiet_hours,
+    should_start,
 )
 from .pipeline import (
     _save_incoming_message, decide_next_speaker, idle_candidate_order, open_thread,
@@ -575,7 +576,9 @@ class AiraBot(commands.Bot):
         while not self._closed:
             await asyncio.sleep(IDLE_POLL_SECONDS)
             try:
-                if not config.idle_chat or self.in_flight:
+                if not config.idle_chat or self.in_flight or quiet_hours(now):
+                    # During the small hours the cast starts nothing by itself; a
+                    # message from a person is answered exactly as usual.
                     continue
                 if self.scheduler.has_pending_session(session_key):
                     continue
