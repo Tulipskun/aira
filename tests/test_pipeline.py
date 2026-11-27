@@ -212,7 +212,9 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["text"], "เธอคุมจังหวะการเงียบ")
         rows = self.store.get_history(2, "group:asst2")
         self.assertEqual(rows[-1]["character_id"], "gemini-chan")
-        self.assertIsNone(self.store.get_character_relationship("gemini-chan", "1"))
+        # nothing was written: the row still holds the untouched default
+        self.assertEqual(self.store.get_character_relationship("gemini-chan", "1"),
+                         "ยังไม่เคยสร้างความสัมพันธ์")
 
     async def test_nobody_invites_the_assistant_and_she_never_opens_a_room(self):
         chars = [
