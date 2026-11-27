@@ -427,30 +427,22 @@ class Store:
             self._history_cache.move_to_end(session_key)
         return int(cursor.lastrowid)
 
-    def unused_memory(self, character_session: str, session_key: str) -> tuple[str, str] | None:
-        """A memory this character has never used as an opening, at random."""
-        for _ in range(2):
-            row = self.db.execute(
-                """SELECT id, text FROM semantic_memories
-                   WHERE session_key=?
-                     AND id NOT IN (SELECT ref FROM idle_material
-                                    WHERE session_key=? AND kind='memory')
-                   ORDER BY RANDOM() LIMIT 1""",
-                (character_session, session_key)).fetchone()
-            if row:
-                return str(row["id"]), str(row["text"])
-            # everything has been used once: forget the marks and start again
-            self.db.execute(
-                "DELETE FROM idle_material WHERE session_key=? AND kind='memory'", (session_key,))
-        return None
+    def recent_materials(self, session_key: str, limit: int = 8) -> list[str]:
+        rows = self.db.execute(
+            """SELECT ref FROM idle_material WHERE session_key=? AND kind='ai'
+               ORDER BY used_at DESC LIMIT ?""", (session_key, int(limit))).fetchall()
+        return [str(row["ref"]) for row in rows]
 
-    def old_user_line(self, session_key: str, skip_recent: int = 30) -> str:
-        """Something a member said long ago, offered as raw material."""
-        row = self.db.execute(
-            """SELECT text FROM messages
-               WHERE session_key=? AND role='user' AND length(trim(text)) > 12
-               ORDER BY RANDOM() LIMIT 1""", (session_key,)).fetchone()
-        return str(row["text"]) if row else ""
+    def mark_material(self, session_key: str, kind: str, ref: str) -> None:
+        self.db.execute(
+            """INSERT OR REPLACE INTO idle_material(session_key,kind,ref,used_at)
+               VALUES(?,?,?,?)""", (session_key, kind, ref, utc_now()))
+
+    def recent_materials(self, session_key: str, limit: int = 8) -> list[str]:
+        rows = self.db.execute(
+            """SELECT ref FROM idle_material WHERE session_key=? AND kind='ai'
+               ORDER BY used_at DESC LIMIT ?""", (session_key, int(limit))).fetchall()
+        return [str(row["ref"]) for row in rows]
 
     def mark_material(self, session_key: str, kind: str, ref: str) -> None:
         self.db.execute(

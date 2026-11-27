@@ -260,23 +260,6 @@ async def open_thread(session_key: str) -> str:
 _OPEN_THREAD_CACHE: dict[str, tuple[int, str]] = {}
 
 
-async def opening_material(session_key: str, character_session: str) -> dict:
-    """What the next opening starts from: a memory nobody has used and an old line.
-
-    Repetition came from the material, not from the wording: every opening searched
-    the same memories by similarity and invented an event from the same room. Here
-    the pieces are picked to be unused, so the topic can be new without anyone
-    having to veto anything.
-    """
-    picked = store.unused_memory(character_session, session_key)
-    memory_id, memory = picked if picked else ("", "")
-    return {
-        "memory_id": memory_id,
-        "memory": " ".join(memory.split())[:300],
-        "old_line": " ".join(store.old_user_line(session_key).split())[:200],
-    }
-
-
 def sample_memory(character_session: str, avoid: str = "") -> str:
     """One of this character's own memories, at random, as material for a new topic.
 

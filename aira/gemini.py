@@ -399,20 +399,40 @@ EVENT_INSTRUCTION = (
 )
 
 
-async def generate_event(room_transcript: str, material: str = "") -> str:
-    """One separate request that turns fresh material into something to talk about."""
-    source = room_transcript or "(ห้องยังไม่มีบทสนทนา)"
-    if material:
-        source += "\n\nวัตถุดิบที่ยังไม่เคยใช้ (หยิบมาทำเป็นเรื่องคุยได้):\n" + material
+MATERIAL_INSTRUCTION = (
+    "คุณเป็นแหล่งไอเดียของห้องแชทนี้ หน้าที่คือสร้าง 'วัตถุดิบ' 1 อย่างที่ยังไม่เคยใช้\n"
+    "วัตถุดิบคือเรื่องเล็ก ๆ ที่ชวนคุยได้ เช่น ความรู้แปลก ๆ เหตุการณ์ในโลก สถานการณ์สมมุติ "
+    "เรื่องตลกในชีวิตประจำวัน หรือคำถามชวนคิด\n"
+    "ข้อกำหนด: เขียน 1-2 ประโยค เขียนให้ต่างจากรายการที่ห้ามใช้ "
+    "ห้ามอ้างถึงห้องแชทนี้ ตัวละครในห้อง หรือบทสนทนาที่ผ่านมา\n"
+    "ตอบกลับมาเป็นประโยคเท่านั้น"
+)
+
+
+async def generate_material(avoid: list[str] | None = None) -> str:
+    """One request that invents raw material, with nothing from the room attached."""
+    prompt = "สร้างวัตถุดิบใหม่ 1 อย่าง"
+    if avoid:
+        prompt += "\n\nห้ามซ้ำกับรายการนี้:\n" + "\n".join(f"- {item}" for item in avoid[:8])
     text = await _create_live_response(
-        "gemini1", [{"type": "text", "text": source}], EVENT_INSTRUCTION)
+        "gemini1", [{"type": "text", "text": prompt}], MATERIAL_INSTRUCTION,
+        temperature=1.3)
+    return " ".join(text.split())[:240]
+
+
+async def generate_event(material: str) -> str:
+    """One separate request that turns fresh material into something to talk about."""
+    text = await _create_live_response(
+        "gemini1", [{"type": "text", "text": material or "(ไม่มีวัตถุดิบ)"}],
+        EVENT_INSTRUCTION, temperature=1.0)
     return " ".join(text.split())[:200]
 
 
 async def _create_live_response(stage: str, input_parts: list[dict], system_instruction: str,
                                 response_schema: dict | None = None,
                                 debug_context: dict | None = None,
-                                max_output_tokens: int | None = None) -> str:
+                                max_output_tokens: int | None = None,
+                                temperature: float | None = None) -> str:
     key_attempts = 0
     retry = 0
     attempt = 0
@@ -440,6 +460,8 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
         response_modalities=[types.Modality.AUDIO],
         output_audio_transcription=types.AudioTranscriptionConfig(),
         system_instruction=system_instruction,
+        generation_config=(types.GenerationConfig(temperature=temperature)
+                           if temperature is not None else None),
         context_window_compression=types.ContextWindowCompressionConfig(
             trigger_tokens=compression_trigger,
             sliding_window=types.SlidingWindow(target_tokens=int(compression_trigger * 0.9)),

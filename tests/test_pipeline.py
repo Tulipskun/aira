@@ -297,25 +297,13 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         with_media = len(pipeline.room_history(session))
         self.assertLess(with_media, plain + 20)
 
-    async def test_an_opening_starts_from_material_nobody_used(self):
+    def test_the_invented_material_is_remembered_so_it_is_not_reused(self):
         session = "group:material"
-        character_session = f"{session}:character:rem"
-        self.store.save_message("user", "เมื่อวานไปดูหนังเรื่องใหม่มา", utc_now(), session,
-                                "1", "Yuuta")
-        self.store.save_message("user", "พรุ่งนี้จะไปเที่ยวทะเล", utc_now(), session,
-                                "1", "Yuuta")
-        for index in range(3):
-            self.store.db.execute(
-                """INSERT INTO semantic_memories(id,text,embedding_json,user_id,timestamp,
-                   session_key,metadata_json) VALUES(?,?,?,?,?,?,?)""",
-                (f"m{index}", f"ความทรงจำหมายเลข {index}", "[]", "1", utc_now(),
-                 character_session, "{}"))
-        seen = set()
-        for _ in range(3):
-            material = await pipeline.opening_material(session, character_session)
-            seen.add(material["memory"])
-            self.store.mark_material(session, "memory", material["memory_id"])
-        self.assertEqual(len(seen), 3)
+        self.store.mark_material(session, "ai", "ความรู้แปลก ๆ เรื่องปลาหมึกยักษ์")
+        self.store.mark_material(session, "ai", "หนังที่เพิ่งเข้าฉายสัปดาห์นี้")
+        recent = self.store.recent_materials(session)
+        self.assertEqual(len(recent), 2)
+        self.assertIn("ความรู้แปลก ๆ เรื่องปลาหมึกยักษ์", recent)
 
     async def test_a_greeting_opening_carries_the_moment_not_a_script(self):
         character = Character("origami", "Origami", ("Origami",), Path("origami.md"))

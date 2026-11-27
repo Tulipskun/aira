@@ -26,8 +26,7 @@ from .idle import (
 )
 from .pipeline import (
     _save_incoming_message, decide_next_speaker, idle_candidate_order, open_thread,
-    opening_material, process_character_reply, room_history, select_characters,
-    shutdown_pipeline,
+    process_character_reply, room_history, select_characters, shutdown_pipeline,
 )
 from .scheduler import MessageScheduler
 from .store import group_session_key, store, utc_now
@@ -662,18 +661,15 @@ class AiraBot(commands.Bot):
         for candidate in idle_candidate_order(session_key)[:2]:
             payload = {**message, "idle_minutes": quiet_minutes}
             if reason == "spontaneous":
-                # Start from material this character has never used, so the topic is
-                # new by construction instead of being vetoed afterwards.
-                material = await opening_material(
-                    session_key, character_session_key(session_key, candidate.id))
-                pieces = [piece for piece in (material["memory"], material["old_line"]) if piece]
+                # The material is invented, not harvested: one request invents a seed
+                # that owes nothing to the room, the next turns it into a topic.
                 try:
-                    payload["idle_event"] = await gemini.generate_event(
-                        _room_transcript(session_key), "\n".join(pieces))
+                    material = await gemini.generate_material(
+                        store.recent_materials(session_key))
+                    payload["idle_event"] = await gemini.generate_event(material)
+                    store.mark_material(session_key, "ai", material)
                 except Exception:
                     log.exception("Could not invent a topic; opening without one")
-                if material["memory_id"]:
-                    store.mark_material(session_key, "memory", material["memory_id"])
             attempt = await process_character_reply(
                 payload, candidate, None, input_saved=True,
             )
