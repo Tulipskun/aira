@@ -1,12 +1,15 @@
 import asyncio
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
+from aira import discord_app
 from aira.discord_app import AiraBot, PanelView, build_footer, _rps_outcome
 from aira.characters import Character
 
@@ -21,6 +24,44 @@ class WebhookMessageTests(unittest.TestCase):
         self.assertFalse(_is_character_webhook(other))
         self.assertTrue(_is_character_webhook(ours))
         self.assertFalse(_is_character_webhook(plain_user))
+
+
+class QuietHoursTests(unittest.IsolatedAsyncioTestCase):
+    """The small hours stop the openings only; answering a person is untouched."""
+
+    async def asyncSetUp(self):
+        self.bot = AiraBot()
+
+    async def asyncTearDown(self):
+        await self.bot.close()
+
+    def at(self, hour: int):
+        return datetime(2026, 1, 1, hour, 30, tzinfo=ZoneInfo(discord_app.config.timezone))
+
+    async def test_the_opener_is_held_back_between_two_and_five(self):
+        with patch.object(discord_app.config, "idle_chat", True):
+            for hour in (2, 3, 4):
+                self.assertFalse(self.bot._may_open("group:1", self.at(hour)), hour)
+            for hour in (1, 5, 9, 14, 23):
+                self.assertTrue(self.bot._may_open("group:1", self.at(hour)), hour)
+
+    async def test_a_turn_in_flight_or_a_queued_message_also_holds_it_back(self):
+        self.bot.in_flight = 1
+        with patch.object(discord_app.config, "idle_chat", True):
+            self.assertFalse(self.bot._may_open("group:1", self.at(14)))
+        self.bot.in_flight = 0
+        with patch.object(discord_app.config, "idle_chat", True), \
+             patch.object(self.bot.scheduler, "has_pending_session", return_value=True):
+            self.assertFalse(self.bot._may_open("group:1", self.at(14)))
+
+    async def test_answering_a_person_never_consults_the_small_hours(self):
+        source = Path(discord_app.__file__).read_text()
+        # One call site, inside the opener gate: the reply path cannot reach it.
+        self.assertEqual(source.count("quiet_hours("), 1)
+        gate = source[source.index("def _may_open"):source.index("def _idle_deadline")]
+        self.assertIn("quiet_hours(now)", gate)
+        reply = source[source.index("async def _process_batch"):]
+        self.assertNotIn("quiet_hours", reply)
 
 
 class ChannelSelectInteractionTests(unittest.IsolatedAsyncioTestCase):

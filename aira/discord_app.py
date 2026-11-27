@@ -550,6 +550,18 @@ class AiraBot(commands.Bot):
                 lines.append(f"{who}: {text}")
         return "\n".join(lines)
 
+    def _may_open(self, session_key: str, now: datetime) -> bool:
+        """Whether the cast may start a conversation at this moment.
+
+        Answering a person never asks this question: the check lives here and is
+        used only by the idle loop.
+        """
+        if not config.idle_chat or self.in_flight:
+            return False
+        if quiet_hours(now):
+            return False
+        return not self.scheduler.has_pending_session(session_key)
+
     def _idle_deadline(self, session_key: str, now: datetime, last: dict) -> datetime:
         """When the room may speak again: the last message plus a random 15-45 minutes.
 
@@ -576,18 +588,14 @@ class AiraBot(commands.Bot):
         while not self._closed:
             await asyncio.sleep(IDLE_POLL_SECONDS)
             try:
-                if not config.idle_chat or self.in_flight or quiet_hours(now):
-                    # During the small hours the cast starts nothing by itself; a
-                    # message from a person is answered exactly as usual.
-                    continue
-                if self.scheduler.has_pending_session(session_key):
+                now = datetime.now(ZoneInfo(config.timezone))
+                if not self._may_open(session_key, now):
                     continue
                 rows = store.get_history(1, session_key)
                 if not rows:
                     continue
                 last = rows[-1]
                 quiet = _quiet_minutes(str(last.get("timestamp") or ""))
-                now = datetime.now(ZoneInfo(config.timezone))
                 deadline = self._idle_deadline(session_key, now, last)
                 marker = int(last["id"])
                 if marker != last_seen:
