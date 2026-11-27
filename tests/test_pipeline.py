@@ -37,83 +37,63 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.close()
         self.temp.cleanup()
 
-    async def test_speaker_selection_uses_model_and_never_defaults_to_isla(self):
+    async def test_a_persons_message_gets_the_answer_the_model_picked(self):
         chars = [
             Character("isla", "Isla", ("Isla",), Path("isla.md")),
             Character("rem", "Rem", ("Rem",), Path("rem.md")),
             Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speakers", new=AsyncMock(
-                 return_value={"bocchi": 0.91, "rem": 0.84, "isla": 0.08})) as selector:
+             patch.object(pipeline, "decide_speaker", new=AsyncMock(return_value="bocchi")) as chooser:
             selected = await pipeline.select_characters({
                 "text": "วันนี้เป็นยังไง", "session_key": "group:99", "user_id": "alice", "user": "Alice",
             })
-        self.assertEqual([item.id for item in selected], ["bocchi", "rem"])
-        selector.assert_awaited_once()
+        self.assertEqual([item.id for item in selected], ["bocchi"])
+        chooser.assert_awaited_once()
 
-    async def test_named_character_is_hinted_to_the_selector_instead_of_short_circuited(self):
+    async def test_the_character_the_message_speaks_to_is_offered_to_the_choice(self):
         chars = [
             Character("isla", "Isla", ("Isla",), Path("isla.md")),
-            Character("rem", "Rem", ("Rem",), Path("rem.md")),
-            Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
+            Character("origami", "Origami Tobiichi", ("Origami", "โอริกามิ"), Path("origami.md")),
         ]
         captured = {}
 
-        async def fake_decide(shared_input, questions):
+        async def fake_choice(shared_input, candidates):
             captured["input"] = shared_input
-            captured["questions"] = questions
-            return {"rem": 0.94, "isla": 0.05, "bocchi": 0.02}
+            captured["candidates"] = candidates
+            return "origami"
 
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=fake_decide)) as selector:
-            selected = await pipeline.select_characters({"text": "Rem ช่วยตอบหน่อย",
-                                                         "session_key": "group:named"})
-        self.assertEqual([item.id for item in selected], ["rem"])
-        selector.assert_awaited_once()
+             patch.object(pipeline, "decide_speaker", new=AsyncMock(side_effect=fake_choice)):
+            selected = await pipeline.select_characters({"text": "โอริกามิ ไปไหนมา",
+                                                        "session_key": "group:addressed"})
+        self.assertEqual([item.id for item in selected], ["origami"])
+        self.assertIn("ถูกเรียกชื่อในข้อความนี้", captured["candidates"]["origami"])
+        self.assertNotIn("ถูกเรียกชื่อในข้อความนี้", captured["candidates"]["isla"])
         self.assertIn("เบาะแสเท่านั้น", captured["input"])
-        self.assertEqual(set(captured["questions"]), {"isla", "rem", "bocchi"})
 
-    async def test_a_name_only_mentioned_is_not_forced_into_the_selection(self):
+    async def test_a_person_is_never_left_unanswered_when_the_choice_fails(self):
         chars = [
             Character("isla", "Isla", ("Isla",), Path("isla.md")),
             Character("rem", "Rem", ("Rem",), Path("rem.md")),
         ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speakers", new=AsyncMock(
-                 return_value={"isla": 0.88, "rem": 0.31})):
-            selected = await pipeline.select_characters({
-                "text": "ไอล่า เมื่อกี้เรมบอกว่าชอบชาไง", "session_key": "group:mention",
-            })
-        self.assertEqual([item.id for item in selected], ["isla"])
+             patch.object(pipeline, "decide_speaker", new=AsyncMock(side_effect=RuntimeError("down"))):
+            selected = await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"})
+        self.assertEqual(len(selected), 1)
+        self.assertIn(selected[0].id, {"isla", "rem"})
 
-    async def test_the_character_the_message_speaks_to_is_not_dropped(self):
-        chars = [
-            Character("isla", "Isla", ("Isla",), Path("isla.md")),
-            Character("origami", "Origami Tobiichi", ("Origami",), Path("origami.md")),
-        ]
-        with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speakers", new=AsyncMock(
-                 return_value={"origami": 0.93, "isla": 0.12})):
-            selected = await pipeline.select_characters({
-                "text": "โอริกามิ ไปไหนมา", "session_key": "group:addressed",
-            })
-        self.assertEqual([item.id for item in selected][0], "origami")
-
-    async def test_selector_can_choose_silence_and_invalid_output_does_not_fall_back_to_isla(self):
+    async def test_a_choice_outside_the_roster_is_never_used(self):
         chars = [Character("isla", "Isla", ("Isla",), Path("isla.md"))]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speakers", new=AsyncMock(return_value={"isla": 0.12})):
-            self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
-        with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=RuntimeError("decision down"))):
-            self.assertEqual(await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"}), [])
+             patch.object(pipeline, "decide_speaker", new=AsyncMock(return_value="bocchi")):
+            selected = await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"})
+        self.assertEqual([item.id for item in selected], ["isla"])
 
-    async def test_selector_sees_unanswered_messages_and_breaks_a_silent_room(self):
+    async def test_the_selector_sees_what_is_still_unanswered(self):
         chars = [
             Character("isla", "Isla", ("Isla",), Path("isla.md")),
             Character("rem", "Rem", ("Rem",), Path("rem.md")),
-            Character("bocchi", "Bocchi", ("Bocchi",), Path("bocchi.md")),
         ]
         session = "group:silence"
         self.store.save_message("model", "เดี๋ยวเรมไปดูให้นะคะ", utc_now(), session, None, "Rem", None, None, "rem")
@@ -121,21 +101,19 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.save_message("user", "น้องเงียบเลย 5555", utc_now(), session, "2", "Yuuta", None, None)
         captured = {}
 
-        async def fake_generate(shared_input, questions):
+        async def fake_choice(shared_input, candidates):
             captured["prompt"] = shared_input
-            return {"rem": 0.2, "isla": 0.1, "bocchi": 0.05}
+            return "rem"
 
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=fake_generate)):
+             patch.object(pipeline, "decide_speaker", new=AsyncMock(side_effect=fake_choice)):
             selected = await pipeline.select_characters({
                 "text": "น้องเงียบเลย 5555", "session_key": session, "user_id": "2", "user": "Yuuta",
             })
-        # Two unanswered messages in a row: the last speaker keeps the conversation going.
         self.assertEqual([item.id for item in selected], ["rem"])
-        self.assertIn("ข้อความนี้ยังไม่มีตัวละครตอบ", captured["prompt"])
         self.assertIn("จำนวนข้อความท้ายห้องที่ยังไม่มีตัวละครตอบ: 2", captured["prompt"])
 
-    async def test_selector_still_allows_silence_for_laughter_or_a_first_message(self):
+    async def test_a_laugh_from_a_person_still_gets_one_answer(self):
         chars = [
             Character("isla", "Isla", ("Isla",), Path("isla.md")),
             Character("rem", "Rem", ("Rem",), Path("rem.md")),
@@ -144,21 +122,22 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.save_message("model", "ค่ะ", utc_now(), session, None, "Rem", None, None, "rem")
         self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speakers", new=AsyncMock(
-                 return_value={"isla": 0.1, "rem": 0.08})):
-            # A single unanswered laugh stays silent.
-            self.assertEqual(await pipeline.select_characters({
+             patch.object(pipeline, "decide_speaker", new=AsyncMock(return_value="rem")):
+            selected = await pipeline.select_characters({
                 "text": "55555", "session_key": session, "user_id": "1", "user": "Yuuta",
-            }), [])
-        session = "group:noise2"
-        self.store.save_message("model", "ค่ะ", utc_now(), session, None, "Rem", None, None, "rem")
-        self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
-        self.store.save_message("user", "55555", utc_now(), session, "1", "Yuuta", None, None)
+            })
+        self.assertEqual([item.id for item in selected], ["rem"])
+
+    async def test_another_bots_message_still_needs_a_reason_to_be_answered(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+        ]
         with patch.object(pipeline, "load_characters", return_value=chars), \
              patch.object(pipeline, "decide_speakers", new=AsyncMock(
-                 return_value={"isla": 0.12, "rem": 0.07})):
+                 return_value={"isla": 0.12, "rem": 0.09})):
             self.assertEqual(await pipeline.select_characters({
-                "text": "55555", "session_key": session, "user_id": "1", "user": "Yuuta",
+                "text": "ระบบได้อัปเดตข้อมูลเรียบร้อย", "session_key": "group:bot", "is_bot": True,
             }), [])
 
     async def test_room_wide_greeting_asks_the_selector_for_everyone_named(self):
