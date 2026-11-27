@@ -141,6 +141,97 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                 "text": "ระบบได้อัปเดตข้อมูลเรียบร้อย", "session_key": "group:bot", "is_bot": True,
             }), [])
 
+    async def test_the_assistant_joins_only_when_the_message_needs_her(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("gemini-chan", "Gemini-chan", ("Gemini-chan",), Path("gemini.md"),
+                      assistant=True),
+        ]
+
+        async def choice(shared_input, candidates):
+            return "isla"
+
+        async def scores(shared_input, questions):
+            # the cast question and her question are asked in the same call
+            return {"isla": 0.9, "gemini-chan": 0.91}
+
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "decide_speaker", new=AsyncMock(side_effect=choice)), \
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=scores)):
+            selected = await pipeline.select_characters({
+                "text": "ช่วยอธิบายโค้ดใน aira/idle.py ให้หน่อย", "session_key": "group:help",
+                "user_id": "1", "user": "Yuuta",
+            })
+        self.assertEqual([item.id for item in selected], ["isla", "gemini-chan"])
+
+    async def test_the_assistant_stays_out_of_another_bots_message(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("gemini-chan", "Gemini-chan", ("Gemini-chan",), Path("gemini.md"),
+                      assistant=True),
+        ]
+        asked = {}
+
+        async def scores(shared_input, questions):
+            asked.update(questions)
+            return {"isla": 0.1}
+
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(side_effect=scores)):
+            selected = await pipeline.select_characters({
+                "text": "ระบบอัปเดตข้อมูลเสร็จแล้ว", "session_key": "group:bot", "is_bot": True,
+            })
+        self.assertEqual(selected, [])
+        self.assertNotIn("gemini-chan", asked)
+
+    async def test_her_turns_never_answer_a_character_or_an_idle_opener(self):
+        chars = [Character("gemini-chan", "Gemini-chan", ("Gemini-chan",), Path("gemini.md"),
+                           assistant=True)]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline.assistant, "respond", new=AsyncMock(return_value="ตอบ")) \
+             if hasattr(pipeline, "assistant") else patch("aira.assistant.respond",
+                                                          new=AsyncMock(return_value="ตอบ")):
+            from_character = await pipeline.process_character_reply(
+                {"session_key": "group:asst", "user_id": "1", "user": "Rem",
+                 "text": "เจมินี่จังคิดว่าไง", "character_turn": True}, chars[0])
+            from_idle = await pipeline.process_character_reply(
+                {"session_key": "group:asst", "user_id": "1", "user": "Yuuta",
+                 "text": "", "ambient": True}, chars[0])
+        self.assertEqual(from_character["text"], "")
+        self.assertEqual(from_idle["text"], "")
+
+    async def test_her_answer_is_stored_without_touching_relationships(self):
+        chars = [Character("gemini-chan", "Gemini-chan", ("Gemini-chan",), Path("gemini.md"),
+                           assistant=True)]
+        self.store.save_message("user", "ช่วยอธิบาย idle.py", utc_now(), "group:asst2", "1", "Yuuta")
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch("aira.assistant.respond", new=AsyncMock(return_value="เธอคุมจังหวะการเงียบ")):
+            output = await pipeline.process_character_reply(
+                {"session_key": "group:asst2", "user_id": "1", "user": "Yuuta",
+                 "text": "ช่วยอธิบาย idle.py"}, chars[0])
+        self.assertEqual(output["text"], "เธอคุมจังหวะการเงียบ")
+        rows = self.store.get_history(2, "group:asst2")
+        self.assertEqual(rows[-1]["character_id"], "gemini-chan")
+        self.assertIsNone(self.store.get_character_relationship("gemini-chan", "1"))
+
+    async def test_nobody_invites_the_assistant_and_she_never_opens_a_room(self):
+        chars = [
+            Character("isla", "Isla", ("Isla",), Path("isla.md")),
+            Character("rem", "Rem", ("Rem",), Path("rem.md")),
+            Character("gemini-chan", "Gemini-chan", ("Gemini-chan",), Path("gemini.md"),
+                      assistant=True),
+        ]
+        with patch.object(pipeline, "load_characters", return_value=chars):
+            order = pipeline.idle_candidate_order("group:idle")
+            self.assertNotIn("gemini-chan", [item.id for item in order])
+        speaker = chars[0]
+        with patch.object(pipeline, "load_characters", return_value=chars), \
+             patch.object(pipeline, "decide_speakers", new=AsyncMock(
+                 return_value={"rem": 0.0})) as decision:
+            await pipeline.decide_next_speaker(speaker, "เรมคิดว่าไง", "group:chain")
+        questions = decision.await_args.args[1]
+        self.assertNotIn("gemini-chan", questions)
+
     async def test_room_wide_greeting_asks_the_selector_for_everyone_named(self):
         chars = [
             Character("isla", "Isla", ("Isla",), Path("isla.md")),

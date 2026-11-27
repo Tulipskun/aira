@@ -31,7 +31,7 @@ from .pipeline import (
 )
 from .scheduler import MessageScheduler
 from .store import group_session_key, store, utc_now
-from .token_budget import decision_token_budget, live_token_budget
+from .token_budget import assistant_token_budget, decision_token_budget, live_token_budget
 
 log = logging.getLogger("aira.discord")
 # A paced exchange may wait for the window to refill, but not forever.
@@ -415,6 +415,7 @@ class AiraBot(commands.Bot):
                 "historyCache": store.history_cache_stats(),
                 "geminiTPM": live_token_budget.snapshot(),
                 "decisionTPM": decision_token_budget.snapshot(),
+                "assistantTPM": assistant_token_budget.snapshot(),
             })
             return web.json_response(state)
         app = web.Application()
