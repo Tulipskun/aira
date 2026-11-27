@@ -131,7 +131,7 @@ def run_tool(name: str, arguments: dict, session_key: str) -> dict:
 # The Live session is one WebSocket that keeps working after a turn completes: the
 # tool call arrives a few seconds later, so the stream must stay open and be read
 # until it goes quiet, not closed when the first turn ends.
-TOOL_GRACE_SECONDS = 12.0
+TOOL_GRACE_SECONDS = 20.0
 SESSION_TIMEOUT_SECONDS = 120.0
 QUIET_TURNS_BEFORE_DONE = 1
 
@@ -191,6 +191,8 @@ async def respond(question: str, session_key: str) -> str:
                 call = getattr(message, "tool_call", None)
                 if call:
                     calls += 1
+                    # What she said before looking things up is not the answer.
+                    text.clear()
                     await session.send_tool_response(
                         function_responses=_tool_responses(call, session_key))
                     continue
@@ -204,7 +206,7 @@ async def respond(question: str, session_key: str) -> str:
                     break
     finally:
         await assistant_token_budget.settle(reservation, spent or estimate)
-    reply = " ".join("".join(text).split())
+    reply = " ".join(" ".join(text).split())
     log.info("Assistant reply: question_chars=%s tool_calls=%s reply_chars=%s input_tokens=%s",
              len(question), calls, len(reply), spent or estimate)
     return reply
