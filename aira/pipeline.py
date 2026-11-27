@@ -97,19 +97,9 @@ async def process_message(message: dict, prepared_media=None, input_saved: bool 
     return await process_character_reply(message, character, prepared_media, input_saved)
 
 
-UNANSWERED_BEFORE_CONTINUING = 2
-NOISE_TEXT = re.compile(r"^[\W_\d]+$")
-LAUGHTER_TEXT = re.compile(r"^(?:5{2,}|(?:ha){2,}|(?:ehe)+|lol|lmao|kek|555+)$", re.I)
 BROADCAST_TEXT = re.compile(
     r"ทุกคน|ทุกตัว|ทุกท่าน|ทั้งห้อง|ทั้งแก๊ง|ทั้งกลุ่ม|everyone|everybody|all of you", re.I)
 
-
-def _substantive_text(text: str) -> bool:
-    """True when a message carries something a character could answer."""
-    compact = re.sub(r"[^0-9A-Za-z\u0E00-\u0E7F]", "", text or "")
-    if len(compact) < 6:
-        return False
-    return LAUGHTER_TEXT.fullmatch(compact) is None and NOISE_TEXT.fullmatch(compact) is None
 
 
 def _quote_index(rows: list[dict]) -> dict[str, dict]:
@@ -288,15 +278,6 @@ def idle_candidate_order(session_key: str) -> list[Character]:
     return sorted(characters, key=lambda item: last_seen.get(item.id, -1))
 
 
-def _silence_breaker(characters: list[Character], text: str, rows: list[dict], trailing: int,
-                     last_speaker: str) -> list[Character]:
-    """Keep a conversation alive when the selector leaves two messages unanswered."""
-    if trailing < UNANSWERED_BEFORE_CONTINUING or not _substantive_text(text):
-        return []
-    by_id = {item.id: item for item in characters}
-    return [by_id[last_speaker]] if last_speaker in by_id else []
-
-
 async def select_characters(message: dict, prepared_media=None, superseded=None) -> list[Character]:
     """Let the decision model answer one yes/no question per character."""
     characters = load_characters()
@@ -338,21 +319,39 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         for item in characters
     }
 
+    if not message.get("is_bot"):
+        # Somebody spoke to the room, so somebody answers: the decision model picks
+        # who, and its question has no way to answer "nobody".
+        named = {item.id for item in mentioned}
+        profiles = {}
+        for item in characters:
+            hints = []
+            if item.id in named:
+                hints.append("ถูกเรียกชื่อในข้อความนี้")
+            if item.id == last_speaker:
+                hints.append("พูดล่าสุด")
+            profiles[item.id] = f"{item.name}" + (f" ({'; '.join(hints)})" if hints else "")
+        try:
+            picked = await decide_speaker(shared_input, profiles)
+        except Exception:
+            log.exception("Speaker choice failed; falling back to the quietest character")
+            picked = ""
+        if not picked:
+            picked = characters[0].id
+        selected = resolve_character_speakers(characters, [], [picked])
+        log.info("Character selector decision: selected=%s mode=%s",
+                 [item.id for item in selected], "room" if broadcast else "normal")
+        return selected
+
     try:
         scores = await decide_speakers(shared_input, questions)
     except Exception:
-        log.exception("Decision model failed; only the silence rule can still answer")
+        log.exception("Decision model failed; nothing answers this bot message")
         scores = {}
     ranked = [(item, scores.get(item.id, 0.0)) for item in characters]
     chosen = [item for item, score in sorted(ranked, key=lambda pair: -pair[1])
               if score >= SPEAKER_THRESHOLD]
     selected = resolve_character_speakers(characters, [], [item.id for item in chosen])
-    if not selected:
-        selected = _silence_breaker(characters, current, history, unanswered,
-                                  last_speaker)
-        if selected:
-            log.info("Decision model kept the room silent; continuing with %s",
-                     [item.id for item in selected])
     log.info("Character selector decision: selected=%s scores=%s mode=%s",
              [item.id for item in selected],
              {item.id: round(score, 2) for item, score in ranked},

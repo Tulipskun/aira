@@ -353,6 +353,39 @@ async def decide_speakers(shared_input: str, questions: dict[str, str]) -> dict[
             for key, answer in (getattr(response, "answers", None) or {}).items()}
 
 
+async def decide_speaker(shared_input: str, candidates: dict[str, str]) -> str:
+    """Which one of them answers. The question has no "nobody" option on purpose.
+
+    A message from a person is never left unanswered: chance decides who replies,
+    not whether anybody does. Returns the picked id, or "" when the call fails.
+    """
+    client = _live_client("gemini1")
+    payload = {"who": {
+        "type": "choice",
+        "criteria": {key: value[:200] for key, value in candidates.items()},
+        "instructions": (
+            "อ่านสถานการณ์ของห้องใน input แล้วเลือกหนึ่งคนที่เหมาะจะตอบข้อความล่าสุดที่สุด "
+            "ต้องเลือกหนึ่งคนเสมอ ห้ามตอบว่าไม่มีใคร"
+        ),
+    }}
+    started = time.monotonic()
+    estimate = estimate_tokens(shared_input) + sum(
+        estimate_tokens(value) for value in payload["who"]["criteria"].values())
+    reservation = await decision_token_budget.reserve(estimate, label="decision")
+    response = await client.aio.decisions.create(
+        model=f"models/{config.decision_model}", input=shared_input, questions=payload,
+    )
+    usage = getattr(response, "usage", None)
+    spent = getattr(usage, "total_tokens", None)
+    await decision_token_budget.settle(reservation, int(spent) if spent else estimate)
+    answers = getattr(response, "answers", None) or {}
+    picked = str(getattr(answers.get("who"), "choice", "") or "")
+    log.info("Gemini speaker choice: pick=%s options=%s ms=%s tokens=%s decision_tpm_left=%s",
+             picked, list(candidates), int((time.monotonic() - started) * 1000),
+             spent or "unreported", decision_token_budget.available_tokens())
+    return picked if picked in candidates else ""
+
+
 async def decide_open_thread(transcript: str, candidates: dict[str, str]) -> str:
     """Let the decision model say which line the room still owes an answer to.
 

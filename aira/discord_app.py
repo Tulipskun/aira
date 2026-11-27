@@ -475,6 +475,7 @@ class AiraBot(commands.Bot):
             "reply_to_message_id": (str(reply_reference.message_id)
                                     if getattr(reply_reference, "message_id", None) else None),
             "session_key": session_key,
+            "is_bot": bool(message.author.bot),
         }
         self._cancel_autonomous_continuation(session_key)
         self.scheduler.interrupt_other_sessions(session_key)
