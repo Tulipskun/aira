@@ -319,9 +319,10 @@ async def select_characters(message: dict, prepared_media=None, superseded=None)
         for item in characters
     }
 
-    if not message.get("is_bot"):
-        # Somebody spoke to the room, so somebody answers: the decision model picks
-        # who, and its question has no way to answer "nobody".
+    if not message.get("is_bot") and not broadcast:
+        # Somebody spoke to one of them, so somebody answers: the decision model picks
+        # who, and its question has no way to answer "nobody". A call to the whole
+        # room still goes through the scores below, where several may answer.
         named = {item.id for item in mentioned}
         profiles = {}
         for item in characters:
