@@ -23,7 +23,6 @@ from .token_budget import assistant_token_budget
 
 log = logging.getLogger("aira.assistant")
 
-MAX_TOOL_ROUNDS = 3
 MAX_TOOL_RESULT_CHARS = 3000
 READ_LIMIT_CHARS = 8000
 SEARCH_RESULT_LIMIT = 20
