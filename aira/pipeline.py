@@ -14,7 +14,8 @@ from .characters import (
 from .config import config
 from . import gemini
 from .gemini import (
-    generate_character_reply, decide_speakers, SPEAKER_THRESHOLD, thai_timestamp,
+    generate_character_reply, decide_speakers, decide_speaker, SPEAKER_THRESHOLD,
+    thai_timestamp,
     current_time_block, _image_catalog_prompt,
 )
 from .memory import (
