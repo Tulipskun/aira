@@ -83,10 +83,11 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(selected), 1)
         self.assertIn(selected[0].id, {"isla", "rem"})
 
-    async def test_a_choice_outside_the_roster_is_never_used(self):
+    async def test_an_empty_choice_still_answers_somebody(self):
+        # decide_speaker returns "" when the model names somebody outside the roster.
         chars = [Character("isla", "Isla", ("Isla",), Path("isla.md"))]
         with patch.object(pipeline, "load_characters", return_value=chars), \
-             patch.object(pipeline, "decide_speaker", new=AsyncMock(return_value="bocchi")):
+             patch.object(pipeline, "decide_speaker", new=AsyncMock(return_value="")):
             selected = await pipeline.select_characters({"text": "ข้อความทั่วไป", "session_key": "group:99"})
         self.assertEqual([item.id for item in selected], ["isla"])
 
