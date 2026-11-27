@@ -10,24 +10,20 @@ from the characters.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 from pathlib import Path
-
-from google import genai
-from google.genai import types
 
 from . import gemini
 from .characters import CHAR_DIR, load_characters
 from .config import ROOT, config
 from .store import store
-from .token_budget import (
-    assistant_token_budget, estimate_tokens, usage_tpm_tokens,
-)
+from .token_budget import assistant_token_budget
 
 log = logging.getLogger("aira.assistant")
 
 MAX_TOOL_ROUNDS = 3
-MAX_EVIDENCE_CHARS = 6000
 MAX_TOOL_RESULT_CHARS = 3000
 READ_LIMIT_CHARS = 8000
 SEARCH_RESULT_LIMIT = 20
@@ -37,35 +33,20 @@ BLOCKED_PARTS = {".aira", ".git", ".venv", "__pycache__", "node_modules"}
 READABLE_SUFFIXES = {".py", ".md", ".json", ".txt", ".toml", ".yml", ".yaml", ".sh", ".html"}
 
 TOOL_INSTRUCTIONS = (
-    "คุณคือผู้ช่วยของห้องแชทนี้ หน้าที่คือตอบคำถามให้ตรง 사실ที่สุด\n"
-    "ถ้าคำตอบต้องใช้ข้อมูลที่ไม่ได้อยู่ในข้อความของผู้ใช้ ให้เรียก tool ก่อนตอบเสมอ\n"
-    "ห้ามเดา ห้ามแต่งข้อมูล ถ้าหาไม่พบให้บอกว่าไม่พบ\n"
-    "ตอบเป็นภาษาไทย กระชับ ตรงประเด็น ไม่ต้องใส่ Markdown หนัก ๆ"
+    "คุณคือผู้ช่วยของห้องแชทนี้ หน้าที่คือตอบคำถามให้ตรงกับข้อมูลจริงที่สุด\n"
+    "ถ้าคำตอบต้องใช้ข้อมูลที่ยังไม่มีในบทสนทนา ให้ขอ tool ก่อน โดยตอบเป็นบรรทัดเดียวเท่านั้น:\n"
+    'TOOL ชื่อ tool {"arg": "ค่า"}\n'
+    "เรียกได้ครั้งละ 1 tool ต่อหนึ่งคำตอบ แล้วรอผลลัพธ์\n"
+    "ถ้ามีข้อมูลพอแล้ว ให้ตอบเป็นคำตอบสุดท้ายตามปกติ (ห้ามมีคำว่า TOOL ในคำตอบสุดท้าย)\n"
+    "ห้ามเดา ห้ามแต่งข้อมูล ถ้าหาไม่พบให้บอกว่าไม่พบ ตอบภาษาไทย กระชับ ตรงประเด็น"
 )
 
-DECLARATIONS = [
-    types.FunctionDeclaration(
-        name="recent_messages",
-        description="อ่านข้อความล่าสุดของห้อง รวมข้อความของตัวละครในห้องด้วย",
-        parameters={"type": "object",
-                    "properties": {"limit": {"type": "integer",
-                                             "description": "จำนวนข้อความล่าสุด (1-50)"}},
-                    "required": ["limit"]}),
-    types.FunctionDeclaration(
-        name="read_file",
-        description="อ่านไฟล์ในโปรเจกต์ เช่น เอกสารหรือโค้ด",
-        parameters={"type": "object",
-                    "properties": {"path": {"type": "string",
-                                            "description": "พาธเทียบจากรากโปรเจกต์"}},
-                    "required": ["path"]}),
-    types.FunctionDeclaration(
-        name="search_text",
-        description="ค้นข้อความในไฟล์โค้ดและเอกสารของโปรเจกต์",
-        parameters={"type": "object",
-                    "properties": {"text": {"type": "string", "description": "ข้อความที่ต้องการหา"}},
-                    "required": ["text"]}),
-]
-
+TOOL_LINES = (
+    "ใช้ได้เฉพาะ tool ต่อไปนี้:\n"
+    "- recent_messages {\"limit\": จำนวน} — อ่านข้อความล่าสุดของห้อง รวมของตัวละคร\n"
+    "- read_file {\"path\": \"พาธจากรากโปรเจกต์\"} — อ่านไฟล์โค้ดหรือเอกสาร\n"
+    "- search_text {\"text\": \"ข้อความ\"} — ค้นข้อความในโค้ดและเอกสาร"
+)
 
 def _safe_path(raw: str) -> Path | None:
     candidate = (ROOT / str(raw or "").strip().lstrip("/")).resolve()
@@ -136,68 +117,27 @@ def run_tool(name: str, arguments: dict, session_key: str) -> dict:
     return {"error": f"ไม่รู้จัก tool {name}"}
 
 
-def _tool_client() -> genai.Client:
-    return gemini.api_client("gemini1")
+TOOL_CALL = re.compile(r"^\s*TOOL\s+([a-z_]+)\s*(\{.*\})\s*$", re.MULTILINE)
+MAX_LIVE_ROUNDS = 3
 
 
-async def gather(question: str, session_key: str) -> str:
-    """Let the tool model look things up and return what it found."""
-    client = _tool_client()
-    contents = [types.Content(role="user", parts=[types.Part.from_text(text=question)])]
-    evidence = []
-    for round_index in range(MAX_TOOL_ROUNDS):
-        estimate = estimate_tokens(question) + sum(estimate_tokens(item) for item in evidence)
-        reservation = await assistant_token_budget.reserve(estimate, label="assistant_tools")
-        try:
-            response = await client.aio.models.generate_content(
-                model=config.assistant_tool_model, contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=TOOL_INSTRUCTIONS,
-                    tools=[types.Tool(function_declarations=DECLARATIONS)],
-                ),
-            )
-        except Exception:
-            await assistant_token_budget.settle(reservation, 0)
-            raise
-        await assistant_token_budget.settle(
-            reservation, usage_tpm_tokens(getattr(response, "usage_metadata", None)))
-        parts = list(getattr(response.candidates[0].content, "parts", None) or [])
-        calls = [part.function_call for part in parts if getattr(part, "function_call", None)]
-        if not calls:
-            text = (getattr(response, "text", "") or "").strip()
-            if text and not evidence:
-                evidence.append(text)
-            break
-        contents.append(response.candidates[0].content)
-        responses = []
-        for call in calls:
-            arguments = dict(getattr(call, "args", None) or {})
-            result = run_tool(str(call.name), arguments, session_key)
-            summary = str(result)[:MAX_TOOL_RESULT_CHARS]
-            evidence.append(f"[{call.name} {arguments}] {summary}")
-            log.info("Assistant tool call: round=%s tool=%s args=%s chars=%s",
-                     round_index + 1, call.name, arguments, len(summary))
-            responses.append(types.Part.from_function_response(name=str(call.name), response=result))
-        contents.append(types.Content(role="user", parts=responses))
-    joined = "\n".join(evidence).strip()
-    return joined[:MAX_EVIDENCE_CHARS]
-
-
-def _persona() -> str:
-    path = CHAR_DIR / "prompts" / "gemini-chan.md"
+def _parse_tool_call(text: str) -> tuple[str, dict] | None:
+    """Read the one tool she asked for, if she asked for one."""
+    match = TOOL_CALL.search(text or "")
+    if not match:
+        return None
     try:
-        return path.read_text("utf-8").strip()
-    except OSError as exc:
-        raise RuntimeError(f"Cannot read the assistant prompt at {path}: {exc}") from exc
+        arguments = json.loads(match.group(2))
+    except ValueError:
+        return None
+    return match.group(1), arguments if isinstance(arguments, dict) else {}
 
 
-async def answer(question: str, evidence: str) -> str:
-    """The extended-thinking model replies in her own voice, from the evidence."""
+async def _live_turn(question: str, results: list[str]) -> str:
+    """One turn of her own model, given whatever the tools returned so far."""
     system_instruction = "\n\n".join(filter(None, [
-        _persona(),
-        TOOL_INSTRUCTIONS,
-        "ข้อมูลที่ tool ดึงมาให้แล้ว (ใช้ตอบได้เลย ไม่ต้องเรียก tool เอง):\n"
-        + (evidence or "(ไม่มีข้อมูลเพิ่มเติม)"),
+        _persona(), TOOL_INSTRUCTIONS, TOOL_LINES,
+        ("ผลลัพธ์จาก tool ที่คุณขอไปแล้ว:\n" + "\n".join(results)) if results else "",
     ]))
     return await gemini.generate_live_text(
         "gemini1", [{"type": "text", "text": question}], system_instruction,
@@ -207,9 +147,32 @@ async def answer(question: str, evidence: str) -> str:
 
 
 async def respond(question: str, session_key: str) -> str:
-    """Look the question up, then answer it."""
-    evidence = await gather(question, session_key)
-    reply = await answer(question, evidence)
-    log.info("Assistant reply: question_chars=%s evidence_chars=%s reply_chars=%s",
-             len(question), len(evidence), len(reply))
-    return " ".join(reply.split())
+    """She looks things up and answers, all on her own model.
+
+    The model she thinks with cannot call functions itself, so it asks for a tool in
+    one short line and the answer is fed back to it. No other model takes part.
+    """
+    results: list[str] = []
+    for round_index in range(MAX_LIVE_ROUNDS):
+        raw = await _live_turn(question, results)
+        call = _parse_tool_call(raw)
+        if call is None:
+            log.info("Assistant reply: question_chars=%s tool_rounds=%s reply_chars=%s",
+                     len(question), len(results), len(raw))
+            return " ".join((raw or "").split())
+        name, arguments = call
+        result = run_tool(name, arguments, session_key)
+        summary = str(result)[:MAX_TOOL_RESULT_CHARS]
+        log.info("Assistant tool call: round=%s tool=%s args=%s chars=%s",
+                 round_index + 1, name, arguments, len(summary))
+        results.append(f"[{name} {arguments}] {summary}")
+    log.info("Assistant used all %s tool rounds and answers with what it has", MAX_LIVE_ROUNDS)
+    return " ".join((await _live_turn(question, results)).split())
+
+
+def _persona() -> str:
+    path = CHAR_DIR / "prompts" / "gemini-chan.md"
+    try:
+        return path.read_text("utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read the assistant prompt at {path}: {exc}") from exc

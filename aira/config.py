@@ -41,8 +41,6 @@ class Config:
     decision_model: str = field(default_factory=lambda: str(_setting("decisionModel", "gemini-decision-1")))
     assistant_model: str = field(default_factory=lambda: str(
         _setting("assistantModel", "gemini-3.8-live-extended-thinking")))
-    assistant_tool_model: str = field(default_factory=lambda: str(
-        _setting("assistantToolModel", "gemini-3.8-flash")))
     embedding_model: str = field(default_factory=lambda: str(_setting("embeddingModel", "gemini-embedding-2")))
     embedding_dimension: int = field(default_factory=lambda: int(_setting("embeddingDimension", 768)))
     sqlite_path: Path = field(default_factory=lambda: _resolve_path(".aira/aira.db"))
