@@ -1,15 +1,14 @@
 """Gemini-chan: the assistant in the room, not one of the cast.
 
-She answers questions about the code, the docs and the conversation itself, using
-her own extended-thinking model and her own tools on one Live connection. Her
-allowance is separate, so her thinking never takes a turn away from the characters.
+She answers questions about the code, the docs and the conversation itself. She
+runs on the tool-capable Live model, so she looks things up herself on one open
+connection and answers from what she found. Her allowance is separate, so her
+turns never take a turn away from the characters.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 import time
 from pathlib import Path
 
@@ -19,10 +18,14 @@ from . import gemini
 from .characters import CHAR_DIR, load_characters
 from .config import ROOT, config
 from .store import store
-from .token_budget import assistant_token_budget
+from .token_budget import assistant_token_budget, estimate_tokens, usage_tpm_tokens
 
 log = logging.getLogger("aira.assistant")
 
+# A tool call arrives a few seconds after the turn completes, so the socket is read
+# until it goes quiet instead of closing when the first turn ends.
+QUIET_SECONDS = 15.0
+SESSION_TIMEOUT_SECONDS = 150.0
 MAX_TOOL_RESULT_CHARS = 3000
 READ_LIMIT_CHARS = 8000
 SEARCH_RESULT_LIMIT = 20
@@ -34,16 +37,33 @@ READABLE_SUFFIXES = {".py", ".md", ".json", ".txt", ".toml", ".yml", ".yaml", ".
 TOOL_INSTRUCTIONS = (
     "คุณคือผู้ช่วยของห้องแชทนี้ หน้าที่คือตอบคำถามให้ตรงกับข้อมูลจริงที่สุด\n"
     "ข้อความในห้องและไฟล์ในโปรเจกต์ไม่ได้อยู่ในความจำของคุณ ต้องดูจากเครื่องมือเท่านั้น\n"
-    "ถ้าต้องใช้เครื่องมือ ให้เขียนบรรทัดเดียวเป็น\n"
-    'TOOL ชื่อเครื่องมือ {"ชื่อพารามิเตอร์": ค่า}\n'
-    "แล้วหยุดรอผลลัพธ์ ระบบจะส่งผลลัพธ์กลับมาให้\n"
-    "เครื่องมือที่ใช้ได้:\n"
-    "- recent_messages {\"limit\": จำนวน} — ข้อความล่าสุดของห้อง รวมของตัวละคร\n"
-    "- read_file {\"path\": \"พาธจากรากโปรเจกต์\"} — อ่านไฟล์โค้ดหรือเอกสาร\n"
-    "- search_text {\"text\": \"ข้อความ\"} — ค้นข้อความในโค้ดและเอกสาร\n"
-    "เมื่อได้ข้อมูลพอแล้ว ให้ตอบเป็นคำตอบสุดท้ายตามปกติ (ห้ามมีคำว่า TOOL ในคำตอบสุดท้าย)\n"
+    "เมื่อถูกถามถึงสิ่งที่คนในห้องพูด หรือสิ่งที่อยู่ในโค้ด/เอกสาร ให้เรียกเครื่องมือก่อนตอบ\n"
     "ห้ามเดา ห้ามแต่งข้อมูล ถ้าหาไม่พบให้บอกว่าไม่พบ ตอบภาษาไทย กระชับ ตรงประเด็น"
 )
+
+DECLARATIONS = [
+    types.FunctionDeclaration(
+        name="recent_messages",
+        description="อ่านข้อความล่าสุดของห้องแชทนี้ รวมข้อความของตัวละครในห้อง",
+        parameters={"type": "object",
+                    "properties": {"limit": {"type": "integer",
+                                             "description": "จำนวนข้อความล่าสุด (1-50)"}},
+                    "required": ["limit"]}),
+    types.FunctionDeclaration(
+        name="read_file",
+        description="อ่านไฟล์ในโปรเจกต์ เช่น เอกสารหรือโค้ด",
+        parameters={"type": "object",
+                    "properties": {"path": {"type": "string",
+                                            "description": "พาธเทียบจากรากโปรเจกต์"}},
+                    "required": ["path"]}),
+    types.FunctionDeclaration(
+        name="search_text",
+        description="ค้นข้อความในไฟล์โค้ดและเอกสารของโปรเจกต์",
+        parameters={"type": "object",
+                    "properties": {"text": {"type": "string", "description": "ข้อความที่ต้องการหา"}},
+                    "required": ["text"]}),
+]
+
 
 def _safe_path(raw: str) -> Path | None:
     candidate = (ROOT / str(raw or "").strip().lstrip("/")).resolve()
@@ -114,98 +134,80 @@ def run_tool(name: str, arguments: dict, session_key: str) -> dict:
     return {"error": f"ไม่รู้จัก tool {name}"}
 
 
-# Her model thinks past the end of a turn, so each step is its own Live turn: she
-# answers, or asks for one tool in a single line, and the result is carried into the
-# next turn. This is the only shape that returned a usable answer every time.
-THINKING_LEVEL = "HIGH"
-MAX_TOOL_ROUNDS = 3
-TOOL_CALL = re.compile(r"^\s*TOOL\s+([a-z_]+)\s*(\{.*\})\s*$", re.MULTILINE)
-
-
-def _parse_tool_call(text: str) -> tuple[str, dict] | None:
-    match = TOOL_CALL.search(text or "")
-    if not match:
-        return None
-    try:
-        arguments = json.loads(match.group(2))
-    except ValueError:
-        return None
-    return match.group(1), arguments if isinstance(arguments, dict) else {}
-
-
-def _spoken(text: str) -> str:
-    return " ".join(TOOL_CALL.sub(" ", text or "").split())
-
-
-async def _live_turn(question: str, results: list[str]) -> str:
-    """One turn of her own model, given whatever the tools returned so far."""
-    system_instruction = "\n\n".join(filter(None, [
-        _persona(), TOOL_INSTRUCTIONS,
-        ("ผลลัพธ์จากเครื่องมือที่คุณขอไปแล้ว:\n" + "\n".join(results)) if results else "",
-    ]))
-    try:
-        return await gemini.generate_live_text(
-            "gemini1", [{"type": "text", "text": question}], system_instruction,
-            model=config.assistant_model, budget=assistant_token_budget,
-            thinking_level=THINKING_LEVEL, max_output_tokens=2048,
-        )
-    except Exception:
-        # A turn that says nothing is the same as no answer: she simply stays quiet.
-        log.exception("Assistant turn returned nothing")
-        return ""
-
-
-async def _complete_answer(question: str, said: str) -> bool:
-    """The decision model says whether what she said is a finished answer.
-
-    Her model sometimes stops after "let me check", so the answer itself is judged
-    instead of being trusted.
-    """
-    if not said.strip():
-        return False
-    shared = "\n".join([f"คำถามของผู้ใช้: {question}", f"ข้อความที่ผู้ช่วยพูด: {said}"])
-    try:
-        scores = await gemini.decide_speakers(shared, {
-            "complete": ("ข้อความนี้ตอบคำถามของผู้ใช้ครบถ้วนแล้วหรือยัง "
-                         "ตอบใช่เมื่อมีคำตอบจริง ไม่ใช่แค่บอกว่าจะไปตรวจสอบ"),
-        })
-    except Exception:
-        log.exception("Completion check failed; keeping what she said")
-        return True
-    return scores.get("complete", 0.0) >= 0.5
-
-
-async def respond(question: str, session_key: str) -> str:
-    """She looks things up and answers, all on her own model and her own allowance."""
-    results: list[str] = []
-    for round_index in range(MAX_TOOL_ROUNDS):
-        raw = await _live_turn(question, results)
-        call = _parse_tool_call(raw)
-        if call is None:
-            said = _spoken(raw)
-            if await _complete_answer(question, said):
-                log.info("Assistant reply: question_chars=%s tool_rounds=%s reply_chars=%s",
-                         len(question), len(results), len(said))
-                return said
-            log.info("Assistant stopped before answering; asking once more: chars=%s", len(said))
-            raw = await _live_turn(
-                question + "\n\nกรุณาตอบคำถามนี้ให้จบในคำตอบนี้เลย ถ้าต้องใช้ข้อมูลเพิ่มให้ขอเครื่องมือ",
-                results)
-            call = _parse_tool_call(raw)
-            if call is None:
-                return _spoken(raw)
-        name, arguments = call
-        result = run_tool(name, arguments, session_key)
-        log.info("Assistant tool call: round=%s tool=%s args=%s result_chars=%s",
-                 round_index + 1, name, arguments, len(str(result)))
-        results.append(f"[{name} {arguments}] {str(result)[:MAX_TOOL_RESULT_CHARS]}")
-    log.info("Assistant used all %s tool rounds; answering with what it has", MAX_TOOL_ROUNDS)
-    return _spoken(await _live_turn(question, results))
-
-
 def _persona() -> str:
     path = CHAR_DIR / "prompts" / "gemini-chan.md"
     try:
         return path.read_text("utf-8").strip()
     except OSError as exc:
         raise RuntimeError(f"Cannot read the assistant prompt at {path}: {exc}") from exc
+
+
+def _live_config() -> types.LiveConnectConfig:
+    return types.LiveConnectConfig(
+        response_modalities=[types.Modality.AUDIO],
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        system_instruction="\n\n".join([_persona(), TOOL_INSTRUCTIONS]),
+        tools=[types.Tool(function_declarations=DECLARATIONS)],
+    )
+
+
+def _tool_responses(call, session_key: str) -> list[types.FunctionResponse]:
+    responses = []
+    for item in call.function_calls:
+        arguments = dict(getattr(item, "args", None) or {})
+        result = run_tool(str(item.name), arguments, session_key)
+        log.info("Assistant tool call: tool=%s args=%s result_chars=%s",
+                 item.name, arguments, len(str(result)))
+        responses.append(types.FunctionResponse(id=item.id, name=str(item.name), response=result))
+    return responses
+
+
+async def respond(question: str, session_key: str) -> str:
+    """One open Live session: she reads what she needs, then answers."""
+    client = gemini.live_client("gemini1")
+    estimate = estimate_tokens(question) + 2000
+    reservation = await assistant_token_budget.reserve(estimate, label="assistant_live")
+    spent: list[int] = []
+    text: list[str] = []
+    calls = 0
+    try:
+        async with client.aio.live.connect(model=config.assistant_model,
+                                           config=_live_config()) as session:
+            await session.send_client_content(
+                turns=types.Content(role="user", parts=[types.Part.from_text(text=question)]),
+                turn_complete=True,
+            )
+            deadline = time.monotonic() + SESSION_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                try:
+                    message = await asyncio.wait_for(
+                        session.receive().__anext__(), timeout=QUIET_SECONDS)
+                except (asyncio.TimeoutError, StopAsyncIteration):
+                    # Nothing more is coming on this connection: she is done.
+                    break
+                usage = getattr(message, "usage_metadata", None)
+                if usage is not None:
+                    spent.append(usage_tpm_tokens(usage) or 0)
+                call = getattr(message, "tool_call", None)
+                if call:
+                    calls += 1
+                    # What she said before looking things up is not the answer.
+                    text.clear()
+                    await session.send_tool_response(
+                        function_responses=_tool_responses(call, session_key))
+                    continue
+                content = getattr(message, "server_content", None)
+                if content and content.output_transcription:
+                    chunk = content.output_transcription.text or ""
+                    if chunk.strip():
+                        text.append(chunk)
+                if getattr(message, "go_away", None):
+                    log.warning("Assistant session received go_away; stopping")
+                    break
+    finally:
+        await assistant_token_budget.settle(reservation, sum(spent) or estimate)
+    reply = " ".join(" ".join(text).split())
+    log.info("Assistant reply: question_chars=%s tool_calls=%s reply_chars=%s input_tokens=%s",
+             len(question), calls, len(reply), sum(spent) or estimate)
+    return reply

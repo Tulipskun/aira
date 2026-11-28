@@ -36,11 +36,17 @@ class Config:
     gemini1_keys: list[str] = field(default_factory=lambda: _split_keys(_setting("gemini1ApiKeys", _setting("geminiApiKeys", []))))
     gemini2_keys: list[str] = field(default_factory=lambda: _split_keys(_setting("gemini2ApiKeys", _setting("geminiApiKeys", []))))
     embedding_keys: list[str] = field(default_factory=lambda: _split_keys(_setting("embeddingApiKeys", _setting("geminiApiKeys", []))))
-    gemini1_model: str = field(default_factory=lambda: _model_setting("gemini1Model", "gemini-3.8-live", ("gemini-3.1-flash-lite", "gemini-3.8-flash")))
+    gemini1_model: str = field(default_factory=lambda: _model_setting(
+        "gemini1Model", "gemini-3.8-live-extended-thinking",
+        ("gemini-3.1-flash-lite", "gemini-3.8-flash")))
+    # The cast speaks on the thinking model, which only returns its JSON answer at
+    # MEDIUM: at HIGH it finishes thinking after the turn closes and speaks prose.
+    cast_thinking_level: str = field(default_factory=lambda: str(
+        _setting("castThinkingLevel", "MEDIUM")))
     gemini2_model: str = field(default_factory=lambda: _model_setting("gemini2Model", "gemini-3.8-live", ("gemini-3.5-flash-lite", "gemini-3.8-flash")))
     decision_model: str = field(default_factory=lambda: str(_setting("decisionModel", "gemini-decision-1")))
     assistant_model: str = field(default_factory=lambda: str(
-        _setting("assistantModel", "gemini-3.8-live-extended-thinking")))
+        _setting("assistantModel", "gemini-3.8-live")))
     embedding_model: str = field(default_factory=lambda: str(_setting("embeddingModel", "gemini-embedding-2")))
     embedding_dimension: int = field(default_factory=lambda: int(_setting("embeddingDimension", 768)))
     sqlite_path: Path = field(default_factory=lambda: _resolve_path(".aira/aira.db"))

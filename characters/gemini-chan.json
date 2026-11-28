@@ -6,6 +6,6 @@
     "เจมินิจัง"
   ],
   "promptFile": "prompts/gemini-chan.md",
-  "enabled": false,
+  "enabled": true,
   "assistant": true
 }

@@ -497,6 +497,8 @@ async def _create_live_response(stage: str, input_parts: list[dict], system_inst
     max_keys = max(1, len(_keys(stage)))
     chosen_model = model or (config.gemini2_model if stage == "gemini2" else config.gemini1_model)
     ledger = budget or live_token_budget
+    if thinking_level is None and chosen_model == config.gemini1_model:
+        thinking_level = config.cast_thinking_level
     content_parts = _live_parts(input_parts)
     if response_schema:
         system_instruction = "\n\n".join([
