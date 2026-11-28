@@ -118,8 +118,11 @@ def run_tool(name: str, arguments: dict, session_key: str) -> dict:
 # after the turn has already closed and only a preamble comes out, so she runs at
 # MEDIUM. She asks for a tool in one short line and the socket stays open while the
 # result goes back, which is the only route that worked reliably on her model.
-THINKING_LEVEL = "MEDIUM"
+THINKING_LEVEL = "HIGH"
 MAX_TOOL_ROUNDS = 3
+# She keeps talking after the turn closes, so the turn is over when the socket goes
+# quiet rather than when the server says the turn is complete.
+QUIET_SECONDS = 12.0
 TURN_TIMEOUT_SECONDS = 90.0
 TOOL_CALL = re.compile(r"^\s*TOOL\s+([a-z_]+)\s*(\{.*\})\s*$", re.MULTILINE)
 
@@ -153,8 +156,9 @@ async def _read_turn(stream, deadline: float, spent: list[int]) -> str:
     chunks: list[str] = []
     while time.monotonic() < deadline:
         try:
-            message = await asyncio.wait_for(stream.__anext__(), timeout=25.0)
+            message = await asyncio.wait_for(stream.__anext__(), timeout=QUIET_SECONDS)
         except (asyncio.TimeoutError, StopAsyncIteration):
+            # Nothing more is coming: she has finished this turn.
             break
         usage = getattr(message, "usage_metadata", None)
         if usage is not None:
@@ -166,8 +170,6 @@ async def _read_turn(stream, deadline: float, spent: list[int]) -> str:
                 chunks.append(chunk)
         if getattr(message, "go_away", None):
             log.warning("Assistant session received go_away; stopping")
-            break
-        if content and content.turn_complete and chunks:
             break
     return " ".join(chunks)
 
