@@ -143,11 +143,16 @@ async def _live_turn(question: str, results: list[str]) -> str:
         _persona(), TOOL_INSTRUCTIONS,
         ("ผลลัพธ์จากเครื่องมือที่คุณขอไปแล้ว:\n" + "\n".join(results)) if results else "",
     ]))
-    return await gemini.generate_live_text(
-        "gemini1", [{"type": "text", "text": question}], system_instruction,
-        model=config.assistant_model, budget=assistant_token_budget,
-        thinking_level=THINKING_LEVEL, max_output_tokens=2048,
-    )
+    try:
+        return await gemini.generate_live_text(
+            "gemini1", [{"type": "text", "text": question}], system_instruction,
+            model=config.assistant_model, budget=assistant_token_budget,
+            thinking_level=THINKING_LEVEL, max_output_tokens=2048,
+        )
+    except Exception:
+        # A turn that says nothing is the same as no answer: she simply stays quiet.
+        log.exception("Assistant turn returned nothing")
+        return ""
 
 
 async def _complete_answer(question: str, said: str) -> bool:
