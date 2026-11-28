@@ -150,6 +150,26 @@ async def _live_turn(question: str, results: list[str]) -> str:
     )
 
 
+async def _complete_answer(question: str, said: str) -> bool:
+    """The decision model says whether what she said is a finished answer.
+
+    Her model sometimes stops after "let me check", so the answer itself is judged
+    instead of being trusted.
+    """
+    if not said.strip():
+        return False
+    shared = "\n".join([f"คำถามของผู้ใช้: {question}", f"ข้อความที่ผู้ช่วยพูด: {said}"])
+    try:
+        scores = await gemini.decide_speakers(shared, {
+            "complete": ("ข้อความนี้ตอบคำถามของผู้ใช้ครบถ้วนแล้วหรือยัง "
+                         "ตอบใช่เมื่อมีคำตอบจริง ไม่ใช่แค่บอกว่าจะไปตรวจสอบ"),
+        })
+    except Exception:
+        log.exception("Completion check failed; keeping what she said")
+        return True
+    return scores.get("complete", 0.0) >= 0.5
+
+
 async def respond(question: str, session_key: str) -> str:
     """She looks things up and answers, all on her own model and her own allowance."""
     results: list[str] = []
@@ -157,9 +177,18 @@ async def respond(question: str, session_key: str) -> str:
         raw = await _live_turn(question, results)
         call = _parse_tool_call(raw)
         if call is None:
-            log.info("Assistant reply: question_chars=%s tool_rounds=%s reply_chars=%s",
-                     len(question), len(results), len(raw or ""))
-            return _spoken(raw)
+            said = _spoken(raw)
+            if await _complete_answer(question, said):
+                log.info("Assistant reply: question_chars=%s tool_rounds=%s reply_chars=%s",
+                         len(question), len(results), len(said))
+                return said
+            log.info("Assistant stopped before answering; asking once more: chars=%s", len(said))
+            raw = await _live_turn(
+                question + "\n\nกรุณาตอบคำถามนี้ให้จบในคำตอบนี้เลย ถ้าต้องใช้ข้อมูลเพิ่มให้ขอเครื่องมือ",
+                results)
+            call = _parse_tool_call(raw)
+            if call is None:
+                return _spoken(raw)
         name, arguments = call
         result = run_tool(name, arguments, session_key)
         log.info("Assistant tool call: round=%s tool=%s args=%s result_chars=%s",
