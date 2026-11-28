@@ -19,7 +19,7 @@ from . import gemini
 from .characters import CHAR_DIR, load_characters
 from .config import ROOT, config
 from .store import store
-from .token_budget import assistant_token_budget, estimate_tokens, usage_tpm_tokens
+from .token_budget import assistant_token_budget
 
 log = logging.getLogger("aira.assistant")
 
@@ -114,26 +114,12 @@ def run_tool(name: str, arguments: dict, session_key: str) -> dict:
     return {"error": f"ไม่รู้จัก tool {name}"}
 
 
-# The answer is spoken on one Live session. At HIGH the model finishes thinking
-# after the turn has already closed and only a preamble comes out, so she runs at
-# MEDIUM. She asks for a tool in one short line and the socket stays open while the
-# result goes back, which is the only route that worked reliably on her model.
+# Her model thinks past the end of a turn, so each step is its own Live turn: she
+# answers, or asks for one tool in a single line, and the result is carried into the
+# next turn. This is the only shape that returned a usable answer every time.
 THINKING_LEVEL = "HIGH"
 MAX_TOOL_ROUNDS = 3
-# She keeps talking after the turn closes, so the turn is over when the socket goes
-# quiet rather than when the server says the turn is complete.
-QUIET_SECONDS = 12.0
-TURN_TIMEOUT_SECONDS = 90.0
 TOOL_CALL = re.compile(r"^\s*TOOL\s+([a-z_]+)\s*(\{.*\})\s*$", re.MULTILINE)
-
-
-def _live_config() -> types.LiveConnectConfig:
-    return types.LiveConnectConfig(
-        response_modalities=[types.Modality.AUDIO],
-        output_audio_transcription=types.AudioTranscriptionConfig(),
-        thinking_config=types.ThinkingConfig(thinking_level=THINKING_LEVEL),
-        system_instruction="\n\n".join([_persona(), TOOL_INSTRUCTIONS]),
-    )
 
 
 def _parse_tool_call(text: str) -> tuple[str, dict] | None:
@@ -151,77 +137,36 @@ def _spoken(text: str) -> str:
     return " ".join(TOOL_CALL.sub(" ", text or "").split())
 
 
-async def _read_turn(stream, deadline: float, spent: list[int]) -> str:
-    """Everything she says in this turn, read from the one open stream."""
-    chunks: list[str] = []
-    while time.monotonic() < deadline:
-        try:
-            message = await asyncio.wait_for(stream.__anext__(), timeout=QUIET_SECONDS)
-        except (asyncio.TimeoutError, StopAsyncIteration):
-            # Nothing more is coming: she has finished this turn.
-            break
-        usage = getattr(message, "usage_metadata", None)
-        if usage is not None:
-            spent.append(usage_tpm_tokens(usage) or 0)
-        content = getattr(message, "server_content", None)
-        if content and content.output_transcription:
-            chunk = content.output_transcription.text or ""
-            if chunk.strip():
-                chunks.append(chunk)
-        if getattr(message, "go_away", None):
-            log.warning("Assistant session received go_away; stopping")
-            break
-    return " ".join(chunks)
+async def _live_turn(question: str, results: list[str]) -> str:
+    """One turn of her own model, given whatever the tools returned so far."""
+    system_instruction = "\n\n".join(filter(None, [
+        _persona(), TOOL_INSTRUCTIONS,
+        ("ผลลัพธ์จากเครื่องมือที่คุณขอไปแล้ว:\n" + "\n".join(results)) if results else "",
+    ]))
+    return await gemini.generate_live_text(
+        "gemini1", [{"type": "text", "text": question}], system_instruction,
+        model=config.assistant_model, budget=assistant_token_budget,
+        thinking_level=THINKING_LEVEL, max_output_tokens=2048,
+    )
 
 
 async def respond(question: str, session_key: str) -> str:
-    """She answers, and asks for whatever she needs to look up, on her own model."""
-    client = gemini.live_client("gemini1")
-    estimate = estimate_tokens(question) + 2000
-    reservation = await assistant_token_budget.reserve(estimate, label="assistant_live")
-    spent: list[int] = []
-    rounds = 0
-    try:
-        async with client.aio.live.connect(model=config.assistant_model,
-                                           config=_live_config()) as session:
-            await session.send_client_content(
-                turns=types.Content(role="user", parts=[types.Part.from_text(text=question)]),
-                turn_complete=True,
-            )
-            stream = session.receive()
-            while rounds <= MAX_TOOL_ROUNDS:
-                said = await _read_turn(stream, time.monotonic() + TURN_TIMEOUT_SECONDS, spent)
-                call = _parse_tool_call(said)
-                if call is None:
-                    log.info("Assistant reply: question_chars=%s tool_rounds=%s reply_chars=%s",
-                             len(question), rounds, len(said))
-                    return _spoken(said)
-                if rounds == MAX_TOOL_ROUNDS:
-                    break
-                name, arguments = call
-                result = run_tool(name, arguments, session_key)
-                rounds += 1
-                log.info("Assistant tool call: round=%s tool=%s args=%s result_chars=%s",
-                         rounds, name, arguments, len(str(result)))
-                await session.send_client_content(
-                    turns=types.Content(role="user", parts=[types.Part.from_text(
-                        text=("ผลลัพธ์ของ " + name + ": " + str(result)[:MAX_TOOL_RESULT_CHARS]
-                              + "\nถ้ามีข้อมูลพอแล้วตอบเป็นคำตอบสุดท้าย ถ้ายังขาดให้ขอเครื่องมืออื่นต่อ"))]),
-                    turn_complete=True,
-                )
-            # She used every round looking things up: ask for the answer using what
-            # has already been gathered instead of returning the request line.
-            await session.send_client_content(
-                turns=types.Content(role="user", parts=[types.Part.from_text(
-                    text="ตอบเป็นคำตอบสุดท้ายจากข้อมูลที่มีอยู่ตอนนี้ ห้ามขอเครื่องมืออีก")]),
-                turn_complete=True,
-            )
-            said = await _read_turn(stream, time.monotonic() + TURN_TIMEOUT_SECONDS, spent)
-            log.info("Assistant reply after all tool rounds: rounds=%s reply_chars=%s",
-                     rounds, len(said))
-            return _spoken(said)
-    finally:
-        await assistant_token_budget.settle(reservation, sum(spent) or estimate)
+    """She looks things up and answers, all on her own model and her own allowance."""
+    results: list[str] = []
+    for round_index in range(MAX_TOOL_ROUNDS):
+        raw = await _live_turn(question, results)
+        call = _parse_tool_call(raw)
+        if call is None:
+            log.info("Assistant reply: question_chars=%s tool_rounds=%s reply_chars=%s",
+                     len(question), len(results), len(raw or ""))
+            return _spoken(raw)
+        name, arguments = call
+        result = run_tool(name, arguments, session_key)
+        log.info("Assistant tool call: round=%s tool=%s args=%s result_chars=%s",
+                 round_index + 1, name, arguments, len(str(result)))
+        results.append(f"[{name} {arguments}] {str(result)[:MAX_TOOL_RESULT_CHARS]}")
+    log.info("Assistant used all %s tool rounds; answering with what it has", MAX_TOOL_ROUNDS)
+    return _spoken(await _live_turn(question, results))
 
 
 def _persona() -> str:
