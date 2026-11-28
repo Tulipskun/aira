@@ -124,6 +124,15 @@ TURN_TIMEOUT_SECONDS = 90.0
 TOOL_CALL = re.compile(r"^\s*TOOL\s+([a-z_]+)\s*(\{.*\})\s*$", re.MULTILINE)
 
 
+def _live_config() -> types.LiveConnectConfig:
+    return types.LiveConnectConfig(
+        response_modalities=[types.Modality.AUDIO],
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        thinking_config=types.ThinkingConfig(thinking_level=THINKING_LEVEL),
+        system_instruction="\n\n".join([_persona(), TOOL_INSTRUCTIONS]),
+    )
+
+
 def _parse_tool_call(text: str) -> tuple[str, dict] | None:
     match = TOOL_CALL.search(text or "")
     if not match:
